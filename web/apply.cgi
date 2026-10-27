@@ -13,7 +13,7 @@ from html import escape
 APP_DIR = "/srv/bashbbs/applications/incoming"
 USERS = "/srv/bashbbs/users"
 MAX_BODY = 4096
-NAME_RE = re.compile(r"^[a-z][a-z0-9]{2,15}$")
+NAME_RE = re.compile(r"^[a-z][a-z0-9]{2,8}$")
 KEY_TYPES = {"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
              "ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com"}
 KEY_BODY_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
@@ -55,13 +55,13 @@ def main():
     if form is None:
         return page("400 Bad Request", "The form is empty or too large.")
 
-    name = field(form, "name", 16)
+    name = field(form, "name", 9)
     key = field(form, "key", 2048)
     note = field(form, "note", 300)
 
     if not NAME_RE.match(name):
         return page("400 Bad Request",
-                    "Name: 3-16 characters, lowercase letters and digits, starting with a letter.")
+                    "Name: 3-9 characters, lowercase letters and digits, starting with a letter.")
     if os.path.exists(os.path.join(USERS, name)):
         return page("409 Conflict", "That name is taken or was used before.")
 

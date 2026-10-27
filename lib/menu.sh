@@ -7,7 +7,7 @@ umask 077
 BBS_ROOT=/srv/bashbbs
 LIB=/usr/local/lib/bashbbs
 me=${USER#bbs-}
-[[ $me =~ ^[a-z][a-z0-9]{2,15}$ ]] || { echo "bad account" >&2; exit 1; }
+[[ $me =~ ^[a-z][a-z0-9]{2,8}$ ]] || { echo "bad account" >&2; exit 1; }
 
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
@@ -16,7 +16,7 @@ pause() { read -r -p "[Enter] " _ || true; }
 
 # Accept a name only if it matches the naming rule and a profile exists.
 valid_user() {
-    [[ $1 =~ ^[a-z][a-z0-9]{2,15}$ ]] && [[ -f $BBS_ROOT/users/$1/profile ]]
+    [[ $1 =~ ^[a-z][a-z0-9]{2,8}$ ]] && [[ -f $BBS_ROOT/users/$1/profile ]]
 }
 
 list_users() {
