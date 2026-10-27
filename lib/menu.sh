@@ -38,12 +38,33 @@ my_account() {
     echo "Keys:  $keys registered"
 }
 
+# ---- Navigation -------------------------------------------------------------
+
+# Quick keys work on every screen. nav_key sets nav_req and the screen returns
+# at once; the loop at the bottom then opens the section that was asked for.
+nav_req=
+
+top_bar() {
+    echo "[B] Boards  [P] Mail  [M] Main  $1"
+    echo
+}
+
+nav_key() {
+    case $1 in
+        [Bb]) nav_req=boards ;;
+        [Pp]) nav_req=mail ;;
+        [Mm]) nav_req=main ;;
+        *) return 1 ;;
+    esac
+}
+
 # ---- Stage B: public boards -------------------------------------------------
 
 board_menu() {
-    local boards b
+    local boards b choice
     while true; do
         clear
+        top_bar "[Q] Back"
         echo "== Public boards =="
         boards=()
         for b in "$BBS_ROOT"/boards/*/; do
@@ -57,20 +78,23 @@ board_menu() {
         done
         echo "Q) Back"
         read -r -p "> " choice || return
+        nav_key "$choice" && return
         case $choice in
             [Qq]) return ;;
             ''|*[!0-9]*) continue ;;
         esac
         (( choice >= 1 && choice <= ${#boards[@]} )) || continue
         board_view "${boards[choice - 1]}"
+        [[ -n $nav_req ]] && return
     done
 }
 
 board_view() {
-    local board=$1 f n body
+    local board=$1 f n body choice reply
     local -a files=()
     while true; do
         clear
+        top_bar "[Q] Back"
         echo "== $board =="
         files=()
         for f in "$BBS_ROOT"/boards/"$board"/*.msg; do
@@ -84,6 +108,7 @@ board_view() {
         done
         echo "N) New post   Q) Back"
         read -r -p "> " choice || return
+        nav_key "$choice" && return
         case $choice in
             [Qq]) return ;;
             [Nn]) compose "$board" ""; continue ;;
@@ -95,6 +120,7 @@ board_view() {
         head -c 16384 "$f" | safe
         echo
         read -r -p "R) Reply   [Enter] Back: " reply || return
+        nav_key "$reply" && return
         if [[ $reply == [Rr] ]]; then
             thread=$(sed -n 's/^Msgid: //p' "$f" | head -n 1 | safe)
             compose "$board" "$thread"
@@ -134,9 +160,11 @@ mail_menu() {
     local choice
     while true; do
         clear
+        top_bar "[Q] Back"
         echo "== Private messages =="
         echo "1) Inbox   2) Write   Q) Back"
         read -r -p "> " choice || return
+        nav_key "$choice" && return
         case $choice in
             1) mail_inbox ;;
             2) mail_write ;;
@@ -196,21 +224,41 @@ mail_write() {
 
 # ---- Main menu --------------------------------------------------------------
 
+main_menu() {
+    local choice
+    while true; do
+        clear
+        top_bar "[Q] Disconnect"
+        echo "== BashBBS =="
+        echo "1) Public boards"
+        echo "2) Private messages"
+        echo "3) Users"
+        echo "4) My account"
+        read -r -p "> " choice || { nav_req=quit; return; }
+        nav_key "$choice" && return
+        case $choice in
+            1) nav_req=boards; return ;;
+            2) nav_req=mail; return ;;
+            3) clear; list_users; pause ;;
+            4) clear; my_account; pause ;;
+            [Qq]) nav_req=quit; return ;;
+        esac
+    done
+}
+
+# ---- Start ------------------------------------------------------------------
+
+# A section that returns without a nav request (Q) goes back to the main menu.
+nav_req=main
 while true; do
-    clear
-    echo "== BashBBS =="
-    echo "1) Public boards"
-    echo "2) Private messages"
-    echo "3) Users"
-    echo "4) My account"
-    echo "Q) Disconnect"
-    read -r -p "> " choice || break
-    case $choice in
-        1) board_menu ;;
-        2) mail_menu ;;
-        3) clear; list_users; pause ;;
-        4) clear; my_account; pause ;;
-        [Qq]) break ;;
+    section=$nav_req
+    nav_req=
+    case $section in
+        quit) break ;;
+        main) main_menu ;;
+        boards) board_menu ;;
+        mail) mail_menu ;;
     esac
+    [[ -n $nav_req ]] || nav_req=main
 done
 echo "Bye."
