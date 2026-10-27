@@ -1,0 +1,70 @@
+#!/bin/bash
+# Root-run every 5 minutes (bbs-drop.timer). Two jobs:
+#  1. Post .txt files dropped in drop/news as news. The file name gives the
+#     category and a slug: tech-some-title.txt. The first line is the title,
+#     then a blank line, then the body. The post is queued as bbs-news, so the
+#     publisher checks it like any other news post. Files that do not fit the
+#     format are moved to drop/rejected.
+#  2. Delete news posts older than KEEP_DAYS.
+set -uo pipefail
+umask 022
+
+BBS_ROOT=/srv/bashbbs
+DROP=$BBS_ROOT/drop/news
+REJECTED=$BBS_ROOT/drop/rejected
+INCOMING=$BBS_ROOT/queue/incoming
+NEWS=$BBS_ROOT/boards/news
+KEEP_DAYS=14
+MAX_BYTES=16384
+CATEGORIES="tech"   # add culture etc. here when they exist
+
+reject() { # reject <file>
+    mkdir -p "$REJECTED"
+    mv -f "$1" "$REJECTED/" || true
+    echo "rejected drop: $1" >&2
+}
+
+post_drop() { # post_drop <file>
+    local f=$1 base cat slug size title tmp
+    base=$(basename "$f")
+    [[ $base =~ ^([a-z]+)-([a-z0-9-]{1,60})\.txt$ ]] || return 1
+    cat=${BASH_REMATCH[1]}
+    slug=${BASH_REMATCH[2]}
+    [[ " $CATEGORIES " == *" $cat "* ]] || return 1
+    size=$(stat -c %s "$f")
+    (( size > 0 && size <= MAX_BYTES )) || return 1
+    title=$(head -n 1 "$f" | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g' | head -c 100)
+    [[ -n $title ]] || return 1
+
+    # The file owner becomes the post author, so the file is handed to bbs-news.
+    tmp=$(mktemp "$INCOMING/.tmp.XXXXXX") || return 1
+    {
+        printf 'Board: news\n'
+        printf 'Subject: [%s] %s\n\n' "${cat^^}" "$title"
+        tail -n +2 "$f" | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'
+    } > "$tmp"
+    chown bbs-news "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$INCOMING/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
+    rm -f "$f"
+    echo "queued drop: $slug"
+}
+
+expire_news() {
+    local f base epoch cutoff
+    cutoff=$(( $(date +%s) - KEEP_DAYS * 86400 ))
+    for f in "$NEWS"/*.msg; do
+        [[ -f $f && ! -L $f ]] || continue
+        # Publisher file names start with the epoch time: <epoch>-<uuid>.msg
+        base=$(basename "$f")
+        epoch=${base%%-*}
+        [[ $epoch =~ ^[0-9]+$ ]] || continue
+        (( epoch < cutoff )) && rm -f "$f"
+    done
+}
+
+for f in "$DROP"/*.txt; do
+    [[ -f $f && ! -L $f ]] || continue
+    post_drop "$f" || reject "$f"
+done
+
+expire_news

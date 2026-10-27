@@ -1,0 +1,6 @@
+[Unit]
+Description=BashBBS drop folder and news expiry
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbs-drop

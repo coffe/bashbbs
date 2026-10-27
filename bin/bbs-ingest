@@ -1,0 +1,14 @@
+#!/bin/bash
+# Queue one post read from stdin. This is the ForceCommand of the bbs-news
+# account only (see etc/sshd-bashbbs.conf). The post is checked by bbs-publish
+# like any other, and the file owner (bbs-news) becomes the author.
+set -euo pipefail
+umask 077
+
+INCOMING=/srv/bashbbs/queue/incoming
+[[ $(id -un) == bbs-news ]] || { echo "not allowed" >&2; exit 1; }
+
+tmp=$(mktemp "$INCOMING/.tmp.XXXXXX")
+head -c 16384 > "$tmp"
+mv -f "$tmp" "$INCOMING/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
+echo "queued"
