@@ -1,0 +1,4 @@
+#!/bin/bash
+# Login shell and ForceCommand target for bbs-<name> accounts.
+# Ignores any command sshd passes in, so only the menu can run.
+exec /usr/local/lib/bashbbs/menu.sh

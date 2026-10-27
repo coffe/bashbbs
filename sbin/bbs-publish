@@ -1,0 +1,50 @@
+#!/bin/bash
+# Root-run publisher: moves queued posts into boards/ after checking them.
+# The author comes from the file owner, never from the post text.
+set -euo pipefail
+umask 022
+
+BBS_ROOT=/srv/bashbbs
+INCOMING=$BBS_ROOT/queue/incoming
+MAX_BYTES=16384
+
+host=$(cat /etc/hostname)
+
+for f in "$INCOMING"/*.post; do
+    [[ -f $f && ! -L $f ]] || continue
+    owner=$(stat -c %U "$f")
+    [[ $owner =~ ^bbs-[a-z][a-z0-9]{2,15}$ ]] || { rm -f "$f"; continue; }
+    [[ $(stat -c %s "$f") -le $MAX_BYTES ]] || { rm -f "$f"; continue; }
+
+    board=$(sed -n 's/^Board: //p' "$f" | head -n 1)
+    subject=$(sed -n 's/^Subject: //p' "$f" | head -n 1 | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g' | head -c 100)
+    parent=$(sed -n 's/^Parent: //p' "$f" | head -n 1)
+
+    # Board names come from a fixed list, never from user input as a path.
+    [[ $board =~ ^[a-z0-9_-]{1,32}$ && -d $BBS_ROOT/boards/$board && ! -L $BBS_ROOT/boards/$board ]] \
+        || { rm -f "$f"; continue; }
+    [[ -n $subject ]] || { rm -f "$f"; continue; }
+    if [[ -n $parent && ! $parent =~ ^[0-9a-f-]{36}$ ]]; then
+        rm -f "$f"; continue
+    fi
+
+    msgid=$(cat /proc/sys/kernel/random/uuid)
+    stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    out=$BBS_ROOT/boards/$board/$(date +%s)-$msgid.msg
+    tmp=$BBS_ROOT/boards/$board/.tmp.$msgid
+
+    # Body is everything after the first blank line.
+    {
+        printf 'Msgid: %s\n' "$msgid"
+        printf 'Author: %s\n' "${owner#bbs-}"
+        printf 'Node: %s\n' "$host"
+        printf 'Date: %s\n' "$stamp"
+        printf 'Subject: %s\n' "$subject"
+        [[ -n $parent ]] && printf 'Parent: %s\n' "$parent"
+        printf '\n'
+        awk 'found { print } /^$/ && !found { found = 1 }' "$f" | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'
+    } > "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$out"
+    rm -f "$f"
+done

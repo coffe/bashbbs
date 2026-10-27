@@ -1,0 +1,6 @@
+[Unit]
+Description=BashBBS publisher (moves queued posts into boards)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbs-publish

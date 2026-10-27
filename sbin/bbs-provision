@@ -1,0 +1,49 @@
+#!/bin/bash
+# Create a BashBBS account. Run as root by the sysop, never by the web form.
+# Usage: bbs-provision <name> <public-key-file>
+set -euo pipefail
+umask 077
+
+BBS_ROOT=/srv/bashbbs
+name=${1:-}
+keyfile=${2:-}
+
+[[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
+[[ $name =~ ^[a-z][a-z0-9]{2,15}$ ]] || { echo "invalid name" >&2; exit 1; }
+[[ -f $keyfile && ! -L $keyfile ]] || { echo "key file missing" >&2; exit 1; }
+[[ $(stat -c %s "$keyfile") -lt 4096 ]] || { echo "key file too large" >&2; exit 1; }
+[[ $(grep -c . "$keyfile") -eq 1 ]] || { echo "exactly one key line required" >&2; exit 1; }
+
+# Accept only plain public keys: no options, no private key material.
+read -r keytype keyb64 _ < "$keyfile"
+case $keytype in
+    ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com) ;;
+    *) echo "unsupported key type" >&2; exit 1 ;;
+esac
+[[ $keyb64 =~ ^[A-Za-z0-9+/=]+$ ]] || { echo "malformed key" >&2; exit 1; }
+# Strip the comment field; only type and body are stored.
+key_line="$keytype $keyb64"
+
+account="bbs-$name"
+id "$account" &>/dev/null && { echo "account exists" >&2; exit 1; }
+# UUIDs are never reused, so a retired name stays blocked.
+[[ ! -e $BBS_ROOT/users/$name ]] || { echo "name was used before" >&2; exit 1; }
+
+uuid=$(cat /proc/sys/kernel/random/uuid)
+home=$BBS_ROOT/home/$name
+
+useradd --home-dir "$home" --no-create-home --shell /usr/local/sbin/bbs-shell --user-group "$account"
+install -d -m 0700 -o "$account" -g "$account" "$home"
+
+install -d -m 0755 "$BBS_ROOT/keys" "$BBS_ROOT/users/$name"
+printf '%s\n' "$key_line" > "$BBS_ROOT/keys/$account"
+chmod 0644 "$BBS_ROOT/keys/$account"
+
+cat > "$BBS_ROOT/users/$name/profile" <<PROFILE
+name=$name
+uuid=$uuid
+created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+PROFILE
+chmod 0644 "$BBS_ROOT/users/$name/profile"
+
+echo "created $account uuid=$uuid"
