@@ -1,0 +1,55 @@
+# Logout art for BashBBS. Plain ASCII, 76 columns at most.
+# Each piece starts with a "== name" line. Keep one blank line between pieces.
+
+== coffee
+        ) )
+       ( (
+     .-----.
+     |     |]
+     |     |
+     '-----'
+   Thanks for calling.
+
+== no-carrier
+   +++ ATH0
+   OK
+   NO CARRIER
+
+== bunny
+  (\_/)
+  ( '.' )
+  (")_(")
+   Hop back soon.
+
+== sleepy-cat
+   /\_/\      z Z
+  ( -.- )  z
+   > ^ <
+
+== penguin
+      .--.
+     |o_o |
+     |:_/ |
+    //   \ \
+   (|     | )
+  /'\_   _/`\
+  \___)=(___/
+
+== heart
+   .:::.   .:::.
+  :::::::.:::::::
+  :::::::::::::::
+   ':::::::::::'
+     ':::::::'
+       ':::'
+        ':'
+   <3 from BashBBS
+
+== tiny-bee
+      \     /
+     .-"""""-.
+    /  o   o  \
+    |    ^    |
+     \  '-'  /
+      '-----'
+   Buzz off, see you.

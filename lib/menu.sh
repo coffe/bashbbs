@@ -309,11 +309,25 @@ goodbye() {
     |  BashBBS  |
     |  bye bye  |
     '-----------'
-        /\_/\
-       ( o.o )
-        > ^ <
+EOF
+    # Picked at random per logout. Same art as sleepy-cat and bunny in lib/goodbye-art.txt.
+    case $(( RANDOM % 2 )) in
+        0) cat <<'EOF'
+   /\_/\      z Z
+  ( -.- )  z
+   > ^ <
 
 EOF
+        ;;
+        1) cat <<'EOF'
+  (\_/)
+  ( '.' )
+  (")_(")
+   Hop back soon.
+
+EOF
+        ;;
+    esac
     echo "Bye."
 }
 
