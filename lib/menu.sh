@@ -310,24 +310,12 @@ goodbye() {
     |  bye bye  |
     '-----------'
 EOF
-    # Picked at random per logout. Same art as sleepy-cat and bunny in lib/goodbye-art.txt.
-    case $(( RANDOM % 2 )) in
-        0) cat <<'EOF'
-   /\_/\      z Z
-  ( -.- )  z
-   > ^ <
+    cat <<'EOF'
+        /\_/\
+       ( o.o )
+        > ^ <
 
 EOF
-        ;;
-        1) cat <<'EOF'
-  (\_/)
-  ( '.' )
-  (")_(")
-   Hop back soon.
-
-EOF
-        ;;
-    esac
     echo "Bye."
 }
 
