@@ -45,7 +45,7 @@ my_account() {
 nav_req=
 
 top_bar() {
-    echo "[B] Boards  [P] Mail  [M] Main  $1"
+    echo "[B] Boards  [P] Mail  [M] Main  [G] Goodbye  $1"
     echo
 }
 
@@ -54,6 +54,7 @@ nav_key() {
         [Bb]) nav_req=boards ;;
         [Pp]) nav_req=mail ;;
         [Mm]) nav_req=main ;;
+        [Gg]) nav_req=quit ;;
         *) return 1 ;;
     esac
 }
@@ -297,6 +298,21 @@ main_menu() {
     done
 }
 
+# Shown on logout. Plain ASCII only, so it works on any terminal.
+goodbye() {
+    cat <<'EOF'
+    .-----------.
+    |  BashBBS  |
+    |  bye bye  |
+    '-----------'
+        /\_/\
+       ( o.o )
+        > ^ <
+
+EOF
+    echo "Bye."
+}
+
 # ---- Start ------------------------------------------------------------------
 
 # A section that returns without a nav request (Q) goes back to the main menu.
@@ -312,4 +328,4 @@ while true; do
     esac
     [[ -n $nav_req ]] || nav_req=main
 done
-echo "Bye."
+goodbye
