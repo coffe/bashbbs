@@ -61,8 +61,10 @@ if command -v lighttpd >/dev/null; then
     install -m 0644 "$src/systemd/lighttpd.service.d/bashbbs.conf" /etc/systemd/system/lighttpd.service.d/bashbbs.conf
     systemctl daemon-reload
     lighttpd -tf /etc/lighttpd/bashbbs.conf
-    systemctl enable --now lighttpd
-    systemctl reload lighttpd || systemctl restart lighttpd
+    systemctl enable lighttpd
+    # Restart, not reload: on a fresh install the stock unit may already run, and
+    # a reload keeps the old ExecStart (stock config) instead of the drop-in.
+    systemctl restart lighttpd
 else
     echo "lighttpd not installed: web part skipped"
 fi
