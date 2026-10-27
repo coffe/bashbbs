@@ -68,7 +68,9 @@ board_menu() {
         echo "== Public boards =="
         boards=()
         for b in "$BBS_ROOT"/boards/*/; do
-            [[ -d $b && ! -L ${b%/} ]] || continue
+            b=${b%/}
+            # Private boards stay hidden from users who are not members.
+            [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
             boards+=("$(basename "$b")")
         done
         local i=1
@@ -76,11 +78,12 @@ board_menu() {
             echo "$i) $b"
             i=$((i + 1))
         done
-        echo "Q) Back"
+        echo "K) New private board   Q) Back"
         read -r -p "> " choice || return
         nav_key "$choice" && return
         case $choice in
             [Qq]) return ;;
+            [Kk]) new_private_board; continue ;;
             ''|*[!0-9]*) continue ;;
         esac
         (( choice >= 1 && choice <= ${#boards[@]} )) || continue
@@ -106,12 +109,17 @@ board_view() {
             printf '%3d) %s\n' "$i" "$(sed -n 's/^Subject: //p' "$f" | head -n 1 | safe)"
             i=$((i + 1))
         done
-        echo "N) New post   Q) Back"
+        if manages "$board"; then
+            echo "N) New post   S) Members   Q) Back"
+        else
+            echo "N) New post   Q) Back"
+        fi
         read -r -p "> " choice || return
         nav_key "$choice" && return
         case $choice in
             [Qq]) return ;;
             [Nn]) compose "$board" ""; continue ;;
+            [Ss]) manages "$board" && members_menu "$board"; continue ;;
             ''|*[!0-9]*) continue ;;
         esac
         (( choice >= 1 && choice <= ${#files[@]} )) || continue
@@ -151,6 +159,49 @@ compose() {
     } > "$tmp"
     mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
     echo "Sent to the publisher. It appears within a minute."
+    pause
+}
+
+# ---- Stage C: private boards ------------------------------------------------
+
+is_sysop() { grep -qx -- "$me" "$BBS_ROOT/sysops" 2>/dev/null; }
+
+# True for the owner or a sysop of a private board. Public boards have no meta file.
+manages() {
+    [[ -f $BBS_ROOT/meta/$1.meta ]] || return 1
+    [[ $(sed -n 's/^owner=//p' "$BBS_ROOT/meta/$1.meta") == "$me" ]] || is_sysop
+}
+
+# Requests go through the queue. The publisher runs as root and does the work.
+queue_request() {
+    local tmp
+    tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX") || return
+    cat > "$tmp"
+    mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).req"
+}
+
+new_private_board() {
+    local name
+    read -r -p "Name (a-z, 0-9, - and _; 2-24 chars): " name || return
+    [[ $name =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]] || { echo "bad name"; pause; return; }
+    printf 'Action: create-board\nBoard: %s\n' "$name" | queue_request
+    echo "Sent. The board appears within a minute. Log in again to see it."
+    pause
+}
+
+members_menu() {
+    local board=$1 choice action user
+    echo "Members: $(getent group "bbsb-$board" | cut -d: -f4 | sed 's/bbs-//g; s/,/ /g')"
+    read -r -p "[a] Add  [r] Remove  [Enter] Back: " choice || return
+    case $choice in
+        a) action=invite ;;
+        r) action=remove ;;
+        *) return ;;
+    esac
+    read -r -p "User: " user || return
+    valid_user "$user" || { echo "unknown user"; pause; return; }
+    printf 'Action: %s\nBoard: %s\nUser: %s\n' "$action" "$board" "$user" | queue_request
+    echo "Sent. It applies within a minute. The user must log in again to see the board."
     pause
 }
 

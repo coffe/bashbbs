@@ -16,6 +16,11 @@ install -d -m 0755 /srv/bashbbs/boards/general
 install -d -m 0755 /srv/bashbbs/queue
 install -d -m 1733 /srv/bashbbs/queue/incoming
 
+# Private boards: one meta file per board (owner, created). Sysops are listed
+# one name per line, without the bbs- prefix, and are added to every private board.
+install -d -m 0755 /srv/bashbbs/meta
+[[ -e /srv/bashbbs/sysops ]] || install -m 0644 /dev/null /srv/bashbbs/sysops
+
 # sshd: append the Match block once. It must stay at the end of the file.
 if ! grep -q '^Match User bbs-' /etc/ssh/sshd_config; then
     cp -a /etc/ssh/sshd_config "/etc/ssh/sshd_config.pre-bashbbs.$(date +%Y%m%d)"
