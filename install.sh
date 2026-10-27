@@ -56,11 +56,25 @@ install -m 0755 "$src/web/apply.cgi" /var/www/bbs/apply.cgi
 if command -v lighttpd >/dev/null; then
     install -d -m 0755 /var/log/lighttpd
     install -m 0644 "$src/etc/lighttpd-bashbbs.conf" /etc/lighttpd/bashbbs.conf
+    # Drop-in: lighttpd's own unit starts the stock config, so override ExecStart.
+    install -d -m 0755 /etc/systemd/system/lighttpd.service.d
+    install -m 0644 "$src/systemd/lighttpd.service.d/bashbbs.conf" /etc/systemd/system/lighttpd.service.d/bashbbs.conf
+    systemctl daemon-reload
     lighttpd -tf /etc/lighttpd/bashbbs.conf
     systemctl enable --now lighttpd
     systemctl reload lighttpd || systemctl restart lighttpd
 else
     echo "lighttpd not installed: web part skipped"
+fi
+
+# fail2ban on sshd. The systemd backend needs python3-systemd on Debian.
+if command -v fail2ban-client >/dev/null; then
+    dpkg -s python3-systemd >/dev/null 2>&1 || apt-get install -y -q --no-install-recommends python3-systemd
+    install -m 0644 "$src/etc/fail2ban-jail.local" /etc/fail2ban/jail.local
+    systemctl enable --now fail2ban
+    systemctl restart fail2ban
+else
+    echo "fail2ban not installed: sshd jail skipped"
 fi
 
 # sshd: append the Match block once. It must stay at the end of the file.
