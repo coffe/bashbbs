@@ -110,7 +110,9 @@ board_view() {
             printf '%3d) %s\n' "$i" "$(sed -n 's/^Subject: //p' "$f" | head -n 1 | safe)"
             i=$((i + 1))
         done
-        if manages "$board"; then
+        if is_readonly "$board"; then
+            echo "Q) Back"
+        elif manages "$board"; then
             echo "N) New post   S) Members   Q) Back"
         else
             echo "N) New post   Q) Back"
@@ -119,7 +121,7 @@ board_view() {
         nav_key "$choice" && return
         case $choice in
             [Qq]) return ;;
-            [Nn]) compose "$board" ""; continue ;;
+            [Nn]) is_readonly "$board" || compose "$board" ""; continue ;;
             [Ss]) manages "$board" && members_menu "$board"; continue ;;
             ''|*[!0-9]*) continue ;;
         esac
@@ -130,7 +132,7 @@ board_view() {
         echo
         read -r -p "R) Reply   [Enter] Back: " reply || return
         nav_key "$reply" && return
-        if [[ $reply == [Rr] ]]; then
+        if [[ $reply == [Rr] ]] && ! is_readonly "$board"; then
             thread=$(sed -n 's/^Msgid: //p' "$f" | head -n 1 | safe)
             compose "$board" "$thread"
         fi
@@ -172,6 +174,9 @@ manages() {
     [[ -f $BBS_ROOT/meta/$1.meta ]] || return 1
     [[ $(sed -n 's/^owner=//p' "$BBS_ROOT/meta/$1.meta") == "$me" ]] || is_sysop
 }
+
+# A read-only board has a .readonly marker in meta/. Only the news account posts there.
+is_readonly() { [[ -f $BBS_ROOT/meta/$1.readonly ]]; }
 
 # Requests go through the queue. The publisher runs as root and does the work.
 queue_request() {
@@ -280,7 +285,7 @@ main_menu() {
     local choice
     while true; do
         clear
-        top_bar "[Q] Disconnect"
+        top_bar ""
         echo "== BashBBS =="
         echo "1) Public boards"
         echo "2) Private messages"
@@ -293,7 +298,6 @@ main_menu() {
             2) nav_req=mail; return ;;
             3) clear; list_users; pause ;;
             4) clear; my_account; pause ;;
-            [Qq]) nav_req=quit; return ;;
         esac
     done
 }

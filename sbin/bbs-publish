@@ -93,6 +93,8 @@ handle_post() { # handle_post <file> <owner account>
     if is_private "$board"; then
         in_group "$owner" "bbsb-$board" || return 1
     fi
+    # A read-only board (the news board) takes posts only from the news account.
+    if [[ -f $META/$board.readonly && $owner != bbs-news ]]; then return 1; fi
 
     msgid=$(cat /proc/sys/kernel/random/uuid)
     stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
