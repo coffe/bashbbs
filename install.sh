@@ -11,6 +11,7 @@ install -m 0755 "$src/sbin/bbs-provision" /usr/local/sbin/bbs-provision
 install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
 install -m 0755 "$src/bin/bbs-ingest" /usr/local/sbin/bbs-ingest
 install -m 0755 "$src/sbin/bbs-drop" /usr/local/sbin/bbs-drop
+install -m 0755 "$src/sbin/bbs-approve" /usr/local/sbin/bbs-approve
 
 # Data layout. Users never write into boards/ or keys/ directly.
 install -d -m 0755 /srv/bashbbs /srv/bashbbs/home /srv/bashbbs/keys /srv/bashbbs/users
@@ -39,6 +40,28 @@ for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer; 
 done
 systemctl daemon-reload
 systemctl enable --now bbs-publish.timer bbs-drop.timer
+
+# Application form. www-data writes new applications into incoming/ (write only,
+# no listing). The sysop moves them to done/ or rejected/ with bbs-approve.
+getent group www-data >/dev/null || { echo "www-data missing" >&2; exit 1; }
+install -d -m 0300 -o www-data -g www-data /srv/bashbbs/applications/incoming
+install -d -m 0700 -o root -g root /srv/bashbbs/applications/done
+install -d -m 0700 -o root -g root /srv/bashbbs/applications/rejected
+
+# Web front page and CGI, served by lighttpd only if it is installed.
+# Config is a separate file, so the stock /etc/lighttpd/lighttpd.conf is left alone.
+install -d -m 0755 /var/www/bbs
+install -m 0644 "$src/web/index.html" /var/www/bbs/index.html
+install -m 0755 "$src/web/apply.cgi" /var/www/bbs/apply.cgi
+if command -v lighttpd >/dev/null; then
+    install -d -m 0755 /var/log/lighttpd
+    install -m 0644 "$src/etc/lighttpd-bashbbs.conf" /etc/lighttpd/bashbbs.conf
+    lighttpd -tf /etc/lighttpd/bashbbs.conf
+    systemctl enable --now lighttpd
+    systemctl reload lighttpd || systemctl restart lighttpd
+else
+    echo "lighttpd not installed: web part skipped"
+fi
 
 # sshd: append the Match block once. It must stay at the end of the file.
 if ! grep -q '^Match User bbs-' /etc/ssh/sshd_config; then

@@ -1,0 +1,46 @@
+#!/bin/bash
+# Sysop tool for BashBBS applications. Run as root on the Pi.
+#   bbs-approve list             show applications waiting for review
+#   bbs-approve accept <file>    create the account and move the file to done/
+#   bbs-approve reject <file>    move the file to rejected/
+set -euo pipefail
+umask 077
+
+[[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
+APP=/srv/bashbbs/applications
+cmd=${1:-list}
+
+case $cmd in
+    list)
+        shopt -s nullglob
+        for f in "$APP"/incoming/*.app; do
+            printf '%s  %s  %s\n' "$(basename "$f")" \
+                "$(sed -n 's/^name=//p' "$f")" "$(sed -n 's/^note=//p' "$f")"
+        done
+        ;;
+    accept|reject)
+        file=${2:-}
+        [[ $file =~ ^[0-9]+-[0-9a-f-]{36}\.app$ ]] || { echo "bad file name" >&2; exit 1; }
+        src="$APP/incoming/$file"
+        [[ -f $src && ! -L $src ]] || { echo "no such application" >&2; exit 1; }
+
+        if [[ $cmd == reject ]]; then
+            mv -f "$src" "$APP/rejected/"
+            echo "rejected $file"
+            exit 0
+        fi
+
+        name=$(sed -n 's/^name=//p' "$src")
+        key=$(sed -n 's/^key=//p' "$src")
+        tmpd=$(mktemp -d)
+        trap 'rm -rf "$tmpd"' EXIT
+        printf '%s\n' "$key" > "$tmpd/key.pub"
+        # bbs-provision checks the name and the key again before it creates anything.
+        /usr/local/sbin/bbs-provision "$name" "$tmpd/key.pub"
+        mv -f "$src" "$APP/done/"
+        ;;
+    *)
+        echo "usage: bbs-approve list | accept <file> | reject <file>" >&2
+        exit 1
+        ;;
+esac
