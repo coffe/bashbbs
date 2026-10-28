@@ -1,0 +1,81 @@
+#!/bin/bash
+# Root-run by hand, or from cron once it is approved (not activated here).
+# Retention for history versions and admin backups: 30 days from the time in
+# the file name, not from mtime.
+#   state/history/<board>/<msgid>/<n>-<tid>.msg   age from <tid>
+#   state/admin-backup/<tid>-<board>-<msgid>.msg  age from <tid>
+# Default is --dry-run: only list the candidates. With --apply, each candidate
+# is moved with mv to state/expired/<stamp>/ keeping its relative path. Nothing
+# is deleted. Only regular *.msg files in those two trees are looked at.
+# Nothing outside state/history and state/admin-backup is read or moved, and
+# boards/, drop/ and queue/ are never touched. BBS_ROOT and BBS_NOW (epoch)
+# can be set for tests.
+set -uo pipefail
+umask 077
+export LC_ALL=C.UTF-8
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+STATE=$BBS_ROOT/state
+HISTORY=$STATE/history
+ADMIN_BACKUP=$STATE/admin-backup
+EXPIRED=$STATE/expired
+KEEP_DAYS=30
+NOW=${BBS_NOW:-$(date +%s)}
+CUTOFF=$(( NOW - KEEP_DAYS * 86400 ))
+
+mode=dry-run
+case ${1:-} in
+    '' | --dry-run) ;;
+    --apply) mode=apply ;;
+    -h | --help)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+    *) echo "usage: bbs-history-expire [--dry-run|--apply]" >&2; exit 2 ;;
+esac
+
+# Print the epoch from the file name, or nothing if the name does not fit.
+epoch_of() { # epoch_of <path> <history|admin>
+    local base=${1##*/}
+    case $2 in
+        history) [[ $base =~ ^[0-9]+-([0-9]+)\.msg$ ]] && printf '%s' "${BASH_REMATCH[1]}" ;;
+        admin) [[ $base =~ ^([0-9]+)-.+\.msg$ ]] && printf '%s' "${BASH_REMATCH[1]}" ;;
+    esac
+}
+
+candidates=() kept=0 skipped=0
+scan() { # scan <root dir> <kind> <find depth args...>
+    local root=$1 kind=$2 f t
+    shift 2
+    [[ -d $root ]] || return 0
+    while IFS= read -r -d '' f; do
+        t=$(epoch_of "$f" "$kind")
+        if [[ -z $t ]]; then
+            skipped=$(( skipped + 1 ))
+            echo "skip (name does not fit): ${f#"$BBS_ROOT"/}"
+        elif (( t < CUTOFF )); then
+            candidates+=("$f")
+        else
+            kept=$(( kept + 1 ))
+        fi
+    done < <(find "$root" "$@" -type f -name '*.msg' -print0)
+}
+
+scan "$HISTORY" history -mindepth 3 -maxdepth 3
+scan "$ADMIN_BACKUP" admin -mindepth 1 -maxdepth 1
+
+if [[ $mode == apply && ${#candidates[@]} -gt 0 ]]; then
+    dest=$EXPIRED/$(date +%s)
+    mkdir -p "$dest" || { echo "cannot create $dest" >&2; exit 1; }
+fi
+
+for f in "${candidates[@]}"; do
+    rel=${f#"$BBS_ROOT"/state/}
+    if [[ $mode == apply ]]; then
+        mkdir -p "$dest/${rel%/*}" && mv -n -- "$f" "$dest/$rel" || { echo "failed: $rel" >&2; exit 1; }
+        echo "moved: $rel"
+    else
+        echo "expire: $rel"
+    fi
+done
+
+echo "mode=$mode cutoff=$(date -u -d "@$CUTOFF" +%Y-%m-%dT%H:%M:%SZ) candidates=${#candidates[@]} kept=$kept skipped=$skipped"
