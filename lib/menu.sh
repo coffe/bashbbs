@@ -56,10 +56,18 @@ my_account() {
 nav_req=
 
 # The [P] Mail label only fits from 50 columns. The key works at every width.
+# When the bar is wider than the terminal, Goodbye goes to a second line.
 top_bar() {
-    local mail=""
-    (( $(term_width) >= 50 )) && mail=" [P] Mail"
-    echo "[B] Boards [M] Main${mail} [W] Wall [G] Goodbye${1:+  $1}"
+    local mail="" cols line
+    cols=$(term_width)
+    (( cols >= 50 )) && mail=" [P] Mail"
+    line="[B] Boards [M] Main${mail} [W] Wall [G] Goodbye${1:+  $1}"
+    if (( ${#line} <= cols )); then
+        echo "$line"
+    else
+        echo "[B] Boards [M] Main${mail} [W] Wall"
+        echo "[G] Goodbye${1:+  $1}"
+    fi
     echo
 }
 

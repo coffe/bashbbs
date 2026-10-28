@@ -57,6 +57,10 @@ reset; printf 'bob\nHej\nText\n.\nn\n\n' | run_as alice mail_write >>"$log" 2>&1
 check "confirm: n sends nothing" eq "$(delivered)" 0
 reset; printf 'bob\nHej\nText\n.\n\n\n' | run_as alice mail_write >>"$log" 2>&1
 check "confirm: empty answer sends nothing" eq "$(delivered)" 0
+reset; printf '\n\n\n' | run_as alice mail_write >>"$log" 2>&1
+check "confirm: leftover Enter at To, Subject and Body sends nothing" eq "$(delivered)" 0
+reset; printf 'bob\nHej\ny\n.\n' | run_as alice mail_write >>"$log" 2>&1
+check "confirm: a y inside the body does not confirm" eq "$(delivered)" 0
 reset; printf 'bob\nHej\nText\n/cancel\n' | run_as alice mail_write >>"$log" 2>&1
 check "cancel: /cancel in the body sends nothing" eq "$(delivered)" 0
 reset; printf '/cancel\n' | run_as alice mail_write >>"$log" 2>&1
@@ -132,6 +136,14 @@ done
 wait
 check "parallel: 20 sends give 20 delivered messages" eq "$(delivered)" 20
 check "parallel: 20 sends give 20 Sent copies" eq "$(sent)" 20
+
+# --- 8. Top bar: all five keys, no line wider than the terminal -------------
+for w in 40 60 80; do
+    ( export BBS_ROOT="$root" USER=bbs-alice BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb
+      source "$here/lib/menu.sh"; term_width() { echo "$w"; }; top_bar "[Q] Back" ) > "$root/bar-$w.txt" 2>>"$log"
+    check "top bar $w: no line wider than $w" awk -v w="$w" 'length($0) > w { exit 1 }' "$root/bar-$w.txt"
+    check "top bar $w: keys B, G, M, Q, W present" eq "$(grep -o '\[[BGMQW]\]' "$root/bar-$w.txt" | sort | tr -d '\n')" "[B][G][M][Q][W]"
+done
 
 echo "pm_security_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]
