@@ -3,7 +3,9 @@
 An SSH bulletin board for a Raspberry Pi Zero W. Users log in over SSH and get a
 Bash menu with news sections, public boards, a one-line Wall, and private
 messages. Each login is a real Unix account, and the menu runs as a restricted
-shell. Mail is delivered to local Maildir folders through Postfix.
+shell. Private messages go through the local sendmail (Postfix) to Maildir
+folders on this host only. "Queued for delivery." means Postfix accepted the
+message, not that it arrived.
 
 The board itself runs on the Pi. The daily news selection is made by a separate
 producer on another host, which pushes it to the Pi over SSH. The producer lives
@@ -58,7 +60,8 @@ Before you run it, read these gotchas:
   `/etc/ssh/sshd_config.pre-bashbbs.<date>` first.
 - **fail2ban needs `python3-systemd`** on Debian, because the jail uses the
   systemd backend. The jail matches `ssh.service`, not `sshd.service`.
-- **Not set up by the installer:** Postfix and Maildir delivery, the `bbs-news`
+- **Not set up by the installer:** Postfix (the installer only warns when
+  `home_mailbox` or sendmail is wrong), the `bbs-news`
   account and its SSH key, and the port forward (the public SSH port is 6464 on
   the router, forwarded to port 22 on the Pi). Set these up by hand.
 - **Only the core parts are installed.** News timers and the status channel are
@@ -83,7 +86,7 @@ session scratchpad). Set `SCRATCH` to choose another location. The `stage-*` and
 |---|---|---|
 | `BBS_ROOT` | `/srv/bashbbs` | Root of all runtime data. Tests point this at a temp tree. |
 | `BBS_LOCK_WAIT` | `20` | Seconds to wait for a lock before giving up. |
-| `BBS_SENDMAIL` | system `sendmail` | Mail command used for notifications. |
+| `BBS_SENDMAIL` | system `sendmail` | Sendmail for private messages. Used only when `BASHBBS_TEST=1`. |
 | `BBS_NOW` | current time | Fixed epoch time, for tests. |
 | `BBS_COLS`, `BBS_ROWS` | terminal size | Terminal size, used for wrapping and Wall layout. |
 | `BASHBBS_TEST=1` | unset | Enables test-only hooks. |

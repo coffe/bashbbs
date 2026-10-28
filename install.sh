@@ -111,4 +111,15 @@ if ! grep -q '^Match User bbs-' /etc/ssh/sshd_config; then
 fi
 sshd -t
 systemctl reload ssh
+
+# Private messages need local Postfix delivery into Maildir. Warn only: this never edits /etc/postfix.
+if command -v postconf >/dev/null; then
+    [[ $(postconf -h home_mailbox 2>/dev/null) == Maildir/ ]] ||
+        echo "WARNING: Postfix home_mailbox is not Maildir/. Private messages will not arrive. Fix: postconf -e 'home_mailbox = Maildir/'" >&2
+    postconf -h mydestination 2>/dev/null | grep -q 'myhostname' ||
+        echo "WARNING: Postfix mydestination does not include \$myhostname. Check it before using private messages." >&2
+else
+    echo "WARNING: Postfix not installed. Private messages cannot be delivered." >&2
+fi
+[[ -x /usr/sbin/sendmail ]] || echo "WARNING: /usr/sbin/sendmail not found. Private messages cannot be sent." >&2
 echo "installed"
