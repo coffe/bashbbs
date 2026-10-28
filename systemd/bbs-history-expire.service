@@ -1,0 +1,6 @@
+[Unit]
+Description=BashBBS history and admin-backup retention (30 days, moves to state/expired)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbs-history-expire --apply

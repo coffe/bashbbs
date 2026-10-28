@@ -19,6 +19,7 @@ install -m 0755 "$src/sbin/bbs-drop" /usr/local/sbin/bbs-drop
 install -m 0755 "$src/sbin/bbs-approve" /usr/local/sbin/bbs-approve
 install -m 0755 "$src/bin/bbs-news-status" /usr/local/sbin/bbs-news-status
 install -m 0755 "$src/sbin/bbs-news-index" /usr/local/sbin/bbs-news-index
+install -m 0755 "$src/sbin/bbs-history-expire" /usr/local/sbin/bbs-history-expire
 install -m 0644 "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
 install -m 0755 "$src/lib/wrap.py" /usr/local/lib/bashbbs/wrap.py
 install -m 0755 "$src/lib/news.sh" /usr/local/lib/bashbbs/news.sh
@@ -57,12 +58,13 @@ getent group bbsdrop >/dev/null || groupadd bbsdrop
 install -d -m 2775 -o root -g bbsdrop /srv/bashbbs/drop/news
 install -d -m 0750 -o root -g root /srv/bashbbs/drop/rejected
 
-# Timers: the publisher every minute, the drop folder every 5 minutes.
-for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer; do
+# Timers: the publisher every minute, the drop folder every 5 minutes,
+# history retention daily at 04:10.
+for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer; do
     install -m 0644 "$src/systemd/$u" "/etc/systemd/system/$u"
 done
 systemctl daemon-reload
-systemctl enable --now bbs-publish.timer bbs-drop.timer
+systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer
 
 # Application form. www-data writes new applications into incoming/ (write only,
 # no listing). The sysop moves them to done/ or rejected/ with bbs-approve.
