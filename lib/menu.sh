@@ -742,12 +742,77 @@ EOF
     echo "Bye."
 }
 
+# ---- What's new: summary at login -------------------------------------------
+# The counts are new since the previous login. Nothing is marked as read.
+# The last login is kept in ~/.bashbbs-seen as login=<epoch>. Only counts are
+# shown, never subjects or names. News has its own menu and is not counted.
+
+# Public board posts newer than <since>. The file name starts with the publish epoch.
+new_board_posts() { # new_board_posts <since>
+    local since=$1 b f pre n=0
+    for b in "$BBS_ROOT"/boards/*/; do
+        b=${b%/}
+        [[ $(basename "$b") == news ]] && continue
+        # Same visibility rule as board_menu: private boards stay hidden.
+        [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
+        for f in "$b"/*.msg; do
+            [[ -f $f && ! -L $f ]] || continue
+            pre=$(basename "$f"); pre=${pre%%-*}
+            [[ $pre =~ ^[0-9]+$ ]] && (( 10#$pre > since )) && n=$((n + 1))
+        done
+    done
+    printf '%d' "$n"
+}
+
+# Wall greetings newer than <since>. The file name starts with date +%s%N.
+new_wall_greetings() { # new_wall_greetings <since>
+    local since=$1 f pre n=0
+    for f in "$BBS_ROOT"/wall/*.msg; do
+        [[ -f $f && ! -L $f ]] || continue
+        pre=$(basename "$f"); pre=${pre%%-*}
+        [[ $pre =~ ^[0-9]{10,}$ ]] && (( 10#${pre:0:10} > since )) && n=$((n + 1))
+    done
+    printf '%d' "$n"
+}
+
+# "1 new post" or "2 new posts".
+count_text() { # count_text <n> <singular> <plural>
+    if (( $1 == 1 )); then printf '%d %s' "$1" "$2"; else printf '%d %s' "$1" "$3"; fi
+}
+
+# First screen after login. Sets nav_req: [Enter] main menu, or a quick key.
+welcome_screen() {
+    local seen=$HOME/.bashbbs-seen prev="" choice
+    prev=$(sed -n 's/^login=//p' "$seen" 2>/dev/null | head -n 1)
+    [[ $prev =~ ^[0-9]+$ ]] || prev=""
+    printf 'login=%s\n' "$(date +%s)" > "$seen" 2>/dev/null || true
+    clear
+    top_bar ""
+    echo "== Welcome, $me =="
+    echo
+    if [[ -n $prev ]]; then
+        echo "Last login: $(local_time "@$prev")"
+        echo
+        echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
+        echo "  $(count_text "$(new_board_posts "$prev")" "new post" "new posts") on Public boards"
+        echo "  $(count_text "$(new_wall_greetings "$prev")" "new greeting" "new greetings") on the Wall"
+    else
+        echo "First visit. Welcome to BashBBS."
+        echo
+        echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
+    fi
+    echo
+    echo "[Enter] Main"
+    read -r -p "> " choice || { nav_req=quit; return; }
+    nav_key "$choice" || nav_req=main
+}
+
 # ---- Start ------------------------------------------------------------------
 
 # The tests source this file for its functions and skip the start loop.
 if [[ -z ${BASHBBS_TEST:-} ]]; then
+    welcome_screen
     # A section that returns without a nav request (Q) goes back to the main menu.
-    nav_req=main
     while true; do
         section=$nav_req
         nav_req=
