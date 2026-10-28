@@ -237,7 +237,7 @@ edit_post() { # edit_post <board> <file>
     [[ -n $new ]] && subject=$new
     read -r -p "[k]eep text   [n]ew text: " choice || return
     if [[ $choice == [Nn] ]]; then
-        echo "Write the new text. End with a line containing only a dot."
+        echo "Write text. End with a single dot (.)."
         body=$(read_body)
     else
         body=$(sed '1,/^$/d' "$f")
@@ -251,12 +251,12 @@ edit_post() { # edit_post <board> <file>
     pause
 }
 
-# Delete needs the word delete. A yes/no key is not enough.
+# Delete needs the word DELETE. A yes/no key is not enough.
 delete_post() { # delete_post <board> <file>
     local answer
     echo
-    read -r -p "Type delete to confirm, [Enter] cancels: " answer || return
-    [[ $answer == delete ]] || return
+    read -r -p "Type DELETE ([Enter] Back): " answer || return
+    [[ $answer == DELETE ]] || return
     printf 'Action: delete-post\nBoard: %s\nMsgid: %s\n\n' "$1" "$(post_hdr "$2" Msgid)" | queue_request
     echo "Sent. Appears within a minute."
     pause
@@ -280,7 +280,7 @@ compose() {
     read -r -p "Subject: " subject || return
     subject=$(printf '%s' "$subject" | safe | head -c 100)
     [[ -n $subject ]] || return
-    echo "Write your text. End with a line containing only a dot."
+    echo "Write text. End with a single dot (.)."
     tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX") || return
     {
         printf 'Board: %s\n' "$board"
@@ -320,7 +320,7 @@ new_private_board() {
     read -r -p "Name (a-z, 0-9, - and _; 2-24 chars): " name || return
     [[ $name =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]] || { echo "Bad name."; pause; return; }
     printf 'Action: create-board\nBoard: %s\n' "$name" | queue_request
-    echo "Sent. Appears within a minute. Log in again."
+    echo "Sent. Applies in a minute. Log in again."
     pause
 }
 
@@ -336,7 +336,7 @@ members_menu() {
     read -r -p "User: " user || return
     valid_user "$user" || { echo "Unknown user."; pause; return; }
     printf 'Action: %s\nBoard: %s\nUser: %s\n' "$action" "$board" "$user" | queue_request
-    echo "Sent. Applies within a minute. The user must log in again."
+    echo "Sent. Applies in a minute. Log in again."
     pause
 }
 
@@ -353,7 +353,8 @@ mail_menu() {
         clear
         top_bar "[Q] Back"
         echo "== Private messages =="
-        echo "1) Inbox   2) Write   3) Sent   4) Trash   Q) Back"
+        echo "1) Inbox   2) Write"
+        echo "3) Sent    4) Trash   Q) Back"
         read -r -p "> " choice || return
         nav_key "$choice" && return
         case $choice in
@@ -426,7 +427,7 @@ mail_body() {
         [[ $line == . ]] && break
         [[ $line == /cancel ]] && return 1
         total=$((total + ${#line} + 1))
-        if (( total > 8192 )); then echo "Text: at most 8 192 bytes." >&2; return 1; fi
+        if (( total > 8192 )); then echo "Text: at most 8192 bytes." >&2; return 1; fi
         printf '%s\n' "$line" | safe
     done
     return 0
@@ -467,7 +468,7 @@ mail_send() { # mail_send <name> <subject> [in-reply-to]
 # Write a new message, or a reply when called from mail_reply. /cancel stops at any prompt.
 mail_write() { # mail_write [name subject in-reply-to]
     local to=${1:-} subject=${2:-} reply=${3:-} line
-    if [[ -z $to ]]; then read -r -p "To (name, /cancel stops): " to || return; fi
+    if [[ -z $to ]]; then read -r -p "To (/cancel stops): " to || return; fi
     [[ $to == /cancel ]] && return
     resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
     read -r -p "Subject${subject:+ [$subject]} (/cancel stops): " line || return
@@ -475,7 +476,7 @@ mail_write() { # mail_write [name subject in-reply-to]
     [[ -n $line ]] && subject=$line
     subject=$(mail_subject "$subject") || { pause; return; }
     [[ -n $subject ]] || subject="(no subject)"
-    echo "Write the message. End with a line containing only a dot."
+    echo "Write text. End with a single dot (.)."
     mail_send "$to" "$subject" "$reply"
 }
 
@@ -515,7 +516,7 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
             printf '%3d) %s %s\n' "$i" "$mark" "$(post_hdr "$f" Subject)"
             i=$((i + 1))
         done
-        read -r -p "Number (Enter = back): " choice || return
+        read -r -p "Number ([Enter] Back): " choice || return
         nav_key "$choice" && return
         [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#files[@]} )) || return
         mail_open "$folder" "${files[choice - 1]}"
@@ -538,23 +539,27 @@ mail_open() { # mail_open <folder> <file>
 }
 
 # Commands under a message. Inbox: reply and delete. Sent: delete the own copy. Trash: none.
+# R is Reply and D is Delete, the same keys as on the boards.
 mail_actions() { # mail_actions <folder> <file>
     local folder=$1 f=$2 cmd cmds=""
     case $folder in
-        Inbox) cmds="S) Reply   R) Delete   " ;;
-        Sent) cmds="R) Delete   " ;;
+        Inbox) cmds="R) Reply   D) Delete   " ;;
+        Sent) cmds="D) Delete   " ;;
     esac
     read -r -p "${cmds}[Enter] Back: " cmd || return
     nav_key "$cmd" && return
     case $cmd in
-        [Ss]) [[ $cmds == *"S)"* ]] && mail_reply "$f" ;;
-        [Rr]) [[ $cmds == *"R)"* ]] && mail_delete "$f" ;;
+        [Rr]) [[ $cmds == *"R)"* ]] && mail_reply "$f" ;;
+        [Dd]) [[ $cmds == *"D)"* ]] && mail_delete "$f" ;;
     esac
 }
 
-# Move the own copy to Trash. Other copies are not touched.
+# Move the own copy to Trash. Other copies are not touched. Nothing is erased in 1.3.
 mail_delete() { # mail_delete <file>
-    local trash name
+    local trash name answer
+    echo
+    read -r -p "Move to Trash? [y/N]: " answer || answer=
+    if [[ $answer != [Yy] ]]; then echo "Not moved."; pause; return; fi
     trash=$(mail_dir Trash)
     name=$(mail_cur_name "$(basename "$1")")
     mkdir -p "$trash"/{tmp,new,cur}
@@ -611,13 +616,13 @@ wall_entry() { # wall_entry <file> <width>
 # Write one greeting into the queue. Empty input cancels.
 wall_write() {
     local text len tmp
-    echo "Write a greeting (max $WALL_MAX_CHARS characters). Empty line cancels."
+    echo "Write a greeting (max $WALL_MAX_CHARS chars). [Enter] Back."
     read -r -p "> " text || return
     text=$(printf '%s' "$text" | safe)
     [[ -n $text ]] || return
     len=$(printf '%s' "$text" | LC_ALL=C.UTF-8 wc -m)
     if (( len > WALL_MAX_CHARS )); then
-        echo "Too long: $len characters. The limit is $WALL_MAX_CHARS."
+        echo "Too long ($len/$WALL_MAX_CHARS characters)."
         pause
         return
     fi
@@ -659,7 +664,7 @@ wall_menu() {
             echo
         fi
         echo "Page $((page + 1)) of $pages"
-        echo "N) Write   Enter) Next   Q) Back"
+        echo "N) Write   [Enter] Next   Q) Back"
         read -r -p "> " choice || { nav_req=quit; return; }
         nav_key "$choice" && return
         case $choice in

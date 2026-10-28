@@ -97,7 +97,7 @@ prune_index() { # prune_index <deleted path>...
     [[ -f $INDEX && ! -L $INDEX ]] || return 0
     exec 9>>"$STATE/news.lock" || return 1
     if ! flock -w "$LOCK_WAIT" 9; then
-        echo "bbs-drop: index lock busy, index not pruned (next run or repair fixes it)" >&2
+        echo "bbs-drop: index lock busy, not pruned (next run fixes it)" >&2
         exec 9>&-; return 1
     fi
     mkdir -p "$STATE/tmp" 2>/dev/null

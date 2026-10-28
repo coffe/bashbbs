@@ -247,7 +247,7 @@ _news_scan() {
             if (isoepoch(pub) && E <= now) { e = sprintf("%.0f", E); date = substr(pub, 1, 10) }
             else if (isoepoch(dt)) { e = sprintf("%.0f", E); date = substr(dt, 1, 10) }
             else date = ymd(e + 0)
-            if (title == "") title = "(untitled)"
+            if (title == "") title = "(no subject)"
             print rank[cat], id, cat, e, title, f, date, src, lede
         }' |
         LC_ALL=C sort -t $'\t' -s -k4,4nr -k1,1n |
@@ -569,7 +569,7 @@ news_load_article() {
     } | safe)
     mapfile -t out < <(
         {
-            printf '%s\n\n%s\n\n\001\n\n' "${F[0]:-(untitled)}" "${F[1]:-}"
+            printf '%s\n\n%s\n\n\001\n\n' "${F[0]:-(no subject)}" "${F[1]:-}"
             (( ${#F[@]} > 2 )) && printf '%s\n' "${F[@]:2}"
         } | news_wrap "$NEWS_W"
     )
@@ -674,7 +674,7 @@ news_show_link() {
         fi
         echo
         news_rule
-        echo "[any key] Back"
+        echo "[Any key] Back"
     } | safe
     news_getkey
 }

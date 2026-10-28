@@ -284,11 +284,13 @@ check "menu: new text in request" grep -qxF 'ny text rad' "$RQ"
 sent
 printf 'e\n\nn\n.\n' | menuf alice post_actions general "$A"
 check "menu: empty new text: nothing queued" eq "$(queued)" 0
-printf 'e\nd\ndelete\n' | menuf bob post_actions general "$A"
+printf 'e\nd\nDELETE\n' | menuf bob post_actions general "$A"
 check "menu: other user cannot edit or delete" eq "$(queued)" 0
 printf 'd\nja\n' | menuf alice post_actions general "$A"
 check "menu: wrong confirm word: nothing queued: nothing queued" eq "$(queued)" 0
 printf 'd\ndelete\n' | menuf alice post_actions general "$A"
+check "menu: lowercase delete is refused" eq "$(queued)" 0
+printf 'd\nDELETE\n' | menuf alice post_actions general "$A"
 check "menu: author delete: one request" eq "$(queued)" 1
 RQ=$(ls "$root"/queue/incoming/*.req)
 check "menu: request is delete-post" grep -qxF 'Action: delete-post' "$RQ"
@@ -298,15 +300,15 @@ printf 'e\nx\nb\nr\nHej\n.\n' | menuf alice post_actions general "$A"
 check "menu: stub has no commands: nothing queued" eq "$(queued)" 0
 
 mkpost general bbs-bob "bobs inlägg"; BO=$MP
-printf 'd\ndelete\n' | menuf carol post_actions general "$BO"
+printf 'd\nDELETE\n' | menuf carol post_actions general "$BO"
 check "menu: sysop can delete other's post: one request" eq "$(queued)" 1
 sent
 mkpost priv bbs-bob "hemligt"; PO=$MP
-printf 'd\ndelete\n' | menuf alice post_actions priv "$PO"
+printf 'd\nDELETE\n' | menuf alice post_actions priv "$PO"
 check "menu: board owner can delete member's post: one request" eq "$(queued)" 1
 sent
 mkpost news bbs-news "nyhet"; NO=$MP
-printf 'r\nd\ndelete\n' | menuf carol post_actions news "$NO"
+printf 'r\nd\nDELETE\n' | menuf carol post_actions news "$NO"
 check "menu: read-only news: no commands" eq "$(queued)" 0
 
 mkpost general bbs-alice "$(printf 'åäö ord %.0s' {1..60})"; W=$MP
@@ -369,7 +371,7 @@ check "mail: sendmail failure: no sent copy" eq "$(count_in "$root/home/bbs-alic
 check "mail: sendmail failure: message says so" grep -q 'Could not queue the message' "$log"
 
 B1=$(plant bob m-hej "Hej där" alice)
-printf '1\nS\n\nTack, svar här\n.\ny\n\n' | menuf bob mail_view Inbox
+printf '1\nR\n\nTack, svar här\n.\ny\n\n' | menuf bob mail_view Inbox
 DM=$(lastmsg)
 check "reply: To is the sender" grep -qxF "To: alice@$hostn" "$DM"
 check "reply: Subject gets Re: once" grep -qxF 'Subject: Re: Hej där' "$DM"
@@ -378,13 +380,22 @@ check "reply: read message moved from new to cur" test ! -e "$B1"
 check "reply: read message has the seen flag" test -n "$(ls "$root/home/bbs-bob/Maildir/cur" | grep 'm-hej.*:2,S$')"
 
 A1=$(plant alice m-del "Radera mig" bob)
-printf '1\nR\n\n' | menuf alice mail_view Inbox
+queued_before=$(count_msgs)
+printf '1\nS\n\n' | menuf alice mail_view Inbox
+check "trash: S no longer replies: nothing queued" eq "$(count_msgs)" "$queued_before"
+check "trash: S keeps the message in Inbox" test -n "$(ls "$root/home/bbs-alice/Maildir/cur" | grep m-del)"
+printf '1\nD\nn\n\n' | menuf alice mail_view Inbox
+check "trash: answering n keeps the message in Inbox" test -n "$(ls "$root/home/bbs-alice/Maildir/cur" | grep m-del)"
+check "trash: n moves nothing" test -z "$(ls "$root/home/bbs-alice/Maildir/.Trash/cur" 2>/dev/null | grep m-del)"
+printf '1\nD\ny\n\n' | menuf alice mail_view Inbox
 check "trash: own inbox copy moved to .Trash/cur" test -n "$(ls "$root/home/bbs-alice/Maildir/.Trash/cur" | grep m-del)"
 check "trash: inbox no longer has it" test -z "$(ls "$root/home/bbs-alice/Maildir/new" "$root/home/bbs-alice/Maildir/cur" 2>/dev/null | grep m-del)"
 
 BK=$(plant bob m-kopia "Kopia" alice)
 SENT1=$(ls "$root/home/bbs-alice/Maildir/.Sent/cur"/* | head -n 1)
-printf '\n' | menuf alice mail_delete "$SENT1"
+printf 'n\n\n' | menuf alice mail_delete "$SENT1"
+check "delete: n keeps the Sent copy" test -f "$SENT1"
+printf 'y\n\n' | menuf alice mail_delete "$SENT1"
 check "delete: sender's Sent copy moved to Trash" test -n "$(ls "$root/home/bbs-alice/Maildir/.Trash/cur" | grep -F "$(basename "$SENT1")")"
 check "delete: recipient's copy is not touched" test -f "$BK"
 

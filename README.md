@@ -24,7 +24,7 @@ in a separate private repository. This repository has only the Pi side.
 | `sbin/bbs-approve` | Sysop tool: accept or reject applications. |
 | `sbin/bbs-news-index` | Rebuilds the news index. |
 | `sbin/bbs-history-expire` | Expires old history files. Not scheduled by default. |
-| `lib/menu.sh` | The menu UI (Swedish strings). |
+| `lib/menu.sh` | The menu UI (English strings). |
 | `lib/news.sh` | News section helpers. |
 | `lib/wrap.py` | Text wrapping for the terminal (Python 3). |
 | `lib/news-categories.conf` | News categories. |
@@ -98,11 +98,11 @@ This code was written for one installation. These values are hardcoded:
 - `web/index.html` line 43: the public host `bbs.piewpiew.se` and port 6464.
 - `web/index.html` lines 47 and 75: the sysop's name in the footer.
 - `etc/fail2ban-jail.local` line 4: the LAN subnet in `ignoreip`.
-- Swedish UI strings in `lib/menu.sh`.
 - Some tests default their scratch directory to a session-specific path.
 
 ## Status
 
-- Version 1.2 is released (Wall). Version 1.3 (private messages) is planned.
+- Version 1.2 is released (Wall). Version 1.3 (private messages, English UI) is
+  built on branch `bashbbs-1.3-pm` and is not rolled out.
 - There are no TODO or FIXME comments in the code.
 - `bbs-history-expire` exists but is not scheduled.
