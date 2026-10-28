@@ -588,14 +588,19 @@ wall_menu() {
         clear
         top_bar ""
         echo "== Wall =="
+        echo
         if (( ${#newest[@]} == 0 )); then
             echo "No greetings yet."
+            echo
         fi
         start=$(( page * WALL_PAGE ))
         for (( i = start; i < start + WALL_PAGE && i < ${#newest[@]}; i++ )); do
             wall_entry "${newest[i]}" "$(term_width)"
             echo
         done
+        if (( ${#newest[@]} > 0 )); then
+            echo
+        fi
         echo "Page $((page + 1)) of $pages"
         echo "N) Write   Enter) Next   Q) Back"
         read -r -p "> " choice || { nav_req=quit; return; }

@@ -170,6 +170,15 @@ check "lista: 12 före 4" before 'Greeting number 12' 'Greeting number 4' "$o1"
 check "sida 1 av 2 visas" grep -q '^Page 1 of 2$' "$o1"
 check "sida 1 visar 4" grep -qxF 'Greeting number 4' "$o1"
 check "lista: 10 per sida (ingen 3 på sida 1)" not_in 'Greeting number 3' "$o1"
+check "mellanrum: tom rad efter rubriken, en mellan poster, två före sidraden" python3 -I -c '
+import sys
+L = open(sys.argv[1], encoding="utf-8").read().split("\n")
+i = L.index("== Wall ==")
+p = next(k for k, l in enumerate(L) if l.startswith("Page "))
+assert L[i + 1] == "" and L[i + 2] != ""
+assert L[p - 1] == "" and L[p - 2] == "" and L[p - 3] != ""
+assert not any(L[k] == "" and L[k + 1] == "" for k in range(i + 1, p - 2))
+' "$o1"
 
 o2=$scratch/wall-menu-2.out
 printf '\n\nq\n' | menu_run "$o2" wall_menu
