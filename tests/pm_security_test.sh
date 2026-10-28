@@ -145,5 +145,52 @@ for w in 40 60 80; do
     check "top bar $w: keys B, G, M, Q, W present" eq "$(grep -o '\[[BGMQW]\]' "$root/bar-$w.txt" | sort | tr -d '\n')" "[B][G][M][Q][W]"
 done
 
+# --- 9. Lists, headers and prompts fit the terminal at 40, 60 and 80 columns --
+# Visible width as the terminal counts it (å one column, wide characters two).
+vw() { # vw <file>: widest line
+    PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from wrap import vwidth
+print(max([vwidth(ln.rstrip("\r\n")) for ln in open(sys.argv[2], encoding="utf-8", errors="replace")] or [0]))' "$here/lib" "$1"
+}
+fits() { (( $(vw "$1") <= $2 )); }
+lf() { ( export BBS_ROOT="$root" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb; source "$here/lib/menu.sh"; list_fit "$@" ); }
+subj="Åäö 漢字 $(ab 40 a) end"   # 51 characters, 53 columns
+mk_mail() { # mk_mail <subject>: one unread Inbox message for bob's account, carol
+    local d="$root/home/bbs-carol/Maildir"
+    rm -rf "$d"; mkdir -p "$d"/{tmp,new,cur}
+    printf 'From: bob@%s\nSubject: %s\nDate: %s\nMessage-ID: <e2e-%s@%s>\n\nHello\n' \
+        "$hostn" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$hostn" > "$d/new/1.$$.$hostn"
+}
+reset; mkdir -p "$root/home/bbs-carol"
+check "list_fit: text that fits is unchanged" eq "$(lf 40 'Hej där')" "Hej där"
+check "list_fit: cut text is at most 12 columns" fits <(printf '%s\n' "$(lf 12 "$subj")") 12
+check "list_fit: a cut ends with ..." grep -q '\.\.\.$' <(printf '%s\n' "$(lf 12 "$subj")")
+for w in 40 60 80; do
+    mk_mail "$subj"
+    ( export BBS_ROOT="$root" USER=bbs-carol BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol \
+          HOME="$root/home/bbs-carol" TERM=dumb
+      source "$here/lib/menu.sh"; list_width() { echo "$w"; }; printf '\n' | mail_view Inbox ) > "$root/list-$w.txt" 2>>"$log"
+    check "list $w: no row wider than $w columns" fits "$root/list-$w.txt" "$w"
+    check "list $w: stored subject unchanged on disk" grep -qxF "Subject: $subj" "$root/home/bbs-carol/Maildir/new/"*
+    ( export BBS_ROOT="$root" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb HOME="$root/home/bbs-carol"
+      source "$here/lib/menu.sh"; show_post "$root/home/bbs-carol/Maildir/new/"* "$w" ) > "$root/read-$w.txt" 2>>"$log"
+    check "read $w: header and body no wider than $w columns" fits "$root/read-$w.txt" "$w"
+    check "read $w: the whole subject is shown, wrapped" eq "$(tr -d ' \n' < "$root/read-$w.txt" | grep -c "$(printf '%s' "$subj" | tr -d ' ')")" 1
+done
+# The real terminal width, not a stub: a pty set to 40 columns.
+mk_mail "$subj"
+printf '\n' | script -qfc "stty cols 40; env BBS_ROOT=$root HOME=$root/home/bbs-carol BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb bash -c 'source $here/lib/menu.sh; mail_view Inbox'" /dev/null > "$root/pty-40.txt" 2>>"$log"
+check "pty 40: real 40-column terminal, no row wider than 40" fits "$root/pty-40.txt" 40
+# Reply prompt: the bracketed default is cut to the line; Enter keeps the full subject.
+# read -p only prints its prompt on a terminal, so this runs in a real 40-column pty.
+reset
+printf '\n.\ny\n\n' | script -qfc "stty cols 40; env BBS_ROOT=$root HOME=$root/home/bbs-alice BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb BBS_SENDMAIL=$root/t/sendmail bash -c 'source $here/lib/menu.sh; mail_write bob \"Re: $subj\"'" /dev/null > "$root/prompt-40.txt" 2>>"$log"
+check "prompt 40: prompt is shown" grep -q '^Subject \[' "$root/prompt-40.txt"
+# Measure only the prompt itself: the scripted input can put the next output on the same line.
+check "prompt 40: Subject line no wider than 40" fits <(grep -o '^Subject \[.*(/cancel stops): ' "$root/prompt-40.txt") 40
+check "prompt 40: Enter keeps the full subject" grep -qxF "Subject: Re: $subj" "$(onemsg)"
+
 echo "pm_security_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

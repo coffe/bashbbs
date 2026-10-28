@@ -127,6 +127,42 @@ term_width() {
     echo "$cols"
 }
 
+# Real terminal width for single-line rows (not clamped like term_width): a row must
+# fit the screen it is shown on. 76 when the width is unknown.
+list_width() {
+    local cols
+    cols=$(stty size 2>/dev/null | awk '{print $2}')
+    [[ $cols =~ ^[0-9]+$ ]] || cols=76
+    echo "$cols"
+}
+
+# Fit text into <width> columns, counted the way the terminal counts (wrap.py widths,
+# so å is one column and wide characters are two). Too wide: cut, end with "...".
+# Display only: the stored text is never changed.
+list_fit() { # list_fit <width> <text>
+    (( $1 < 1 )) && return
+    printf '%s' "$2" | PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=UTF-8 \
+        python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from wrap import clusters, vwidth
+width = int(sys.argv[2])
+text = sys.stdin.read()
+if vwidth(text) <= width:
+    sys.stdout.write(text)
+else:
+    budget = width - 3 if width >= 4 else width
+    out, used = "", 0
+    for cl in clusters(text):
+        w = vwidth(cl)
+        if used + w > budget:
+            break
+        out += cl
+        used += w
+    sys.stdout.write(out.rstrip() + ("..." if width >= 4 else ""))
+' "$NEWS_LIB" "$1"
+}
+
 # Date header (UTC, written by the publisher) as local time, YYYY-MM-DD HH:MM.
 local_time() {
     date -d "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "$1"
@@ -155,7 +191,7 @@ show_post() {
         echo "deleted $(local_time "$deleted")"
         return
     fi
-    echo "$subject"
+    printf '%s\n' "$subject" | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
     echo "by $author, $(local_time "$date")"
     [[ -n $edited ]] && echo "edited $(local_time "$edited")"
     printf '%*s\n' "$width" '' | tr ' ' '-'
@@ -479,7 +515,10 @@ mail_write() { # mail_write [name subject in-reply-to]
     if [[ -z $to ]]; then read -r -p "To (/cancel stops): " to || return; fi
     [[ $to == /cancel ]] && return
     resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
-    read -r -p "Subject${subject:+ [$subject]} (/cancel stops): " line || return
+    # The default in brackets is shown cut to the line; Enter still keeps the full subject.
+    local shown=""
+    [[ -n $subject ]] && shown=" [$(list_fit $(( $(list_width) - 28 )) "$subject")]"
+    read -r -p "Subject${shown} (/cancel stops): " line || return
     [[ $line == /cancel ]] && return
     [[ -n $line ]] && subject=$line
     subject=$(mail_subject "$subject") || { pause; return; }
@@ -501,7 +540,7 @@ mail_reply() { # mail_reply <file>
 
 # A folder list. Unread messages in new are marked with *.
 mail_view() { # mail_view <Inbox|Sent|Trash>
-    local folder=$1 dir f mark choice i
+    local folder=$1 dir f mark choice i width
     local -a files
     while true; do
         clear
@@ -518,10 +557,11 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
             return
         fi
         i=1
+        width=$(( $(list_width) - 7 ))  # "%3d) %s " is 7 columns
         for f in "${files[@]}"; do
             mark=" "
             [[ $f == "$dir"/new/* ]] && mark="*"
-            printf '%3d) %s %s\n' "$i" "$mark" "$(post_hdr "$f" Subject)"
+            printf '%3d) %s %s\n' "$i" "$mark" "$(list_fit "$width" "$(post_hdr "$f" Subject)")"
             i=$((i + 1))
         done
         read -r -p "Number ([Enter] Back): " choice || return
