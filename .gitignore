@@ -1,0 +1,9 @@
+# Working notes and handoffs: kept local, not published
+thoughts/
+
+# Development log drafts: kept local until published elsewhere
+devlog/
+
+# Python bytecode
+__pycache__/
+*.pyc
