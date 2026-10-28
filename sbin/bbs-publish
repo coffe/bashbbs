@@ -505,7 +505,7 @@ change_post() { # change_post <action> <request> <owner account> <board> <msgid>
             [[ -e $MOD_LOG ]] || install -m 0600 /dev/null "$MOD_LOG" || return 1
             printf '%s\t%s\t%s\t%s\n' "$stamp" "$me" "$board" "$msgid" >> "$MOD_LOG" || return 1
         fi
-        { post_out "$msgid" "$author" "$node" "$posted" "[raderat]" "$parent" "" "$stamp" < /dev/null; } > "$tmp" \
+        { post_out "$msgid" "$author" "$node" "$posted" "[deleted]" "$parent" "" "$stamp" < /dev/null; } > "$tmp" \
             || { rm -f -- "$tmp"; return 1; }
     fi
     post_mode "$tmp" "$board" || { rm -f -- "$tmp"; return 1; }

@@ -28,7 +28,7 @@ article() { # article <cat> <epoch> <id-char> <title>
 }
 # Run a reader snippet with the library loaded (menu.sh gives safe() and the news functions).
 reader() { # reader <snippet>  -> stdout; stderr to the log
-    nice -n 19 env BBS_ROOT="$root" BBS_COLS=60 BBS_ROWS=24 BASHBBS_TEST=1 TERM=xterm LC_ALL=C.UTF-8 HOME="$root" \
+    nice -n 19 env BBS_ROOT="$root" BBS_COLS=60 BBS_ROWS=24 BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=xterm LC_ALL=C.UTF-8 HOME="$root" \
         bash -c 'source "$1"; '"$1" _ "$here/lib/menu.sh" 2>>"$log" < /dev/null
 }
 tool() { nice -n 19 env BBS_ROOT="$root" BBS_LIB="$here/lib" BBS_LOCK_WAIT=2 bash "$here/sbin/bbs-news-index" "$@"; }

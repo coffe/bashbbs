@@ -48,8 +48,7 @@ news_width() {
 # The reader needs python3 for wrapping. No fallback wrapper exists.
 news_need_python() {
     if ! python3 -c 'import unicodedata' 2>/dev/null; then
-        echo "The news reader needs python3, which is not available."
-        echo "Ask the sysop to install it."
+        echo "News requires python3. Ask the sysop."
         return 1
     fi
     return 0

@@ -49,7 +49,7 @@ absent()   { ! wallhas "$1"; }
 # Menu, sourced with the test root. Output to a file; stdin from the caller.
 menu_run() { # menu_run <outfile> <command...>
     local out=$1; shift
-    ( export BBS_ROOT="$root" USER=bbs-alice BASHBBS_TEST=1 TERM=dumb
+    ( export BBS_ROOT="$root" USER=bbs-alice BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 TERM=dumb
       source "$here/lib/menu.sh"
       "$@" ) > "$out" 2>>"$log"
 }
@@ -159,7 +159,7 @@ for w in 40 60 80; do
     menu_run "$o" wall_entry "$LONGF" "$w"
     check "vy vid $w: ingen rad bredare än $w" fits "$w" "$o"
     check "vy vid $w: texten med åäö syns" grep -q 'åäö' "$o"
-    check "vy vid $w: avsändare och datum" grep -q 'av bob' "$o"
+    check "vy vid $w: avsändare och datum" grep -q 'by bob' "$o"
 done
 
 o1=$scratch/wall-menu-1.out
@@ -192,7 +192,7 @@ check "huvudmeny: 2) Wall" grep -qx '2) Wall' "$o3"
 check "huvudmeny: 3) Users, 4) My account" grep -qx '4) My account' "$o3"
 check "rubrik: [W] Wall" grep -q '\[W\] Wall' "$o3"
 check "valet 2 öppnar Wall" grep -q 'NAV=wall' "$o3"
-check "inga PM-rader i menyn" eq "$(grep -ci 'private\|mail' "$o3")" 0
+check "huvudmeny: 5) Private messages" grep -q '^5) Private messages' "$o3"
 
 o4=$scratch/wall-main-w.out
 printf 'w\n' | menu_run "$o4" main_nav

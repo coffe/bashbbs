@@ -6,8 +6,15 @@ umask 077
 
 BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
 LIB=/usr/local/lib/bashbbs
-me=${USER#bbs-}
-[[ $me =~ ^[a-z][a-z0-9]{2,8}$ ]] || { echo "bad account" >&2; exit 1; }
+# Who is logged in is the kernel's account name, never $USER. BASHBBS_TEST_ID
+# exists only for the test harness and is ignored unless BASHBBS_TEST is set.
+login=$(id -un) || exit 1
+[[ -n ${BASHBBS_TEST:-} && -n ${BASHBBS_TEST_ID:-} ]] && login=$BASHBBS_TEST_ID
+[[ $login =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || { echo "Bad account." >&2; exit 1; }
+me=${login#bbs-}
+# Postfix sendmail. BBS_SENDMAIL may point at a stub, but only in tests.
+sendmail=/usr/sbin/sendmail
+[[ -n ${BASHBBS_TEST:-} && -n ${BBS_SENDMAIL:-} ]] && sendmail=$BBS_SENDMAIL
 
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
@@ -48,8 +55,11 @@ my_account() {
 # at once; the loop at the bottom then opens the section that was asked for.
 nav_req=
 
+# The [P] Mail label only fits from 50 columns. The key works at every width.
 top_bar() {
-    echo "[B] Boards [M] Main [W] Wall [G] Goodbye${1:+  $1}"
+    local mail=""
+    (( $(term_width) >= 50 )) && mail=" [P] Mail"
+    echo "[B] Boards [M] Main${mail} [W] Wall [G] Goodbye${1:+  $1}"
     echo
 }
 
@@ -57,6 +67,7 @@ nav_key() {
     case $1 in
         [Bb]) nav_req=boards ;;
         [Mm]) nav_req=main ;;
+        [Pp]) nav_req=mail ;;
         [Ww]) nav_req=wall ;;
         [Gg]) nav_req=quit ;;
         *) return 1 ;;
@@ -115,7 +126,7 @@ local_time() {
 
 # Show one post: title, author and date, then the body wrapped to width.
 # Only the known fields are read; raw headers are never printed. A stub
-# (Deleted header) shows [raderat] and no body.
+# (Deleted header) shows [deleted] and no body.
 show_post() {
     local file=$1 width=$2 line key val
     local subject="" author="" date="" edited="" deleted=""
@@ -131,14 +142,14 @@ show_post() {
         esac
     done < "$file"
     if [[ -n $deleted ]]; then
-        echo "[raderat]"
-        echo "av $author, $(local_time "$date")"
-        echo "raderat $(local_time "$deleted")"
+        echo "[deleted]"
+        echo "by $author, $(local_time "$date")"
+        echo "deleted $(local_time "$deleted")"
         return
     fi
     echo "$subject"
-    echo "av $author, $(local_time "$date")"
-    [[ -n $edited ]] && echo "redigerad $(local_time "$edited")"
+    echo "by $author, $(local_time "$date")"
+    [[ -n $edited ]] && echo "edited $(local_time "$edited")"
     printf '%*s\n' "$width" '' | tr ' ' '-'
     sed '1,/^$/d' "$file" | safe | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
 }
@@ -201,11 +212,11 @@ post_actions() { # post_actions <board> <file>
     local board=$1 f=$2 cmd cmds="" author
     author=$(post_hdr "$f" Author)
     if [[ -z $(post_hdr "$f" Deleted) ]] && ! is_readonly "$board"; then
-        cmds="R) Svara"
-        [[ $author == "$me" ]] && cmds+="   E) Ändra"
-        if [[ $author == "$me" ]] || is_sysop || manages "$board"; then cmds+="   D) Radera"; fi
+        cmds="R) Reply"
+        [[ $author == "$me" ]] && cmds+="   E) Edit"
+        if [[ $author == "$me" ]] || is_sysop || manages "$board"; then cmds+="   D) Delete"; fi
     fi
-    read -r -p "${cmds:+$cmds   }[Enter] Tillbaka: " cmd || return 1
+    read -r -p "${cmds:+$cmds   }[Enter] Back: " cmd || return 1
     nav_key "$cmd" && return 1
     case $cmd in
         [Rr]) [[ $cmds == *"R)"* ]] && compose "$board" "$(post_hdr "$f" Msgid)" ;;
@@ -221,33 +232,33 @@ edit_post() { # edit_post <board> <file>
     local board=$1 f=$2 subject new choice body
     subject=$(post_hdr "$f" Subject)
     echo
-    read -r -p "Rubrik: $subject   [Enter] behåll: " new || return
+    read -r -p "Subject: $subject   [Enter] keep: " new || return
     new=$(printf '%s' "$new" | safe | head -c 100)
     [[ -n $new ]] && subject=$new
-    read -r -p "[b]ehåll text   [n]y text: " choice || return
+    read -r -p "[k]eep text   [n]ew text: " choice || return
     if [[ $choice == [Nn] ]]; then
-        echo "Skriv den nya texten. Avsluta med en rad som bara innehåller en punkt."
+        echo "Write the new text. End with a line containing only a dot."
         body=$(read_body)
     else
         body=$(sed '1,/^$/d' "$f")
     fi
-    if [[ -z $body ]]; then echo "Tom text, ingen ändring."; pause; return; fi
+    if [[ -z $body ]]; then echo "Empty text, no change."; pause; return; fi
     {
         printf 'Action: edit-post\nBoard: %s\nMsgid: %s\nSubject: %s\n\n' "$board" "$(post_hdr "$f" Msgid)" "$subject"
         printf '%s\n' "$body"
     } | queue_request
-    echo "Skickat. Ändringen syns inom en minut."
+    echo "Sent. Appears within a minute."
     pause
 }
 
-# Delete needs the word radera. A yes/no key is not enough.
+# Delete needs the word delete. A yes/no key is not enough.
 delete_post() { # delete_post <board> <file>
     local answer
     echo
-    read -r -p "Skriv radera för att ta bort inlägget, annars Enter: " answer || return
-    [[ $answer == radera ]] || return
+    read -r -p "Type delete to confirm, [Enter] cancels: " answer || return
+    [[ $answer == delete ]] || return
     printf 'Action: delete-post\nBoard: %s\nMsgid: %s\n\n' "$1" "$(post_hdr "$2" Msgid)" | queue_request
-    echo "Skickat. Ändringen syns inom en minut."
+    echo "Sent. Appears within a minute."
     pause
 }
 
@@ -279,7 +290,7 @@ compose() {
         read_body
     } > "$tmp"
     mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
-    echo "Sent to the publisher. It appears within a minute."
+    echo "Sent. Appears within a minute."
     pause
 }
 
@@ -307,9 +318,9 @@ queue_request() {
 new_private_board() {
     local name
     read -r -p "Name (a-z, 0-9, - and _; 2-24 chars): " name || return
-    [[ $name =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]] || { echo "bad name"; pause; return; }
+    [[ $name =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]] || { echo "Bad name."; pause; return; }
     printf 'Action: create-board\nBoard: %s\n' "$name" | queue_request
-    echo "Sent. The board appears within a minute. Log in again to see it."
+    echo "Sent. Appears within a minute. Log in again."
     pause
 }
 
@@ -323,9 +334,9 @@ members_menu() {
         *) return ;;
     esac
     read -r -p "User: " user || return
-    valid_user "$user" || { echo "unknown user"; pause; return; }
+    valid_user "$user" || { echo "Unknown user."; pause; return; }
     printf 'Action: %s\nBoard: %s\nUser: %s\n' "$action" "$board" "$user" | queue_request
-    echo "Sent. It applies within a minute. The user must log in again to see the board."
+    echo "Sent. Applies within a minute. The user must log in again."
     pause
 }
 
@@ -364,9 +375,19 @@ mail_dir() {
     esac
 }
 
+# Unread count for the main menu: files in the Inbox new folder.
+mail_unread() {
+    local f n=0
+    for f in "$HOME"/Maildir/new/*; do [[ -f $f ]] && n=$((n + 1)); done
+    printf '%d' "$n"
+}
+
 # The only place that knows local addresses: a name becomes a local account.
 resolve_local() {
     valid_user "$1" || return 1
+    # Sysops and the news account are never private-message recipients, even with a profile.
+    grep -qx -- "$1" "$BBS_ROOT/sysops" 2>/dev/null && return 1
+    [[ $1 == news ]] && return 1
     printf 'bbs-%s' "$1"
 }
 
@@ -386,52 +407,86 @@ mail_store() { # mail_store <folder> <new|cur> <file>
     cp "$3" "$dir/tmp/$name" && mv -f "$dir/tmp/$name" "$dir/$2/$name"
 }
 
+# Message-ID as we write it: <something@host>, no spaces or brackets inside.
+MAIL_MSGID_RE='^<[^]<>[:space:][:cntrl:]]+>$'
+
+# Subject: at most 60 characters (not bytes), no control characters.
+mail_subject() { # mail_subject <text>; prints the subject, or a reason on stderr and returns 1
+    local LC_ALL=C.UTF-8
+    if [[ $1 == *[[:cntrl:]]* ]]; then echo "Subject: no control characters." >&2; return 1; fi
+    if (( ${#1} > 60 )); then echo "Subject: at most 60 characters." >&2; return 1; fi
+    printf '%s' "$1"
+}
+
+# Body: lines up to a line with only a dot. Limit 8 192 bytes, line ends included.
+# A line with /cancel stops without output. Returns 1 on cancel or when too long.
+mail_body() {
+    local line total=0 LC_ALL=C
+    while IFS= read -r line; do
+        [[ $line == . ]] && break
+        [[ $line == /cancel ]] && return 1
+        total=$((total + ${#line} + 1))
+        if (( total > 8192 )); then echo "Text: at most 8 192 bytes." >&2; return 1; fi
+        printf '%s\n' "$line" | safe
+    done
+    return 0
+}
+
 # Send one message and keep a copy in Sent. The body is read from stdin.
+# The sender is the login account. Nothing from the environment or the input sets it.
 mail_send() { # mail_send <name> <subject> [in-reply-to]
-    local to=$1 subject=$2 reply=${3:-} acct host tmp
+    local to=$1 subject=$2 reply=${3:-} acct host tmp answer
+    valid_user "$me" || return 1
     acct=$(resolve_local "$to") || return 1
     host=$(hostname)
     tmp=$(mktemp) || return 1
     {
         printf 'Message-ID: <%s@%s>\n' "$(cat /proc/sys/kernel/random/uuid)" "$host"
         printf 'Date: %s\n' "$(date -R)"
-        # From is always the login account. Users cannot choose it.
         printf 'From: %s@%s\n' "$me" "$host"
         printf 'To: %s@%s\n' "$to" "$host"
         printf 'Subject: %s\n' "$subject"
-        [[ -n $reply ]] && printf 'In-Reply-To: %s\n' "$reply"
+        [[ $reply =~ $MAIL_MSGID_RE ]] && printf 'In-Reply-To: %s\n' "$reply"
         printf '\n'
-        read_body
     } > "$tmp"
+    if ! mail_body >> "$tmp"; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
+    read -r -p "Send? [y/N]: " answer || answer=
+    if [[ $answer != [Yy] ]]; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
     # The recipient goes on the command line, so the To header cannot change delivery.
-    if "${BBS_SENDMAIL:-/usr/sbin/sendmail}" -i -f "$USER" "$acct" < "$tmp"; then
+    # env -i: sendmail runs with an empty environment, and -f is always bbs-<login>.
+    if /usr/bin/env -i "$sendmail" -i -f "bbs-$me" "$acct" < "$tmp"; then
         mail_store Sent cur "$tmp"
-        echo "Sent."
+        echo "Queued for delivery."
     else
-        echo "Kunde inte skickas."
+        echo "Could not queue the message."
     fi
     rm -f "$tmp"
     pause
 }
 
-# Write a new message, or a reply when called from mail_reply.
+# Write a new message, or a reply when called from mail_reply. /cancel stops at any prompt.
 mail_write() { # mail_write [name subject in-reply-to]
     local to=${1:-} subject=${2:-} reply=${3:-} line
-    [[ -n $to ]] || read -r -p "To (name): " to || return
-    resolve_local "$to" >/dev/null || { echo "unknown user"; pause; return; }
-    read -r -p "Subject${subject:+ [$subject]}: " line || return
+    if [[ -z $to ]]; then read -r -p "To (name, /cancel stops): " to || return; fi
+    [[ $to == /cancel ]] && return
+    resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
+    read -r -p "Subject${subject:+ [$subject]} (/cancel stops): " line || return
+    [[ $line == /cancel ]] && return
     [[ -n $line ]] && subject=$line
-    subject=$(printf '%s' "$subject" | safe | head -c 100)
-    echo "Write your text. End with a line containing only a dot."
+    subject=$(mail_subject "$subject") || { pause; return; }
+    [[ -n $subject ]] || subject="(no subject)"
+    echo "Write the message. End with a line containing only a dot."
     mail_send "$to" "$subject" "$reply"
 }
 
-# Reply: To is the sender, Subject gets Re: once, In-Reply-To is the Message-ID.
+# Reply: To is the sender, Subject gets Re: once (cut to 60 characters), In-Reply-To is the Message-ID.
 mail_reply() { # mail_reply <file>
     local from subject
     from=$(post_hdr "$1" From)
     subject=$(post_hdr "$1" Subject)
     [[ $subject == Re:* ]] || subject="Re: $subject"
+    local LC_ALL=C.UTF-8
+    subject=${subject:0:60}
     mail_write "${from%%@*}" "$subject" "$(post_hdr "$1" Message-ID)"
 }
 
@@ -449,7 +504,7 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
         done
         echo "== $folder =="
         if (( ${#files[@]} == 0 )); then
-            echo "Inga meddelanden."
+            echo "No messages."
             pause
             return
         fi
@@ -460,7 +515,7 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
             printf '%3d) %s %s\n' "$i" "$mark" "$(post_hdr "$f" Subject)"
             i=$((i + 1))
         done
-        read -r -p "Nummer (Enter = tillbaka): " choice || return
+        read -r -p "Number (Enter = back): " choice || return
         nav_key "$choice" && return
         [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#files[@]} )) || return
         mail_open "$folder" "${files[choice - 1]}"
@@ -486,10 +541,10 @@ mail_open() { # mail_open <folder> <file>
 mail_actions() { # mail_actions <folder> <file>
     local folder=$1 f=$2 cmd cmds=""
     case $folder in
-        Inbox) cmds="S) Svara   R) Radera   " ;;
-        Sent) cmds="R) Radera   " ;;
+        Inbox) cmds="S) Reply   R) Delete   " ;;
+        Sent) cmds="R) Delete   " ;;
     esac
-    read -r -p "${cmds}[Enter] Tillbaka: " cmd || return
+    read -r -p "${cmds}[Enter] Back: " cmd || return
     nav_key "$cmd" && return
     case $cmd in
         [Ss]) [[ $cmds == *"S)"* ]] && mail_reply "$f" ;;
@@ -503,7 +558,7 @@ mail_delete() { # mail_delete <file>
     trash=$(mail_dir Trash)
     name=$(mail_cur_name "$(basename "$1")")
     mkdir -p "$trash"/{tmp,new,cur}
-    mv -n "$1" "$trash/cur/$name" && echo "Flyttat till papperskorgen."
+    mv -n "$1" "$trash/cur/$name" && echo "Moved to Trash."
     pause
 }
 
@@ -519,6 +574,7 @@ main_menu() {
         echo "2) Wall"
         echo "3) Users"
         echo "4) My account"
+        echo "5) Private messages   ($(mail_unread) unread)"
         read -r -p "> " choice || { nav_req=quit; return; }
         nav_key "$choice" && return
         case $choice in
@@ -526,6 +582,7 @@ main_menu() {
             2) nav_req=wall; return ;;
             3) clear; list_users; pause ;;
             4) clear; my_account; pause ;;
+            5) nav_req=mail; return ;;
         esac
     done
 }
@@ -547,7 +604,7 @@ wall_entry() { # wall_entry <file> <width>
             Date) date=$val ;;
         esac
     done < "$file"
-    echo "$(local_time "$date")  av $author"
+    echo "$(local_time "$date")  by $author"
     sed '1,/^$/d' "$file" | safe | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
 }
 
@@ -567,7 +624,7 @@ wall_write() {
     tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX") || return
     printf '%s\n' "$text" > "$tmp"
     mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s%N)-$(cat /proc/sys/kernel/random/uuid).wall"
-    echo "Sent to the publisher. It appears within a minute."
+    echo "Sent. Appears within a minute."
     pause
 }
 

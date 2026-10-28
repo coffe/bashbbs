@@ -156,7 +156,7 @@ class Term:
 
 def env_for(cols, rows="14", **kw):
     e = {"PATH": os.environ["PATH"], "HOME": root, "USER": "bbs-tester", "TERM": "xterm",
-         "LC_ALL": "C.UTF-8", "BBS_ROOT": root, "BASHBBS_TEST": "1", "BBS_ROWS": rows}
+         "LC_ALL": "C.UTF-8", "BBS_ROOT": root, "BASHBBS_TEST": "1", "BASHBBS_TEST_ID": "bbs-tester", "BBS_ROWS": rows}
     if cols:
         e["BBS_COLS"] = str(cols)
     e.update(kw)

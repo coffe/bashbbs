@@ -2,8 +2,8 @@
 # Root-run by hand, or from cron once it is approved (not activated here).
 # Retention for history versions and admin backups: 30 days from the time in
 # the file name, not from mtime.
-#   state/history/<board>/<msgid>/<n>-<tid>.msg   age from <tid>
-#   state/admin-backup/<tid>-<board>-<msgid>.msg  age from <tid>
+#   state/history/<board>/<msgid>/<n>-<epoch>.msg   age from <epoch>
+#   state/admin-backup/<epoch>-<board>-<msgid>.msg  age from <epoch>
 # Default is --dry-run: only list the candidates. With --apply, each candidate
 # is moved with mv to state/expired/<stamp>/ keeping its relative path. Nothing
 # is deleted. Only regular *.msg files in those two trees are looked at.

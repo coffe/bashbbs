@@ -14,7 +14,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d "${BBS_TEST_TMP:-${TMPDIR:-/tmp}}/news_load.XXXXXX") || exit 1
 quar=${BBS_TEST_TMP:-${TMPDIR:-/tmp}}/karantan-news-tests; mkdir -p "$quar"  # no deletes: test dirs go to quarantine
 trap 'mv "$tmp" "$quar"/ 2>/dev/null' EXIT
-export LC_ALL=C.UTF-8 TERM=xterm BASHBBS_TEST=1 BBS_COLS=80 BBS_ROWS=24
+export LC_ALL=C.UTF-8 TERM=xterm BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice BBS_COLS=80 BBS_ROWS=24
 Ns=("$@"); (( ${#Ns[@]} )) || Ns=(200 300 500)
 
 gen() { # gen ROOT N

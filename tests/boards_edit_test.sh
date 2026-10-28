@@ -130,7 +130,7 @@ check "delete by other user: post still shown" eq "$(hval "$A" Subject)" "Ny rub
 
 req d2 delete-post general "$id" < /dev/null
 lib handle_req "$RQ" bbs-alice; check "delete by author: accepted" eq $? 0
-check "delete: subject [raderat]" eq "$(hval "$A" Subject)" "[raderat]"
+check "delete: subject [deleted]" eq "$(hval "$A" Subject)" "[deleted]"
 check "delete: Deleted set" test -n "$(hval "$A" Deleted)"
 check "delete: Msgid kept" eq "$(hval "$A" Msgid)" "$id"
 check "delete: Author kept" eq "$(hval "$A" Author)" alice
@@ -156,7 +156,7 @@ req d4 delete-post general "$bid" < /dev/null
 lib handle_req "$RQ" bbs-carol; check "sysop deletes other's post: accepted" eq $? 0
 check "mod.log: mode 0600" eq "$(stat -c %a "$root/state/mod.log")" 600
 check "mod.log: line with moderator, board and Msgid" grep -qF $'\tcarol\tgeneral\t'"$bid" "$root/state/mod.log"
-check "moderated post: stub" eq "$(hval "$BP" Subject)" "[raderat]"
+check "moderated post: stub" eq "$(hval "$BP" Subject)" "[deleted]"
 
 # A request with a Board header for a missing board or a board that is not a directory.
 req d5 delete-post nobody "$bid" < /dev/null
@@ -259,7 +259,7 @@ check "concurrent: no temp files left" eq "$(ls -a "$root/boards/general" | grep
 menuf() {
     local u=$1; shift
     mkdir -p "$root/home/bbs-$u"
-    ( export BBS_ROOT="$root" USER="bbs-$u" HOME="$root/home/bbs-$u" BASHBBS_TEST=1
+    ( export BBS_ROOT="$root" USER="bbs-$u" BASHBBS_TEST_ID="bbs-$u" HOME="$root/home/bbs-$u" BASHBBS_TEST=1
       source "$here/lib/menu.sh"
       "$@" ) >>"$log" 2>&1
 }
@@ -284,34 +284,34 @@ check "menu: new text in request" grep -qxF 'ny text rad' "$RQ"
 sent
 printf 'e\n\nn\n.\n' | menuf alice post_actions general "$A"
 check "menu: empty new text: nothing queued" eq "$(queued)" 0
-printf 'e\nd\nradera\n' | menuf bob post_actions general "$A"
+printf 'e\nd\ndelete\n' | menuf bob post_actions general "$A"
 check "menu: other user cannot edit or delete" eq "$(queued)" 0
 printf 'd\nja\n' | menuf alice post_actions general "$A"
-check "menu: delete without the word radera: nothing queued" eq "$(queued)" 0
-printf 'd\nradera\n' | menuf alice post_actions general "$A"
+check "menu: wrong confirm word: nothing queued: nothing queued" eq "$(queued)" 0
+printf 'd\ndelete\n' | menuf alice post_actions general "$A"
 check "menu: author delete: one request" eq "$(queued)" 1
 RQ=$(ls "$root"/queue/incoming/*.req)
 check "menu: request is delete-post" grep -qxF 'Action: delete-post' "$RQ"
 ASOWNER=bbs-alice lib process "$RQ"
-check "menu: after the publisher the post is a stub" eq "$(hval "$A" Subject)" "[raderat]"
+check "menu: after the publisher the post is a stub" eq "$(hval "$A" Subject)" "[deleted]"
 printf 'e\nx\nb\nr\nHej\n.\n' | menuf alice post_actions general "$A"
 check "menu: stub has no commands: nothing queued" eq "$(queued)" 0
 
 mkpost general bbs-bob "bobs inlägg"; BO=$MP
-printf 'd\nradera\n' | menuf carol post_actions general "$BO"
+printf 'd\ndelete\n' | menuf carol post_actions general "$BO"
 check "menu: sysop can delete other's post: one request" eq "$(queued)" 1
 sent
 mkpost priv bbs-bob "hemligt"; PO=$MP
-printf 'd\nradera\n' | menuf alice post_actions priv "$PO"
+printf 'd\ndelete\n' | menuf alice post_actions priv "$PO"
 check "menu: board owner can delete member's post: one request" eq "$(queued)" 1
 sent
 mkpost news bbs-news "nyhet"; NO=$MP
-printf 'r\nd\nradera\n' | menuf carol post_actions news "$NO"
+printf 'r\nd\ndelete\n' | menuf carol post_actions news "$NO"
 check "menu: read-only news: no commands" eq "$(queued)" 0
 
 mkpost general bbs-alice "$(printf 'åäö ord %.0s' {1..60})"; W=$MP
 for w in 40 60 80; do
-    ( export BBS_ROOT="$root" USER=bbs-alice BASHBBS_TEST=1
+    ( export BBS_ROOT="$root" USER=bbs-alice BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1
       source "$here/lib/menu.sh"
       show_post "$W" "$w" ) >"$root/t/view$w.txt" 2>>"$log"
     check "menu: show_post width $w: no line wider than $w" test "$(maxlen "$root/t/view$w.txt")" -le "$w"
@@ -324,12 +324,12 @@ mkdir -p "$root"/users/{alice,bob}
 : > "$root/users/alice/profile"
 : > "$root/users/bob/profile"
 # Stand-in for Postfix: keeps the arguments and each message in t/delivered.
-# SENDMAIL_FAIL=1 makes it fail without keeping anything.
+# A file named fail next to it makes it fail without keeping anything.
 cat > "$root/t/sendmail" <<'SH'
 #!/bin/bash
 d=$(dirname "$0")/delivered
 mkdir -p "$d"
-[[ -z ${SENDMAIL_FAIL:-} ]] || { cat >/dev/null; exit 1; }
+[[ ! -e $(dirname "$0")/fail ]] || { cat >/dev/null; exit 1; }
 printf '%s\n' "$*" >> "$d/args"
 cat > "$d/$(date +%s%N).msg"
 SH
@@ -347,7 +347,7 @@ plant() {
     printf '%s' "$f"
 }
 
-printf 'bob\nHälsning\nHej Bob\n.\n\n' | menuf alice mail_write
+printf 'bob\nHälsning\nHej Bob\n.\ny\n\n' | menuf alice mail_write
 DM=$(lastmsg)
 check "mail: envelope goes to the local account" grep -qxF -- '-i -f bbs-alice bbs-bob' "$root/t/delivered/args"
 check "mail: Message-ID is <uuid@host>" grep -qE "^Message-ID: <[0-9a-f-]{36}@$hostn>\$" "$DM"
@@ -362,12 +362,14 @@ check "mail: sent copy has the seen flag" test -n "$(ls "$root/home/bbs-alice/Ma
 printf 'nobody\n\n' | menuf alice mail_write
 check "mail: unknown recipient: nothing delivered" eq "$(count_msgs)" 1
 
-printf 'bob\nMisslyckas\nHej\n.\n\n' | SENDMAIL_FAIL=1 menuf alice mail_write
+touch "$root/t/fail"
+printf 'bob\nMisslyckas\nHej\n.\ny\n\n' | menuf alice mail_write
+rm -f "$root/t/fail"
 check "mail: sendmail failure: no sent copy" eq "$(count_in "$root/home/bbs-alice/Maildir/.Sent/cur")" 1
-check "mail: sendmail failure: message says so" grep -q 'Kunde inte skickas' "$log"
+check "mail: sendmail failure: message says so" grep -q 'Could not queue the message' "$log"
 
 B1=$(plant bob m-hej "Hej där" alice)
-printf '1\nS\n\nTack, svar här\n.\n\n' | menuf bob mail_view Inbox
+printf '1\nS\n\nTack, svar här\n.\ny\n\n' | menuf bob mail_view Inbox
 DM=$(lastmsg)
 check "reply: To is the sender" grep -qxF "To: alice@$hostn" "$DM"
 check "reply: Subject gets Re: once" grep -qxF 'Subject: Re: Hej där' "$DM"
