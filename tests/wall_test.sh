@@ -70,12 +70,12 @@ ordered() { # ordered <pattern-a> <exact-line-b> <file>: a appears before b
 # ---- A. Publishing ----------------------------------------------------------
 newroot
 mkwall a1 'Hej alla, hur mår ni?\n'
-check "bbs-alice: hälsning publiceras" lib handle_wall "$WF" bbs-alice
+check "bbs-alice: greeting is published" lib handle_wall "$WF" bbs-alice
 check "en fil i wall/" eq "$(wallcount)" 1
-check "avsändaren är ägaren (alice)" grep -q '^Author: alice$' "$root"/wall/*.msg
-check "texten finns som egen rad" present 'Hej alla, hur mår ni?'
-check "filen är 0644" eq "$(stat -c %a "$root"/wall/*.msg)" 644
-check "ingen tempfil kvar" eq "$(find "$root/wall" -name '.tmp.*' | wc -l)" 0
+check "the author is the owner (alice)" grep -q '^Author: alice$' "$root"/wall/*.msg
+check "the text is on its own line" present 'Hej alla, hur mår ni?'
+check "the file is 0644" eq "$(stat -c %a "$root"/wall/*.msg)" 644
+check "no temp file left" eq "$(find "$root/wall" -name '.tmp.*' | wc -l)" 0
 
 # ---- B. Length: 140 characters, not bytes -----------------------------------
 n140=$(printf 'a%.0s' $(seq 140))
@@ -83,68 +83,68 @@ n141=$(printf 'a%.0s' $(seq 141))
 a140=$(python3 -c 'print("å" * 140)')
 a141=$(python3 -c 'print("å" * 141)')
 mkwall len140 "$n140\n"
-check "140 tecken godkänns" lib handle_wall "$WF" bbs-alice
+check "140 characters accepted" lib handle_wall "$WF" bbs-alice
 mkwall len141 "$n141\n"
-check "141 tecken avvisas" rc_is 1 proc bbs-alice "$WF"
-check "141 tecken hamnar i drop/rejected" test -e "$root/drop/rejected/$(basename "$WF")"
+check "141 characters rejected" rc_is 1 proc bbs-alice "$WF"
+check "141 characters end up in drop/rejected" test -e "$root/drop/rejected/$(basename "$WF")"
 mkwall ae140 "$a140\n"
-check "140 åäö godkänns (280 byte)" lib handle_wall "$WF" bbs-alice
+check "140 åäö accepted (280 bytes)" lib handle_wall "$WF" bbs-alice
 mkwall ae141 "$a141\n"
-check "141 åäö avvisas" rc_is 1 proc bbs-alice "$WF"
-check "åäö-texten sparas oförändrad" present "$a140"
-check "tre filer i wall/ efter B" eq "$(wallcount)" 3
+check "141 åäö rejected" rc_is 1 proc bbs-alice "$WF"
+check "the åäö text is stored unchanged" present "$a140"
+check "three files in wall/ after B" eq "$(wallcount)" 3
 
 # ---- C. Control and invisible characters ------------------------------------
 mkwall ctl 'ab\x1b[31mcd\r\n'
-check "ESC och CR tas bort" lib handle_wall "$WF" bbs-alice
-check "texten är ab[31mcd" present 'ab[31mcd'
+check "ESC and CR are removed" lib handle_wall "$WF" bbs-alice
+check "the text is ab[31mcd" present 'ab[31mcd'
 mkwall bidi 'x\xe2\x80\xaey\n'
-check "bidi-överskrivning (Cf) tas bort" lib handle_wall "$WF" bbs-alice
-check "texten är xy" present 'xy'
+check "bidi override (Cf) is removed" lib handle_wall "$WF" bbs-alice
+check "the text is xy" present 'xy'
 mkwall onlyctl '\x1b\x07\n'
-check "bara kontrolltecken avvisas" rc_is 1 proc bbs-alice "$WF"
+check "only control characters are rejected" rc_is 1 proc bbs-alice "$WF"
 
 # ---- D. Format rejects -------------------------------------------------------
 mkwall multi 'rad ett\nrad två\n'
-check "flera rader avvisas" rc_is 1 proc bbs-alice "$WF"
+check "several lines are rejected" rc_is 1 proc bbs-alice "$WF"
 mkwall badutf 'a\xff\n'
-check "ogiltig UTF-8 avvisas" rc_is 1 proc bbs-alice "$WF"
+check "invalid UTF-8 is rejected" rc_is 1 proc bbs-alice "$WF"
 mkwall big "$(printf 'x%.0s' $(seq 2000))\n"
-check "över 1024 byte avvisas" rc_is 1 proc bbs-alice "$WF"
+check "over 1024 bytes is rejected" rc_is 1 proc bbs-alice "$WF"
 
 # ---- E. Owner ---------------------------------------------------------------
 mkwall fake 'hej från root\n'
-check "ägare utanför bbs-mönstret: rc 0" rc_is 0 proc root "$WF"
-check "och filen är borta ur kön" test ! -e "$WF"
-check "och ingen hälsning från root" absent 'hej från root'
+check "owner outside bbs-pattern: rc 0" rc_is 0 proc root "$WF"
+check "and the file is gone from the queue" test ! -e "$WF"
+check "and no greeting from root" absent 'hej från root'
 
 # ---- F. Limit 100: the 101st removes the oldest -----------------------------
 newroot
 for i in $(seq 1 101); do mkwall "t$i" "t$i\n"; lib handle_wall "$WF" bbs-alice; done
-check "101 hälsningar: 100 kvar" eq "$(wallcount)" 100
-check "äldsta (t1) är borta" absent t1
-check "nästa (t2) finns kvar" present t2
-check "nyaste (t101) finns kvar" present t101
-check "ingen arkivkatalog skapad" test ! -e "$root/state/wall-trimmed"
+check "101 greetings: 100 left" eq "$(wallcount)" 100
+check "oldest (t1) is gone" absent t1
+check "next (t2) is kept" present t2
+check "newest (t101) is kept" present t101
+check "no archive directory created" test ! -e "$root/state/wall-trimmed"
 
 # ---- G. Two publishers at once ----------------------------------------------
 newroot
 ( for i in $(seq 1 60); do mkwall "p$i" "p$i\n"; lib handle_wall "$WF" bbs-alice; done ) &
 ( for i in $(seq 1 60); do mkwall "q$i" "q$i\n"; lib handle_wall "$WF" bbs-bob; done ) &
 wait
-check "120 samtidiga: högst 100 kvar" eq "$(wallcount)" 100
-check "inga tempfiler kvar" eq "$(find "$root/wall" -name '.tmp.*' | wc -l)" 0
-check "sista från alice (p60) finns" present p60
-check "sista från bob (q60) finns" present q60
+check "120 concurrent: at most 100 left" eq "$(wallcount)" 100
+check "no temp files left" eq "$(find "$root/wall" -name '.tmp.*' | wc -l)" 0
+check "last from alice (p60) is there" present p60
+check "last from bob (q60) is there" present q60
 
 # ---- H. Lock held by someone else -------------------------------------------
 newroot
 mkwall held 'väntar på lås\n'
 ( exec 8>>"$root/state/wall.lock"; flock 8; sleep 3 ) &
 sleep 0.5
-check "låst wall: rc 2" rc_is 2 locked_proc "$WF"
-check "och filen ligger kvar för nästa körning" test -e "$WF"
-check "och ingen hälsning publicerad" eq "$(wallcount)" 0
+check "wall locked: rc 2" rc_is 2 locked_proc "$WF"
+check "and the file stays for the next run" test -e "$WF"
+check "and no greeting published" eq "$(wallcount)" 0
 wait
 
 # ---- I. Menu: list, entry view, write, main menu ----------------------------
@@ -157,20 +157,20 @@ LONGF=$(grep -l 'långt meddelande' "$root"/wall/*.msg)
 for w in 40 60 80; do
     o=$scratch/wall-entry-$w.out
     menu_run "$o" wall_entry "$LONGF" "$w"
-    check "vy vid $w: ingen rad bredare än $w" fits "$w" "$o"
-    check "vy vid $w: texten med åäö syns" grep -q 'åäö' "$o"
-    check "vy vid $w: avsändare och datum" grep -q 'by bob' "$o"
+    check "view at $w: no line wider than $w" fits "$w" "$o"
+    check "view at $w: the text with åäö is shown" grep -q 'åäö' "$o"
+    check "view at $w: author and date" grep -q 'by bob' "$o"
 done
 
 o1=$scratch/wall-menu-1.out
 printf 'q\n' | menu_run "$o1" wall_menu
 # Page 1 only: the newest (bob's long greeting), then 12 down to 4.
-check "lista: nyast först (långt före 12)" ordered 'långt' 'Greeting number 12' "$o1"
-check "lista: 12 före 4" before 'Greeting number 12' 'Greeting number 4' "$o1"
-check "sida 1 av 2 visas" grep -q '^Page 1 of 2$' "$o1"
-check "sida 1 visar 4" grep -qxF 'Greeting number 4' "$o1"
-check "lista: 10 per sida (ingen 3 på sida 1)" not_in 'Greeting number 3' "$o1"
-check "mellanrum: tom rad efter rubriken, en mellan poster, två före sidraden" python3 -I -c '
+check "list: newest first (long one before 12)" ordered 'långt' 'Greeting number 12' "$o1"
+check "list: 12 before 4" before 'Greeting number 12' 'Greeting number 4' "$o1"
+check "page 1 of 2 is shown" grep -q '^Page 1 of 2$' "$o1"
+check "page 1 shows 4" grep -qxF 'Greeting number 4' "$o1"
+check "list: 10 per page (no 3 on page 1)" not_in 'Greeting number 3' "$o1"
+check "spacing: blank line after the heading, one between entries, two before the page line" python3 -I -c '
 import sys
 L = open(sys.argv[1], encoding="utf-8").read().split("\n")
 i = L.index("== Wall ==")
@@ -182,38 +182,38 @@ assert not any(L[k] == "" and L[k + 1] == "" for k in range(i + 1, p - 2))
 
 o2=$scratch/wall-menu-2.out
 printf '\n\nq\n' | menu_run "$o2" wall_menu
-check "Enter går till sida 2" grep -q '^Page 2 of 2$' "$o2"
-check "sida 2 visar 2" grep -qxF 'Greeting number 2' "$o2"
-check "sida 2 visar 1" grep -qxF 'Greeting number 1' "$o2"
+check "Enter goes to page 2" grep -q '^Page 2 of 2$' "$o2"
+check "page 2 shows 2" grep -qxF 'Greeting number 2' "$o2"
+check "page 2 shows 1" grep -qxF 'Greeting number 1' "$o2"
 
 o3=$scratch/wall-main.out
 printf '2\n' | menu_run "$o3" main_nav
-check "huvudmeny: 2) Wall" grep -qx '2) Wall' "$o3"
-check "huvudmeny: 3) Users, 4) My account" grep -qx '4) My account' "$o3"
-check "rubrik: [W] Wall" grep -q '\[W\] Wall' "$o3"
-check "valet 2 öppnar Wall" grep -q 'NAV=wall' "$o3"
-check "huvudmeny: 5) Private messages" grep -q '^5) Private messages' "$o3"
+check "main menu: 2) Wall" grep -qx '2) Wall' "$o3"
+check "main menu: 3) Users, 4) My account" grep -qx '4) My account' "$o3"
+check "header: [W] Wall" grep -q '\[W\] Wall' "$o3"
+check "choice 2 opens Wall" grep -q 'NAV=wall' "$o3"
+check "main menu: 5) Private messages" grep -q '^5) Private messages' "$o3"
 
 o4=$scratch/wall-main-w.out
 printf 'w\n' | menu_run "$o4" main_nav
-check "bokstaven w öppnar Wall" grep -q 'NAV=wall' "$o4"
+check "the key w opens Wall" grep -q 'NAV=wall' "$o4"
 
 # Write: menu queues *.wall with a nanosecond name, the publisher then publishes it.
 o5=$scratch/wall-write.out
 printf 'Hej från menyn\n\n' | menu_run "$o5" wall_write
 WQ=$(ls "$root"/queue/incoming/*.wall 2>/dev/null | head -n 1)
-check "skriv: en *.wall i kön" test -n "$WQ"
-check "kön: namn med nanosekunder" ns_name "$WQ"
-check "kön: texten som skrevs" grep -qxF 'Hej från menyn' "$WQ"
-check "publiceras från kön" rc_is 0 proc bbs-alice "$WQ"
-check "hälsningen syns i wall/" present 'Hej från menyn'
+check "write: one *.wall in the queue" test -n "$WQ"
+check "queue: name with nanoseconds" ns_name "$WQ"
+check "queue: the text that was written" grep -qxF 'Hej från menyn' "$WQ"
+check "published from the queue" rc_is 0 proc bbs-alice "$WQ"
+check "the greeting shows in wall/" present 'Hej från menyn'
 
 printf '%s\n\n' "$(python3 -c 'print("å" * 141)')" | menu_run "$o5" wall_write
-check "skriv: 141 tecken köas inte" eq "$(ls "$root"/queue/incoming/*.wall 2>/dev/null | wc -l)" 0
+check "write: 141 characters are not queued" eq "$(ls "$root"/queue/incoming/*.wall 2>/dev/null | wc -l)" 0
 
 o6=$scratch/wall-top.out
 menu_run "$o6" top_bar ""
-check "rubriken: [W] Wall" grep -q '\[W\] Wall' "$o6"
+check "header: [W] Wall" grep -q '\[W\] Wall' "$o6"
 
 echo "SUMMARY pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]
