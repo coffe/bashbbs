@@ -4,6 +4,11 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 src=$(dirname "$(readlink -f "$0")")
 
+# Required tools. Everything else is in the Debian base system.
+for tool in python3 flock; do
+    command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }
+done
+
 install -d -m 0755 /usr/local/lib/bashbbs
 install -m 0755 "$src/lib/menu.sh" /usr/local/lib/bashbbs/menu.sh
 install -m 0755 "$src/bin/bbs-shell" /usr/local/sbin/bbs-shell
@@ -12,12 +17,30 @@ install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
 install -m 0755 "$src/bin/bbs-ingest" /usr/local/sbin/bbs-ingest
 install -m 0755 "$src/sbin/bbs-drop" /usr/local/sbin/bbs-drop
 install -m 0755 "$src/sbin/bbs-approve" /usr/local/sbin/bbs-approve
+install -m 0755 "$src/bin/bbs-news-status" /usr/local/sbin/bbs-news-status
+install -m 0755 "$src/sbin/bbs-news-index" /usr/local/sbin/bbs-news-index
+install -m 0644 "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
+install -m 0755 "$src/lib/wrap.py" /usr/local/lib/bashbbs/wrap.py
+install -m 0755 "$src/lib/news.sh" /usr/local/lib/bashbbs/news.sh
 
 # Data layout. Users never write into boards/ or keys/ directly.
 install -d -m 0755 /srv/bashbbs /srv/bashbbs/home /srv/bashbbs/keys /srv/bashbbs/users
 install -d -m 0755 /srv/bashbbs/boards/general
 install -d -m 0755 /srv/bashbbs/queue
+
+# One-line greetings (the wall). The publisher writes them as root and keeps the newest 100.
+install -d -m 0755 /srv/bashbbs/wall
+
+# News ledger and scratch space (state/tmp is on the same filesystem as boards/,
+# so the publisher can mv into place atomically). The category allowlist is read
+# by bbs-publish and bbs-drop from /srv/bashbbs/lib.
+install -d -m 0755 /srv/bashbbs/state /srv/bashbbs/state/tmp /srv/bashbbs/lib
+install -m 0644 "$src/lib/news-categories.conf" /srv/bashbbs/lib/news-categories.conf
 install -d -m 1733 /srv/bashbbs/queue/incoming
+
+# Protected history (old versions of edited posts) and admin backups, written by
+# bbs-publish. Root only. install -d sets the mode only on the last level, so each is listed.
+install -d -m 0700 /srv/bashbbs/state/history /srv/bashbbs/state/admin-backup
 
 # Private boards: one meta file per board (owner, created). Sysops are listed
 # one name per line, without the bbs- prefix, and are added to every private board.
