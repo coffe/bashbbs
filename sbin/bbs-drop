@@ -5,18 +5,39 @@
 #     then a blank line, then the body. The post is queued as bbs-news, so the
 #     publisher checks it like any other news post. Files that do not fit the
 #     format are moved to drop/rejected.
-#  2. Delete news posts older than KEEP_DAYS.
+#  2. Delete news posts older than KEEP_DAYS, in boards/news/<category>/ and in
+#     the legacy flat boards/news/. Also delete files that have been in
+#     drop/rejected for more than KEEP_DAYS. When articles were deleted, their
+#     rows are also removed from the news index state/news-index.tsv (temp file
+#     state/news-index.tmp.<pid> + atomic mv, under state/news.lock). The index
+#     is not touched when nothing was deleted, and no file in boards/ is touched
+#     by the index rewrite.
+# Categories come from lib/news-categories.conf. BBS_ROOT can be set for tests.
 set -uo pipefail
 umask 022
+export LC_ALL=C.UTF-8
 
-BBS_ROOT=/srv/bashbbs
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
 DROP=$BBS_ROOT/drop/news
 REJECTED=$BBS_ROOT/drop/rejected
 INCOMING=$BBS_ROOT/queue/incoming
 NEWS=$BBS_ROOT/boards/news
+STATE=$BBS_ROOT/state
+INDEX=$STATE/news-index.tsv
+LOCK_WAIT=${BBS_LOCK_WAIT:-20}
 KEEP_DAYS=14
 MAX_BYTES=16384
-CATEGORIES="tech"   # add culture etc. here when they exist
+CATEGORIES_FILE=$BBS_ROOT/lib/news-categories.conf
+
+# Print the allowed categories, one per line. Comments and blanks are skipped.
+categories() {
+    local c
+    [[ -f $CATEGORIES_FILE ]] || return 0
+    while read -r c || [[ -n $c ]]; do
+        [[ -z $c || $c == \#* ]] && continue
+        [[ $c =~ ^[a-z][a-z0-9-]{0,31}$ ]] && printf '%s\n' "$c"
+    done < "$CATEGORIES_FILE"
+}
 
 reject() { # reject <file>
     mkdir -p "$REJECTED"
@@ -25,12 +46,20 @@ reject() { # reject <file>
 }
 
 post_drop() { # post_drop <file>
-    local f=$1 base cat slug size title tmp
+    local f=$1 base cat c slug size title tmp id
     base=$(basename "$f")
-    [[ $base =~ ^([a-z]+)-([a-z0-9-]{1,60})\.txt$ ]] || return 1
-    cat=${BASH_REMATCH[1]}
-    slug=${BASH_REMATCH[2]}
-    [[ " $CATEGORIES " == *" $cat "* ]] || return 1
+    # File name: <category>-<slug>.txt. The category may contain hyphens, so it
+    # is matched against the allowlist (longest name first wins).
+    cat=""
+    while read -r c; do
+        if [[ $base == "$c"-*.txt && ${#c} -gt ${#cat} ]]; then cat=$c; fi
+    done < <(categories)
+    if [[ -z $cat ]]; then
+        echo "skipped drop (category not in allowlist): $base" >&2
+        return 1
+    fi
+    slug=${base#"$cat"-}; slug=${slug%.txt}
+    [[ $slug =~ ^[a-z0-9-]{1,60}$ ]] || return 1
     size=$(stat -c %s "$f")
     (( size > 0 && size <= MAX_BYTES )) || return 1
     title=$(head -n 1 "$f" | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g' | head -c 100)
@@ -40,7 +69,18 @@ post_drop() { # post_drop <file>
     tmp=$(mktemp "$INCOMING/.tmp.XXXXXX") || return 1
     {
         printf 'Board: news\n'
-        printf 'Subject: [%s] %s\n\n' "${cat^^}" "$title"
+        if [[ -f $BBS_ROOT/meta/news.sections ]]; then
+            # Section board: the publisher wants the article headers. The id is
+            # a hash of the file, so the same drop file is never published twice.
+            id=$(sha256sum < "$f" | cut -c1-64)
+            printf 'Subject: %s\n' "$title"
+            printf 'Category: %s\n' "$cat"
+            printf 'Article-Id: %s\n' "$id"
+            printf 'Source: drop\n'
+            printf 'Published: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+            printf 'Subject: [%s] %s\n\n' "${cat^^}" "$title"
+        fi
         tail -n +2 "$f" | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'
     } > "$tmp"
     chown bbs-news "$tmp" || { rm -f "$tmp"; return 1; }
@@ -49,17 +89,49 @@ post_drop() { # post_drop <file>
     echo "queued drop: $slug"
 }
 
+# Remove the rows of deleted articles (matched on the path field) from the
+# index. Only writes when a row is actually removed.
+prune_index() { # prune_index <deleted path>...
+    local list tmp=$STATE/news-index.tmp.$$
+    (( $# )) || return 0
+    [[ -f $INDEX && ! -L $INDEX ]] || return 0
+    exec 9>>"$STATE/news.lock" || return 1
+    if ! flock -w "$LOCK_WAIT" 9; then
+        echo "bbs-drop: index lock busy, index not pruned (next run or repair fixes it)" >&2
+        exec 9>&-; return 1
+    fi
+    mkdir -p "$STATE/tmp" 2>/dev/null
+    list=$(mktemp "$STATE/tmp/prune.XXXXXX") || { exec 9>&-; return 1; }
+    printf '%s\n' "$@" > "$list"
+    if awk -F'\t' 'NR == FNR { g[$0] = 1; next } !($5 in g)' "$list" "$INDEX" > "$tmp" \
+        && ! cmp -s -- "$tmp" "$INDEX"; then
+        chmod 0644 "$tmp" && mv -f -- "$tmp" "$INDEX" || rm -f -- "$tmp"
+    fi
+    rm -f -- "$tmp" "$list"
+    exec 9>&-
+}
+
 expire_news() {
     local f base epoch cutoff
+    local -a gone=()
     cutoff=$(( $(date +%s) - KEEP_DAYS * 86400 ))
-    for f in "$NEWS"/*.msg; do
+    # Section layout boards/news/<category>/ and the legacy flat boards/news/.
+    for f in "$NEWS"/*/*.msg "$NEWS"/*.msg; do
         [[ -f $f && ! -L $f ]] || continue
         # Publisher file names start with the epoch time: <epoch>-<uuid>.msg
         base=$(basename "$f")
         epoch=${base%%-*}
         [[ $epoch =~ ^[0-9]+$ ]] || continue
-        (( epoch < cutoff )) && rm -f "$f"
+        (( epoch < cutoff )) && rm -f "$f" && gone+=("$f")
     done
+    prune_index "${gone[@]}"
+}
+
+# Rejected queue files and rejected drop files are kept KEEP_DAYS from the day
+# they were put there (file mtime), then removed.
+expire_rejected() {
+    [[ -d $REJECTED ]] || return 0
+    find "$REJECTED" -maxdepth 1 -type f -mtime "+$KEEP_DAYS" -delete
 }
 
 for f in "$DROP"/*.txt; do
@@ -68,3 +140,4 @@ for f in "$DROP"/*.txt; do
 done
 
 expire_news
+expire_rejected

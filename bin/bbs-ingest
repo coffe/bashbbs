@@ -5,8 +5,20 @@
 set -euo pipefail
 umask 077
 
-INCOMING=/srv/bashbbs/queue/incoming
-[[ $(id -un) == bbs-news ]] || { echo "not allowed" >&2; exit 1; }
+# Production is fixed: /srv/bashbbs, written as bbs-news. A client must not be
+# able to change the root or the owner through its environment. The only
+# override is a test run: BASHBBS_TEST=1, not as bbs-news, BBS_TEST_ROOT outside
+# /srv, and BBS_TEST_OWNER naming the user who runs the test. The forced command
+# always runs as bbs-news, so a client cannot enter test mode.
+BBS_ROOT=/srv/bashbbs
+OWNER=bbs-news
+if [[ ${BASHBBS_TEST:-} == 1 && $(id -un) != bbs-news ]]; then
+    [[ ${BBS_TEST_ROOT:-} == /* && ${BBS_TEST_ROOT} != /srv && ${BBS_TEST_ROOT} != /srv/* ]] || { echo "not allowed" >&2; exit 1; }
+    BBS_ROOT=$BBS_TEST_ROOT
+    OWNER=${BBS_TEST_OWNER:?}
+fi
+[[ $(id -un) == "$OWNER" ]] || { echo "not allowed" >&2; exit 1; }
+INCOMING=$BBS_ROOT/queue/incoming
 
 tmp=$(mktemp "$INCOMING/.tmp.XXXXXX")
 head -c 16384 > "$tmp"

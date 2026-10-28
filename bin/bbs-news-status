@@ -1,0 +1,51 @@
+#!/bin/bash
+# Read-only status lookup for news articles. Reads one Article-Id per line from
+# stdin (at most 200 lines) and prints, per line:
+#   <id> TAB <published|rejected|unknown> TAB <reason>
+# A line that is not a valid Article-Id prints "- TAB invalid TAB bad-id".
+# The ledger is only read, under a shared flock. Nothing is ever written.
+set -uo pipefail
+export LC_ALL=C
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+LEDGER=$BBS_ROOT/state/news-ids.tsv
+LOCK=$BBS_ROOT/state/news.lock
+MAX_LINES=200
+ID_RE='^(legacy-[0-9a-f-]{36}|[0-9a-f]{64})$'
+
+ids=()
+n=0
+while IFS= read -r line || [[ -n $line ]]; do
+    n=$((n + 1))
+    if (( n > MAX_LINES )); then
+        echo "bbs-news-status: more than $MAX_LINES lines, the rest is ignored" >&2
+        break
+    fi
+    line=${line%$'\r'}
+    ids+=("$line")
+done
+
+# Snapshot of the ledger taken under a shared lock, so a writer is never half-read.
+# Without a lock file (nothing published yet) there is nothing to wait for.
+snap=$(mktemp) || exit 1
+trap 'rm -f "$snap"' EXIT
+if [[ -f $LOCK ]]; then
+    exec 9< "$LOCK" || exit 1
+    flock -s -w 10 9 || { echo "bbs-news-status: ledger busy" >&2; exit 3; }
+fi
+if [[ -f $LEDGER ]]; then cat -- "$LEDGER" > "$snap" 2>/dev/null; fi
+
+for id in "${ids[@]}"; do
+    if [[ ! $id =~ $ID_RE ]]; then
+        printf -- '-\tinvalid\tbad-id\n'
+        continue
+    fi
+    # published wins over any other row; otherwise the last row decides.
+    row=$(awk -F'\t' -v id="$id" '
+        $1 == id {
+            if ($2 == "published" && !pub) { pub = 1; st = $2; rs = $4 }
+            else if (!pub) { st = $2; rs = $4 }
+        }
+        END { if (st == "") { st = "unknown"; rs = "" } printf "%s\t%s", st, rs }' "$snap")
+    printf '%s\t%s\n' "$id" "$row"
+done

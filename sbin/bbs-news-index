@@ -1,0 +1,70 @@
+#!/bin/bash
+# Root-run maintenance of the news index state/news-index.tsv.
+#   bbs-news-index repair   rebuild the index from the article files if the
+#                           marker state/news-index.dirty is set, or the index
+#                           is missing while articles exist. One awk pass
+#                           (news_rebuild_index), temp file + atomic mv, then
+#                           the marker is removed. Does nothing otherwise.
+#   bbs-news-index rebuild  rebuild unconditionally.
+# Takes state/news.lock, the same lock bbs-publish and bbs-drop hold while they
+# change the index, so a rebuild never races a publication.
+# BBS_ROOT moves the tree; BBS_LIB names the directory with news.sh;
+# BBS_LOCK_WAIT is the flock timeout in seconds.
+set -uo pipefail
+umask 022
+export LC_ALL=C.UTF-8
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+BBS_LIB=${BBS_LIB:-/usr/local/lib/bashbbs}
+STATE=$BBS_ROOT/state
+INDEX=$STATE/news-index.tsv
+DIRTY=$STATE/news-index.dirty
+LOCK_WAIT=${BBS_LOCK_WAIT:-20}
+
+# shellcheck disable=SC1091
+source "$BBS_LIB/news.sh" || { echo "bbs-news-index: cannot load $BBS_LIB/news.sh" >&2; exit 1; }
+
+# 0 when some article file exists. One find that stops at the first hit.
+have_articles() {
+    [[ -n $(find "$BBS_ROOT/boards/news" -mindepth 2 -maxdepth 2 -type f -name '*.msg' -print -quit 2>/dev/null) ]]
+}
+
+# Print why a rebuild is due (marker, missing, forced); nothing if none is.
+why() { # why <force: 0|1>
+    if [[ -e $DIRTY ]]; then echo marker
+    elif [[ ! -e $INDEX ]] && have_articles; then echo missing
+    elif (( $1 )); then echo forced
+    fi
+}
+
+repair() { # repair <force: 0|1>; caller holds the lock
+    local why
+    why=$(why "$1")
+    [[ -n $why ]] || return 0
+    if news_rebuild_index "$BBS_ROOT"; then
+        rm -f -- "$DIRTY"
+        echo "news index rebuilt ($why)" >&2
+    else
+        echo "bbs-news-index: rebuild failed, marker kept" >&2
+        return 1
+    fi
+}
+
+main() {
+    local force=0
+    case ${1:-} in
+        repair) ;;
+        rebuild) force=1 ;;
+        *) echo "usage: bbs-news-index repair|rebuild" >&2; return 2 ;;
+    esac
+    # Nothing to do: do not touch the lock (a busy publisher is not waited for).
+    [[ -n $(why "$force") ]] || return 0
+    mkdir -p "$STATE/tmp" || return 1
+    exec 9>>"$STATE/news.lock" || return 1
+    flock -w "$LOCK_WAIT" 9 || { echo "bbs-news-index: lock busy" >&2; return 3; }
+    repair "$force"
+}
+
+# Sourced by a test: only the functions are wanted.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+main "$@"
