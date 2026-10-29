@@ -1,0 +1,116 @@
+#!/bin/bash
+# Validate one SSH public key line (or one key label) read from stdin.
+# A pure filter: no root, no files outside a private temp dir, no network.
+# Used by the menu (quick feedback), bbs-keys-apply and bbs-keys (the real check).
+#
+# Usage: bbs-keycheck [--legacy]   < "type body [comment]"
+#        bbs-keycheck --label      < "label"
+# Key OK:    stdout "OK<TAB>type<TAB>body<TAB>SHA256:fp<TAB>bits", exit 0
+# Label OK:  stdout "OK<TAB>label", exit 0
+# Error:     stdout "ERR<TAB>code<TAB>text", exit 1 (exit 2 for legacy-needed)
+# Output never contains the input beyond the canonical type and body.
+#
+# Type list, base64 rule, 4096-byte limit and "exactly one line" are the same as
+# web/apply.cgi and sbin/bbs-provision (tests/keys_test.sh checks the parity).
+set -uo pipefail
+export LC_ALL=C
+umask 077
+
+KEY_TYPES="ssh-ed25519 ssh-rsa ecdsa-sha2-nistp256 ecdsa-sha2-nistp384 ecdsa-sha2-nistp521 sk-ssh-ed25519@openssh.com"
+MAX_LINE=4096
+LABEL_RE='^[A-Za-z0-9 ._-]{1,20}$'
+
+legacy=0 mode=key
+for a in "$@"; do
+    case $a in
+        --legacy) legacy=1 ;;
+        --label) mode=label ;;
+        *) echo "usage: bbs-keycheck [--legacy | --label] < input" >&2; exit 64 ;;
+    esac
+done
+
+tmpd=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$tmpd"' EXIT
+
+err() { # err <code> <text> [exit]
+    printf 'ERR\t%s\t%s\n' "$1" "$2"
+    exit "${3:-1}"
+}
+
+raw=$tmpd/in
+head -c 8193 > "$raw"
+size=$(stat -c %s "$raw")
+# NUL bytes would vanish in a shell variable, so count them first.
+nonul=$(tr -d '\000' < "$raw" | wc -c)
+
+if [[ $mode == label ]]; then
+    msg="A name is 1-20 letters, digits, spaces, dots, dashes or underscores."
+    (( size <= 22 && nonul == size )) || err label "$msg"
+    label=$(cat -- "$raw")
+    label=${label%$'\r'}
+    [[ $label =~ $LABEL_RE ]] || err label "$msg"
+    printf 'OK\t%s\n' "$label"
+    exit 0
+fi
+
+(( size > 0 )) || err empty "Nothing was pasted."
+# Private key material is refused before any other rule, whatever its shape.
+if grep -qaE -- '-----BEGIN|PRIVATE KEY|PuTTY-User-Key-File' "$raw"; then
+    err private-key "That looks like a private key. Never paste it anywhere."
+fi
+(( nonul == size )) || err multiline "Paste the key as one single line."
+line=$(cat -- "$raw")          # drops trailing newlines only
+line=${line%$'\r'}
+[[ -n ${line//[[:space:]]/} ]] || err empty "Nothing was pasted."
+(( ${#line} <= MAX_LINE )) || err toolong "The key line is longer than 4096 bytes."
+[[ $line != *$'\n'* && $line != *$'\r'* ]] || err multiline "Paste the key as one single line."
+[[ ${line//$'\t'/ } != *[[:cntrl:]]* ]] || err multiline "Paste the key as one single line."
+
+read -r ktype body _ <<< "$line"
+if [[ " $KEY_TYPES " != *" $ktype "* ]]; then
+    [[ $ktype == *-cert-v01@openssh.com ]] && err cert "Certificates are not accepted. Paste the plain public key."
+    read -ra words <<< "$line"
+    for w in "${words[@]}"; do
+        [[ " $KEY_TYPES " == *" $w "* || $w == *-cert-v01@openssh.com ]] \
+            && err option "Options before the key are not allowed. Start the line with the key type."
+    done
+    [[ $ktype == *[=,\"]* ]] \
+        && err option "Options before the key are not allowed. Start the line with the key type."
+    err type "Unsupported key type. Use ssh-ed25519, ecdsa or ssh-rsa."
+fi
+
+b64msg="The key data is damaged. Copy the whole line again."
+[[ $body =~ ^[A-Za-z0-9+/]+={0,2}$ ]] && (( ${#body} % 4 == 0 )) || err base64 "$b64msg"
+blob=$tmpd/blob
+printf '%s' "$body" | base64 -d > "$blob" 2>/dev/null || err base64 "$b64msg"
+# The blob starts with a 4-byte length and the key type; it must match field one.
+read -r b0 b1 b2 b3 < <(head -c 4 "$blob" | od -An -tu1)
+[[ -n ${b3:-} ]] || err base64 "$b64msg"
+nlen=$(( (b0 << 24) | (b1 << 16) | (b2 << 8) | b3 ))
+(( nlen > 0 && nlen <= 64 )) || err mismatch "The key type does not match the key data."
+inner=$(tail -c +5 "$blob" | head -c "$nlen")
+[[ $inner == "$ktype" ]] || err mismatch "The key type does not match the key data."
+
+pub=$tmpd/key.pub
+printf '%s %s\n' "$ktype" "$body" > "$pub"
+out=$(ssh-keygen -l -E sha256 -f "$pub" 2>/dev/null) || err keygen "ssh-keygen could not read this key."
+read -r bits fp _ <<< "$out"
+kind=${out##*(}; kind=${kind%)}
+[[ $bits =~ ^[0-9]{1,5}$ && $fp =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || err keygen "ssh-keygen could not read this key."
+case $ktype in
+    ssh-ed25519) want=ED25519 ;;
+    ssh-rsa) want=RSA ;;
+    ecdsa-sha2-nistp*) want=ECDSA; [[ $bits == "${ktype#ecdsa-sha2-nistp}" ]] || want=- ;;
+    sk-ssh-ed25519@openssh.com) want=ED25519-SK ;;
+esac
+[[ $kind == "$want" ]] || err mismatch "The key type does not match the key data."
+
+if [[ $ktype == ssh-rsa ]] && (( bits < 2048 )); then
+    if (( bits == 1536 )); then
+        (( legacy )) || err legacy-needed "RSA keys under 2048 bits are not accepted. SyncTERM 1.9 uses 1536: type LEGACY to accept this one." 2
+    else
+        err rsa-short "RSA keys must be at least 2048 bits."
+    fi
+fi
+
+printf 'OK\t%s\t%s\t%s\t%s\n' "$ktype" "$body" "$fp" "$bits"

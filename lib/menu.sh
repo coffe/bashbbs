@@ -182,6 +182,350 @@ my_account() {
         echo "UUID:  $uuid"
     fi
     echo "Keys:  $keys registered"
+    echo
+    echo "[K] SSH keys"
+    read_key "[Any key] " || true
+    echo
+    [[ $MKEY == [Kk] ]] && ssh_keys_menu
+    return 0
+}
+
+# ---- SSH keys ---------------------------------------------------------------
+# The screen reads keys/bbs-<name> and users/<name>/keys.meta (both world-readable)
+# and state/keys-results/<name>. It never writes there. A change is a request file
+# in queue/keys; bbs-keys-apply (root) validates it again and does the work.
+KEYS_MAX=8
+KEYS_SENT_ID=()     # requests sent in this session ...
+KEYS_SENT_TXT=()    # ... and a short text for each ("add laptop")
+k_fp=() k_label=() k_type=() k_legacy=() k_seen=()
+PICK=
+
+# Fill k_* from the key file. Order is the order in the file. Labels, "tested" and the
+# legacy flag come from keys.meta, matched by fingerprint. Fields are split on 0x1f
+# (not Tab) so an empty field does not make the others shift.
+keys_load() {
+    local line bits fp ty t mfp mlabel madded msrc mseen mleg i=0
+    local -A m_label=() m_seen=() m_leg=()
+    k_fp=() k_label=() k_type=() k_legacy=() k_seen=()
+    if [[ -r $BBS_ROOT/users/$me/keys.meta ]]; then
+        while IFS=$'\x1f' read -r mfp mlabel madded msrc mseen mleg; do
+            [[ $mfp =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || continue
+            m_label[$mfp]=$(printf '%s' "$mlabel" | safe)
+            m_seen[$mfp]=$(printf '%s' "${mseen:--}" | safe)
+            m_leg[$mfp]=$(printf '%s' "${mleg:-0}" | safe)
+        done < <(sed 's/\t/\x1f/g' "$BBS_ROOT/users/$me/keys.meta" 2>/dev/null)
+    fi
+    [[ -r $BBS_ROOT/keys/$login ]] || return 0
+    while IFS= read -r line; do
+        [[ $line =~ ^([0-9]+)\ (SHA256:[A-Za-z0-9+/]+)\ .*\(([A-Za-z0-9-]+)\)$ ]] || continue
+        bits=${BASH_REMATCH[1]} fp=${BASH_REMATCH[2]} ty=${BASH_REMATCH[3],,}
+        case $ty in
+            ed25519) t=ed25519 ;;
+            ed25519-sk) t=ed25-sk ;;
+            *) t=$ty$bits ;;
+        esac
+        k_fp+=("$fp")
+        k_type+=("$t")
+        if [[ -n ${m_label[$fp]:-} ]]; then k_label+=("${m_label[$fp]}")
+        elif (( i == 0 )); then k_label+=(registration)
+        else k_label+=(key); fi
+        if [[ ${m_leg[$fp]:-0} == 1 || ( $ty == rsa && $bits == 1536 ) ]]; then k_legacy+=(1); else k_legacy+=(0); fi
+        if [[ -n ${m_seen[$fp]:-} && ${m_seen[$fp]} != - ]]; then k_seen+=(1); else k_seen+=(0); fi
+        i=$((i + 1))
+    done < <(ssh-keygen -l -f "$BBS_ROOT/keys/$login" 2>/dev/null)
+    return 0
+}
+
+# One row per key, 39 columns: number, ! for a legacy key, label, type, the first
+# eight characters of the fingerprint, tested or untested.
+keys_list() {
+    local i flag st
+    if (( ${#k_fp[@]} == 0 )); then
+        echo "No keys."
+        return
+    fi
+    for i in "${!k_fp[@]}"; do
+        flag=" "; (( k_legacy[i] )) && flag="!"
+        st=untested; (( k_seen[i] )) && st=tested
+        printf '%s%s %-9s %-8s %-8s %s\n' "$((i + 1))" "$flag" \
+            "$(list_fit 9 "${k_label[i]}")" "$(list_fit 8 "${k_type[i]}")" \
+            "${k_fp[i]:7:8}" "$st"
+    done
+}
+
+# The last five lines of state/keys-results/<name>, then requests of this session that
+# are still in the queue. A request that is still in queue/keys shows as pending.
+keys_status() {
+    local f=$BBS_ROOT/state/keys-results/$me id ts act label st why i out=""
+    local -A got=()
+    if [[ -r $f ]]; then
+        while IFS=$'\x1f' read -r id ts act label st why; do
+            [[ $id =~ ^[0-9]+-[A-Za-z0-9-]+$ ]] || continue
+            got[$id]=1
+            [[ -e $BBS_ROOT/queue/keys/$id.keys ]] && st=pending
+            out+=$(printf '%s%s: %s%s' "$act" "${label:+ $label}" "$st" "${why:+ - $why}" | safe)$'\n'
+        done < <(tail -n 5 "$f" | sed 's/\t/\x1f/g')
+    fi
+    for i in "${!KEYS_SENT_ID[@]}"; do
+        [[ -n ${got[${KEYS_SENT_ID[i]}]:-} ]] && continue
+        [[ -e $BBS_ROOT/queue/keys/${KEYS_SENT_ID[i]}.keys ]] || continue
+        out+="${KEYS_SENT_TXT[i]}: pending"$'\n'
+    done
+    [[ -n $out ]] || return 0
+    echo "Recent requests:"
+    printf '%s' "$out" | python3 "$NEWS_LIB/wrap.py" --keep-lines "$(term_width)"
+    echo
+}
+
+# Plain checks when bbs-keycheck is not installed. Same answer format as the tool:
+# OK<Tab>type<Tab>body<Tab>fingerprint<Tab>bits (exit 0), ERR<Tab>code<Tab>text (exit 1),
+# exit 2 for RSA 1536 without --legacy.
+keys_check_local() { # keys_check_local <line> [--legacy]
+    local type body rest tmp out bits fp want got
+    read -r type body rest <<< "$1"
+    case $type in
+        ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-rsa|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) ;;
+        *-cert-v01@openssh.com) printf 'ERR\tcert\tCertificates are not accepted.\n'; return 1 ;;
+        *) printf 'ERR\ttype\tThat is not a public key line.\n'; return 1 ;;
+    esac
+    [[ $body =~ ^[A-Za-z0-9+/]+=*$ ]] || { printf 'ERR\tbase64\tThe key text is not valid.\n'; return 1; }
+    tmp=$(mktemp) || { printf 'ERR\tkeygen\tCould not check the key.\n'; return 1; }
+    printf '%s %s\n' "$type" "$body" > "$tmp"
+    out=$(ssh-keygen -l -f "$tmp" 2>/dev/null)
+    rm -f "$tmp"
+    [[ $out =~ ^([0-9]+)\ (SHA256:[A-Za-z0-9+/]+)\ .*\(([A-Za-z0-9-]+)\)$ ]] \
+        || { printf 'ERR\tkeygen\tThe key is not valid.\n'; return 1; }
+    bits=${BASH_REMATCH[1]} fp=${BASH_REMATCH[2]} got=${BASH_REMATCH[3]}
+    case $type in
+        ssh-ed25519) want=ED25519 ;;
+        ssh-rsa) want=RSA ;;
+        ecdsa-sha2-*) want=ECDSA ;;
+        sk-ssh-ed25519@*) want=ED25519-SK ;;
+        *) want=ECDSA-SK ;;
+    esac
+    [[ $got == "$want" ]] || { printf 'ERR\tmismatch\tThe key type does not match.\n'; return 1; }
+    if [[ $want == RSA ]] && (( bits < 2048 )); then
+        if (( bits == 1536 )); then
+            [[ ${2:-} == --legacy ]] || {
+                printf 'ERR\tlegacy-needed\tRSA keys under 2048 bits are not accepted. SyncTERM 1.9 uses 1536: type LEGACY to accept this one.\n'
+                return 2
+            }
+        else
+            printf 'ERR\trsa-short\tRSA keys under 2048 bits are not accepted.\n'
+            return 1
+        fi
+    fi
+    printf 'OK\t%s\t%s\t%s\t%s\n' "$type" "$body" "$fp" "$bits"
+}
+
+# One line in, the answer of bbs-keycheck out (its exit status too). The tool is the
+# fast feedback; the root side checks again. BBS_KEYCHECK may point at a stub, tests only.
+keys_check() { # keys_check <line> [--legacy]
+    local kc=
+    if [[ -n ${BASHBBS_TEST:-} && -n ${BBS_KEYCHECK:-} ]]; then
+        kc=$BBS_KEYCHECK
+    else
+        kc=$(command -v bbs-keycheck) || kc=
+        [[ -z $kc && -x /usr/local/sbin/bbs-keycheck ]] && kc=/usr/local/sbin/bbs-keycheck
+    fi
+    if [[ -n $kc ]]; then
+        printf '%s\n' "$1" | "$kc" ${2:+"$2"}
+        return
+    fi
+    keys_check_local "$@"
+}
+
+# Write a request file (text on stdin) into queue/keys. The directory is 1733: the user
+# can create files there but not list or replace the others. Built under a dot name and
+# moved into place without overwriting (mv -n), so the publisher never sees a half file.
+# On success the id is in KEYS_REQ_ID.
+keys_request() {
+    local dir=$BBS_ROOT/queue/keys tmp uuid
+    KEYS_REQ_ID=
+    tmp=$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null) || return 1
+    cat > "$tmp"
+    uuid=$(cat /proc/sys/kernel/random/uuid)
+    KEYS_REQ_ID=$(date +%s)-${uuid//-/}
+    mv -n "$tmp" "$dir/$KEYS_REQ_ID.keys" 2>/dev/null
+    if [[ -e $tmp ]]; then rm -f "$tmp"; KEYS_REQ_ID=; return 1; fi
+    return 0
+}
+
+# Send a request and say so. <text> is the short name for the status list.
+keys_send() { # keys_send <text>; request on stdin
+    if keys_request; then
+        KEYS_SENT_ID+=("$KEYS_REQ_ID")
+        KEYS_SENT_TXT+=("$1")
+        echo "Received. Active within 60 s."
+        return 0
+    fi
+    echo "Could not send the request."
+    return 1
+}
+
+# Print a fingerprint folded to fit 40 columns.
+keys_fp_show() {
+    echo "Fingerprint:"
+    printf '%s\n' "$1" | fold -w 36 | sed 's/^/  /'
+}
+
+# Label: trimmed, 1-20 of A-Za-z0-9 space . _ -. Returns it in KEYS_LABEL.
+keys_label_ask() { # keys_label_ask <prompt>
+    local l
+    KEYS_LABEL=
+    echo "Letters, digits, space . _ - (max 20)."
+    echo "[Enter] cancels."
+    read -r -p "$1" l || return 1
+    l=${l#"${l%%[![:space:]]*}"}; l=${l%"${l##*[![:space:]]}"}
+    [[ -n $l ]] || return 1
+    [[ $l =~ ^[A-Za-z0-9\ ._-]{1,20}$ ]] || { echo "Not a valid label."; pause; return 1; }
+    KEYS_LABEL=$l
+}
+
+# Choose a key by number. The index is in PICK. Returns 1 when abandoned.
+keys_pick() { # keys_pick <prompt>
+    local n=${#k_fp[@]}
+    PICK=
+    (( n > 0 )) || { echo "No keys."; pause; return 1; }
+    read_key "$1 [1-$n] " || { echo; return 1; }
+    [[ $MKEY == [1-9] ]] || { echo; return 1; }
+    read_num "$n" || { echo; return 1; }
+    echo
+    PICK=$((NUM - 1))
+}
+
+keys_add() {
+    local line out rc kind ty body fp bits legacy="" ans f
+    keys_load
+    redraw
+    local_header "Add SSH key"
+    if (( ${#k_fp[@]} >= KEYS_MAX )); then
+        echo "Key limit reached ($KEYS_MAX). Remove one first."
+        pause
+        return
+    fi
+    echo "Paste ONE public key line."
+    echo "[Enter] cancels."
+    read -r -p "> " line || return
+    line=${line#"${line%%[![:space:]]*}"}; line=${line%"${line##*[![:space:]]}"}
+    [[ -n $line ]] || return
+    if [[ ${line^^} == -----BEGIN* || ${line^^} == *"PRIVATE KEY"* || ${line^^} == *"PUTTY-USER-KEY-FILE"* ]]; then
+        echo "That looks like a private key. Never paste it anywhere." | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+        pause
+        return
+    fi
+    if (( $(printf '%s' "$line" | wc -c) > 4096 )); then
+        echo "Too long (max 4096 bytes)."
+        pause
+        return
+    fi
+    if [[ $line == *[[:cntrl:]]* ]]; then
+        echo "That is not a key line."
+        pause
+        return
+    fi
+    out=$(keys_check "$line"); rc=$?
+    if (( rc == 2 )); then
+        IFS=$'\t' read -r kind ty body <<< "$out"
+        echo
+        printf '%s\n' "$body" | safe | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+        read -r -p "Type LEGACY to accept: " ans || return
+        [[ $ans == LEGACY ]] || { echo "Cancelled."; pause; return; }
+        legacy=yes
+        out=$(keys_check "$line" --legacy); rc=$?
+    fi
+    IFS=$'\t' read -r kind ty body fp bits <<< "$out"
+    if [[ $kind != OK ]]; then
+        if [[ $kind == ERR && -n $body ]]; then ans=$(printf '%s' "$body" | safe); else ans="The key was not accepted."; fi
+        printf '%s\n' "$ans" | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+        pause
+        return
+    fi
+    if [[ ! $ty =~ ^[a-z0-9@.-]+$ || ! $body =~ ^[A-Za-z0-9+/]+=*$ || ! $fp =~ ^SHA256:[A-Za-z0-9+/]{43}$ || ! $bits =~ ^[0-9]+$ ]]; then
+        echo "The key check gave a bad answer."
+        pause
+        return
+    fi
+    for f in "${k_fp[@]}"; do
+        [[ $f == "$fp" ]] && { echo "That key is already added."; pause; return; }
+    done
+    echo
+    keys_label_ask "Label: " || return
+    echo
+    echo "Label: $KEYS_LABEL"
+    echo "Type:  $ty, $bits bits"
+    [[ -n $legacy ]] && echo "Legacy RSA 1536 key."
+    keys_fp_show "$fp"
+    read_confirm "Add this key? [y/N] " || { echo "Cancelled."; pause; return; }
+    keys_send "add $KEYS_LABEL" < <(
+        printf 'Action: add\nLabel: %s\nKey: %s %s\n' "$KEYS_LABEL" "$ty" "$body"
+        [[ -n $legacy ]] && printf 'Legacy: yes\n'
+    ) || { pause; return; }
+    echo "Test the new key in a second session"
+    echo "before removing the old one."
+    pause
+}
+
+keys_remove() {
+    keys_load
+    redraw
+    local_header "Remove SSH key"
+    if (( ${#k_fp[@]} < 2 )); then
+        if (( ${#k_fp[@]} == 0 )); then echo "No keys."; else
+            echo "This is your only key. Removing it"
+            echo "would lock you out. Add another key,"
+            echo "test it, then remove this one."
+        fi
+        pause
+        return
+    fi
+    keys_list
+    echo
+    keys_pick "Remove number" || return
+    echo "Label: ${k_label[PICK]}"
+    keys_fp_show "${k_fp[PICK]}"
+    echo
+    echo "Make sure you can still log in with a remaining key." | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+    read_confirm "Remove this key? [y/N] " || { echo "Cancelled."; pause; return; }
+    keys_send "remove ${k_label[PICK]}" \
+        < <(printf 'Action: remove\nFingerprint: %s\nConfirm: yes\n' "${k_fp[PICK]}")
+    pause
+}
+
+keys_rename() {
+    keys_load
+    redraw
+    local_header "Rename SSH key"
+    (( ${#k_fp[@]} > 0 )) || { echo "No keys."; pause; return; }
+    keys_list
+    echo
+    keys_pick "Rename number" || return
+    keys_label_ask "New label: " || return
+    keys_send "rename $KEYS_LABEL" \
+        < <(printf 'Action: rename\nLabel: %s\nFingerprint: %s\n' "$KEYS_LABEL" "${k_fp[PICK]}")
+    pause
+}
+
+ssh_keys_menu() {
+    while true; do
+        keys_load
+        redraw
+        local_header "SSH keys" "[Q] Back"
+        keys_list
+        echo
+        keys_status
+        echo "A) Add  R) Remove  N) Name  Q) Back"
+        menu_key "> " "AaRrNnQq" "A: add  R: remove  N: rename  Q: back
+!: legacy RSA 1536 key
+untested: no login seen with this key
+Test a new key before removing old ones" local || return
+        case $MKEY in
+            [Aa]) keys_add ;;
+            [Rr]) keys_remove ;;
+            [Nn]) keys_rename ;;
+            [Qq]) return ;;
+        esac
+    done
 }
 
 # ---- Navigation -------------------------------------------------------------
@@ -852,7 +1196,7 @@ B M P W: jump" || { nav_req=quit; return; }
             1) nav_req=boards; return ;;
             2) nav_req=wall; return ;;
             3) list_users; pause ;;
-            4) my_account; pause ;;
+            4) my_account ;;
             5) nav_req=mail; return ;;
         esac
     done

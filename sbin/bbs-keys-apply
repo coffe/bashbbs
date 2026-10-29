@@ -1,0 +1,324 @@
+#!/bin/bash
+# Root-run handler for SSH key requests from the menu (Min profil -> SSH keys).
+# Run by bbs-keys.timer every 60 s. Spec: thoughts/kristofer/keys-contract.md.
+#
+# Per run, under state/keys.lock:
+#   1. read the ssh journal from the saved cursor and set `seen` in keys.meta for
+#      every "Accepted publickey for bbs-<name> ... SHA256:<fp>" line;
+#   2. handle each queue/keys/<id>.keys request once (add, remove, rename);
+#   3. write the keyfile atomically, keys.meta, one result row and one log row.
+#
+# Account binding: the account comes ONLY from the owner of the request file,
+# read with fstat on a descriptor opened with O_NOFOLLOW (regular file, nlink 1,
+# <= 8 kB). The content is copied into a root-private temp file and only the copy
+# is read. The owner must be bbs-<name> with shell bbs-shell. Nothing in the text
+# can name an account or a path; unknown headers reject the whole request.
+#
+# Lockout rule (fail-closed): a self-service remove needs another key left, at
+# least one remaining key with `seen` set, Confirm: yes, and a journal that was
+# readable in this run. Otherwise it is refused.
+#
+# Queue files: handled requests (done or failed, a result row is written) are
+# unlinked as in bbs-publish; files that fail the binding checks are moved to
+# drop/rejected. No errexit: one bad request never stops the loop.
+#
+# Test hooks (only when BASHBBS_TEST is set, never with BBS_ROOT=/srv/bashbbs):
+#   BBS_TEST_OWNER=bbs-<name>   stands in for the owner of files owned by the
+#                               running user (no passwd/shell lookup for it)
+#   BBS_KEYS_JOURNAL_CMD=<cmd>  replaces journalctl; prints journal lines in
+#                               `journalctl -o short-iso` format. Without it,
+#                               test mode treats the journal as unreadable.
+# BBS_ROOT moves the tree, BBS_LOCK_WAIT sets the flock timeout (as bbs-publish).
+set -uo pipefail
+umask 077
+export LC_ALL=C.UTF-8
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+KEYS_TEST=0
+[[ -n ${BASHBBS_TEST:-} ]] && KEYS_TEST=1
+if (( KEYS_TEST )); then
+    case $(readlink -m -- "$BBS_ROOT") in
+        /srv/bashbbs|/srv/bashbbs/*) echo "bbs-keys-apply: test mode refuses /srv/bashbbs" >&2; exit 1 ;;
+    esac
+else
+    [[ $EUID -eq 0 ]] || { echo "bbs-keys-apply: must run as root" >&2; exit 1; }
+fi
+
+self_dir=$(dirname "$(readlink -f "$0")")
+if [[ $self_dir == /usr/local/sbin ]]; then
+    KEYS_LIB=/usr/local/lib/bashbbs/keys-common.sh
+else
+    KEYS_LIB=$self_dir/../lib/keys-common.sh
+fi
+# shellcheck source=../lib/keys-common.sh
+. "$KEYS_LIB" || { echo "bbs-keys-apply: cannot load $KEYS_LIB" >&2; exit 1; }
+KEYCHECK=$self_dir/bbs-keycheck
+[[ -x $KEYCHECK ]] || { echo "bbs-keys-apply: missing $KEYCHECK" >&2; exit 1; }
+
+QUEUE=$BBS_ROOT/queue/keys
+REJECTED=$BBS_ROOT/drop/rejected
+SHELL_PATH=/usr/local/sbin/bbs-shell
+MAX_REQ_BYTES=8192
+MAX_PER_RUN=100
+RESULT_KEEP=50
+ID_RE='^[0-9]{1,20}-[A-Za-z0-9]{1,32}$'
+FP_RE='^SHA256:[A-Za-z0-9+/]{43}$'
+LABEL_RE='^[A-Za-z0-9 ._-]{1,20}$'
+
+# Opens the request without following links, checks it with fstat and copies it
+# into the root-private file argv[2] (created O_EXCL). Prints "uid dev ino".
+# Exit 3 with a reason word on stdout when the file must be rejected.
+BIND_PY='
+import os, stat, sys
+src, dst, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+def no(why):
+    print(why); sys.exit(3)
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
+except OSError:
+    no("open")
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode): no("not-regular")
+if st.st_nlink != 1: no("hardlink")
+if st.st_size > limit: no("too-large")
+data = b""
+while len(data) <= limit:
+    chunk = os.read(fd, limit + 1 - len(data))
+    if not chunk: break
+    data += chunk
+os.close(fd)
+if len(data) > limit: no("too-large")
+out = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+os.write(out, data); os.close(out)
+print(st.st_uid, st.st_dev, st.st_ino)
+'
+
+TMPD=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$TMPD"' EXIT
+
+# Move a queue entry that failed the binding checks out of the queue.
+reject_file() { # reject_file <file> <why>
+    mkdir -p -m 0750 "$REJECTED" 2>/dev/null
+    mv -f -- "$1" "$REJECTED/keys-$(date +%s)-$RANDOM" 2>/dev/null
+    keys_log - binding - - rejected "$2"
+}
+
+# account_of_uid <uid> -> name without bbs-, or return 1.
+account_of_uid() {
+    local uid=$1 ent acct shell
+    if (( KEYS_TEST )) && [[ -n ${BBS_TEST_OWNER:-} && $uid == "$EUID" ]]; then
+        acct=$BBS_TEST_OWNER
+    else
+        ent=$(getent passwd "$uid") || return 1
+        IFS=: read -r acct _ _ _ _ _ shell <<< "$ent"
+        [[ $shell == "$SHELL_PATH" ]] || return 1
+    fi
+    [[ $acct == bbs-* ]] || return 1
+    keys_name_ok "${acct#bbs-}" || return 1
+    printf '%s\n' "${acct#bbs-}"
+}
+
+# result <name> <id> <action> <label> <done|failed> <reason> [fp]
+# One TSV row in state/keys-results/<name> (newest RESULT_KEEP kept) plus a log row.
+result() {
+    local name=$1 id=$2 action=$3 label=$4 status=$5 reason=$6 fp=${7:--} rf tmp now
+    now=$(keys_now)
+    rf=$KEYS_RESULTS/$name; tmp=$KEYS_RESULTS/.$name.new
+    {
+        [[ -f $rf && ! -L $rf ]] && tail -n $((RESULT_KEEP - 1)) -- "$rf"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$now" "$action" "$label" "$status" "$reason"
+    } > "$tmp" && chmod 0644 "$tmp" && mv -f -- "$tmp" "$rf"
+    keys_log "bbs-$name" "$action" "$fp" "$label" "$status" "$reason"
+}
+
+# Request fields, set by parse_request.
+R_Action= R_Label= R_Key= R_Fingerprint= R_Legacy= R_Confirm=
+
+# parse_request <copy>: strict "Header: value" lines, each header at most once.
+parse_request() {
+    local line h seen=" "
+    R_Action= R_Label= R_Key= R_Fingerprint= R_Legacy= R_Confirm=
+    # Printable ASCII and newlines only.
+    [[ -z $(LC_ALL=C tr -d '\n -~' < "$1" | head -c 1 | od -An -c) ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line ]] && continue
+        [[ $line =~ ^(Action|Label|Key|Fingerprint|Legacy|Confirm):\ (.*)$ ]] || return 1
+        h=${BASH_REMATCH[1]}
+        [[ $seen != *" $h "* ]] || return 1
+        seen+="$h "
+        printf -v "R_$h" '%s' "${BASH_REMATCH[2]}"
+    done < "$1"
+    [[ -z $R_Legacy || $R_Legacy == yes ]] || return 1
+    [[ -z $R_Confirm || $R_Confirm == yes ]] || return 1
+    case $R_Action in
+        add)    [[ -n $R_Key && -z $R_Fingerprint && -z $R_Confirm ]] ;;
+        remove) [[ -n $R_Fingerprint && -z $R_Key && -z $R_Label && -z $R_Legacy ]] ;;
+        rename) [[ -n $R_Fingerprint && -n $R_Label && -z $R_Key && -z $R_Legacy && -z $R_Confirm ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+find_fp() { # find_fp <fp> -> index in K_FP, or return 1
+    local i
+    for i in "${!K_FP[@]}"; do
+        [[ ${K_FP[$i]} == "$1" ]] && { printf '%s\n' "$i"; return 0; }
+    done
+    return 1
+}
+
+do_add() { # do_add <name> <id>
+    local name=$1 id=$2 label=${R_Label:-key} out rc args=() st ktype kbody kfp kbits legacy i n_leg=0 holder
+    [[ $label =~ $LABEL_RE ]] || { result "$name" "$id" add - failed "Invalid name."; return; }
+    if [[ $R_Legacy == yes ]]; then
+        keys_legacy_allowed || { result "$name" "$id" add "$label" failed "Legacy RSA keys are turned off."; return; }
+        args=(--legacy)
+    fi
+    out=$(printf '%s\n' "$R_Key" | "$KEYCHECK" "${args[@]}"); rc=$?
+    IFS=$'\t' read -r st ktype kbody kfp kbits <<< "$out"
+    if (( rc != 0 )) || [[ $st != OK ]]; then
+        # ERR<TAB>code<TAB>text: the text is fixed by bbs-keycheck, never input.
+        result "$name" "$id" add "$label" failed "${kbody:-Invalid key.}"
+        return
+    fi
+    legacy=0
+    [[ $ktype == ssh-rsa && $kbits == 1536 ]] && legacy=1
+    keys_load "$name" || { result "$name" "$id" add "$label" failed "Account key file missing." "$kfp"; return; }
+    (( ${#K_LINES[@]} < KEYS_MAX )) || { result "$name" "$id" add "$label" failed "Key limit reached (8). Remove one first." "$kfp"; return; }
+    find_fp "$kfp" >/dev/null && { result "$name" "$id" add "$label" failed "Key already added." "$kfp"; return; }
+    if holder=$(keys_owner_of "$ktype" "$kbody"); then
+        if [[ $holder == "$name" ]]; then
+            result "$name" "$id" add "$label" failed "Key already added." "$kfp"
+        else
+            result "$name" "$id" add "$label" failed "Key already in use." "$kfp"
+            keys_log "bbs-$name" add "$kfp" "$label" failed "in-use-by-other:bbs-$holder"
+        fi
+        return
+    fi
+    for i in "${!K_LEGACY[@]}"; do [[ ${K_LEGACY[$i]} == 1 ]] && n_leg=$((n_leg + 1)); done
+    (( legacy == 0 || n_leg == 0 )) || { result "$name" "$id" add "$label" failed "Only one legacy key per account." "$kfp"; return; }
+    K_LINES+=("$ktype $kbody") K_FP+=("$kfp") K_LABEL+=("$label") K_ADDED+=("$(keys_now)")
+    K_SOURCE+=(self) K_SEEN+=(-) K_LEGACY+=("$legacy") K_BITS+=("$kbits") K_TYPE+=(-)
+    keys_write "$name" || { result "$name" "$id" add "$label" failed "Could not save. Try again later." "$kfp"; return; }
+    (( legacy )) && keys_log "bbs-$name" add "$kfp" "$label" info legacy-accepted
+    result "$name" "$id" add "$label" done "Active. Test it before removing another key." "$kfp"
+}
+
+do_remove() { # do_remove <name> <id>
+    local name=$1 id=$2 fp=$R_Fingerprint i idx label tested=0 left=0
+    local -a nl=() nf=() nlab=() na=() ns=() nseen=() nleg=() nb=() nt=()
+    [[ $fp =~ $FP_RE ]] || { result "$name" "$id" remove - failed "Key not found."; return; }
+    keys_load "$name" || { result "$name" "$id" remove - failed "Account key file missing." "$fp"; return; }
+    idx=$(find_fp "$fp") || { result "$name" "$id" remove - failed "Key not found." "$fp"; return; }
+    label=${K_LABEL[$idx]}
+    [[ $R_Confirm == yes ]] || { result "$name" "$id" remove "$label" failed "Removal was not confirmed." "$fp"; return; }
+    (( JOURNAL_OK )) || { result "$name" "$id" remove "$label" failed "Login history unavailable. Try later or ask the sysop." "$fp"; return; }
+    for i in "${!K_FP[@]}"; do
+        [[ ${K_FP[$i]} == "$fp" ]] && continue
+        nl+=("${K_LINES[$i]}") nf+=("${K_FP[$i]}") nlab+=("${K_LABEL[$i]}") na+=("${K_ADDED[$i]}")
+        ns+=("${K_SOURCE[$i]}") nseen+=("${K_SEEN[$i]}") nleg+=("${K_LEGACY[$i]}") nb+=("${K_BITS[$i]}") nt+=("${K_TYPE[$i]}")
+        left=$((left + 1))
+        [[ ${K_FP[$i]} != - && ${K_SEEN[$i]} != - && -n ${K_SEEN[$i]} ]] && tested=$((tested + 1))
+    done
+    (( left > 0 )) || { result "$name" "$id" remove "$label" failed "This is your last key. It cannot be removed." "$fp"; return; }
+    (( tested > 0 )) || { result "$name" "$id" remove "$label" failed "Log in with another key first, so it is tested." "$fp"; return; }
+    K_LINES=("${nl[@]}") K_FP=("${nf[@]}") K_LABEL=("${nlab[@]}") K_ADDED=("${na[@]}")
+    K_SOURCE=("${ns[@]}") K_SEEN=("${nseen[@]}") K_LEGACY=("${nleg[@]}") K_BITS=("${nb[@]}") K_TYPE=("${nt[@]}")
+    keys_write "$name" || { result "$name" "$id" remove "$label" failed "Could not save. Try again later." "$fp"; return; }
+    result "$name" "$id" remove "$label" done "" "$fp"
+}
+
+do_rename() { # do_rename <name> <id>
+    local name=$1 id=$2 fp=$R_Fingerprint label=$R_Label idx
+    [[ $label =~ $LABEL_RE ]] || { result "$name" "$id" rename - failed "Invalid name."; return; }
+    [[ $fp =~ $FP_RE ]] || { result "$name" "$id" rename "$label" failed "Key not found."; return; }
+    keys_load "$name" || { result "$name" "$id" rename "$label" failed "Account key file missing." "$fp"; return; }
+    idx=$(find_fp "$fp") || { result "$name" "$id" rename "$label" failed "Key not found." "$fp"; return; }
+    K_LABEL[$idx]=$label
+    keys_write "$name" meta || { result "$name" "$id" rename "$label" failed "Could not save. Try again later." "$fp"; return; }
+    result "$name" "$id" rename "$label" done "" "$fp"
+}
+
+handle_file() { # handle_file <queue path>
+    local f=$1 base id copy out uid dev ino name now_id
+    base=${f##*/}; id=${base%.keys}
+    [[ $id =~ $ID_RE ]] || { reject_file "$f" bad-name; return; }
+    copy=$TMPD/req.$id
+    out=$(python3 -I -c "$BIND_PY" "$f" "$copy" "$MAX_REQ_BYTES") || { reject_file "$f" "bind-${out:-error}"; return; }
+    read -r uid dev ino <<< "$out"
+    name=$(account_of_uid "$uid") || { reject_file "$f" "owner-uid-$uid"; return; }
+    if parse_request "$copy"; then
+        case $R_Action in
+            add) do_add "$name" "$id" ;;
+            remove) do_remove "$name" "$id" ;;
+            rename) do_rename "$name" "$id" ;;
+        esac
+    else
+        result "$name" "$id" "$( [[ $R_Action =~ ^(add|remove|rename)$ ]] && echo "$R_Action" || echo - )" - failed "Malformed request."
+    fi
+    rm -f -- "$copy"
+    # Unlink the queue entry only if it is still the file that was read.
+    now_id=$(stat -c '%d %i' -- "$f" 2>/dev/null) && [[ $now_id == "$dev $ino" ]] && rm -f -- "$f"
+}
+
+# Journal: set `seen` for keys that logged in. Sets JOURNAL_OK=1 only when the
+# journal (or the test command) could be read in this run.
+JOURNAL_OK=0
+read_journal() {
+    local out=$TMPD/journal rc line ts name fp key iso
+    local -A last=() names=()
+    local cursor=$KEYS_STATE/keys-cursor
+    if (( KEYS_TEST )); then
+        [[ -n ${BBS_KEYS_JOURNAL_CMD:-} ]] || return 0
+        sh -c "$BBS_KEYS_JOURNAL_CMD" > "$out" 2>/dev/null; rc=$?
+    else
+        local args=(-u ssh --utc -o short-iso --no-pager -q "--cursor-file=$cursor")
+        [[ -s $cursor ]] || args+=(--since=-30d)
+        journalctl "${args[@]}" > "$out" 2>/dev/null; rc=$?
+    fi
+    if (( rc != 0 )); then
+        keys_log - journal - - failed "journal-unreadable-rc-$rc"
+        # A cursor journalctl cannot seek to would block removals for good:
+        # set it aside, the next run reads 30 days back instead.
+        (( KEYS_TEST )) || { [[ -f $cursor ]] && mv -f -- "$cursor" "$cursor.bad"; }
+        return 0
+    fi
+    JOURNAL_OK=1
+    local re='^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})) [^ ]+ sshd(-session)?\[[0-9]+\]: Accepted publickey for bbs-([a-z][a-z0-9]{2,8}) from [^ ]+ port [0-9]+ ssh2: [A-Z0-9-]+ (SHA256:[A-Za-z0-9+/]{43})$'
+    while IFS= read -r line; do
+        [[ $line =~ $re ]] || continue
+        ts=${BASH_REMATCH[1]} name=${BASH_REMATCH[5]} fp=${BASH_REMATCH[6]}
+        keys_name_ok "$name" || continue
+        iso=$(date -u -d "$ts" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || continue
+        key="$name $fp"
+        [[ -z ${last[$key]:-} || $iso > ${last[$key]} ]] && last[$key]=$iso
+        names[$name]=1
+    done < "$out"
+    local i changed
+    for name in "${!names[@]}"; do
+        keys_load "$name" || continue
+        changed=0
+        for i in "${!K_FP[@]}"; do
+            iso=${last["$name ${K_FP[$i]}"]:-}
+            [[ -n $iso ]] || continue
+            if [[ ${K_SEEN[$i]} == - || $iso > ${K_SEEN[$i]} ]]; then
+                K_SEEN[$i]=$iso; changed=1
+            fi
+        done
+        (( changed )) && keys_write "$name" meta
+    done
+}
+
+# Sourced by a test: stop here, only the functions are wanted.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
+[[ -d $QUEUE && ! -L $QUEUE ]] || exit 0
+keys_init
+keys_lock_take || { echo "bbs-keys-apply: lock busy, retry next run" >&2; exit 0; }
+read_journal
+n=0
+for f in "$QUEUE"/*.keys; do
+    [[ -e $f || -L $f ]] || continue
+    n=$((n + 1)); (( n <= MAX_PER_RUN )) || break
+    handle_file "$f"
+done
+keys_lock_drop

@@ -1,0 +1,297 @@
+#!/bin/bash
+# Sysop CLI for the SSH keys of BBS accounts (root). Spec: thoughts/kristofer/
+# plan-ssh-keys.md "Sysop-återställning", contract: keys-contract.md.
+#
+#   bbs-keys list [name]
+#   bbs-keys add <name> <file> [--label L] [--legacy]
+#   bbs-keys remove <name> <fingerprint> [--force]
+#   bbs-keys restore <name> <historyfile>
+#
+# Uses the same validator (bbs-keycheck) and the same write routine (lib/keys-common.sh:
+# keys_load/keys_write: atomic, flock on state/keys.lock, history copy, keys.meta) as the
+# queue handler bbs-keys-apply. Key bodies are never printed to logs.
+#
+# add:     the file must hold exactly one public key line; label default "key";
+#          source=sysop. RSA 1536 needs --legacy and is refused when etc/keys.conf
+#          says ALLOW_LEGACY_RSA_1536=no (same as the handler).
+# remove:  same lockout rule as the handler unless --force: another key must remain
+#          and at least one remaining key must have `seen` set in keys.meta.
+#          --force skips only that "tested key" rule and is logged as such. The key
+#          still has to exist, the fingerprint is still validated, and a keyfile is
+#          never left empty (use bbs-drop to remove an account).
+# restore: <historyfile> must be a file inside state/keys-history named <name>-*.
+#          Every line is re-validated with bbs-keycheck, no key may belong to another
+#          account, at most 8 keys. The current file is saved to history first.
+#
+# Test mode (BASHBBS_TEST set): BBS_ROOT moves the tree; /srv/bashbbs is refused and
+# root is not required. BBS_LOCK_WAIT sets the flock timeout (seconds).
+set -uo pipefail
+umask 077
+export LC_ALL=C.UTF-8
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+KEYS_TEST=0
+[[ -n ${BASHBBS_TEST:-} ]] && KEYS_TEST=1
+if (( KEYS_TEST )); then
+    case $(readlink -m -- "$BBS_ROOT") in
+        /srv/bashbbs|/srv/bashbbs/*) echo "bbs-keys: test mode refuses /srv/bashbbs" >&2; exit 1 ;;
+    esac
+else
+    [[ $EUID -eq 0 ]] || { echo "bbs-keys: must run as root" >&2; exit 1; }
+fi
+
+self_dir=$(dirname "$(readlink -f "$0")")
+if [[ $self_dir == /usr/local/sbin ]]; then
+    KEYS_LIB=/usr/local/lib/bashbbs/keys-common.sh
+else
+    KEYS_LIB=$self_dir/../lib/keys-common.sh
+fi
+# shellcheck source=../lib/keys-common.sh
+. "$KEYS_LIB" || { echo "bbs-keys: cannot load $KEYS_LIB" >&2; exit 1; }
+KEYCHECK=$self_dir/bbs-keycheck
+[[ -x $KEYCHECK ]] || { echo "bbs-keys: missing $KEYCHECK" >&2; exit 1; }
+
+FP_RE='^SHA256:[A-Za-z0-9+/]{43}$'
+LABEL_RE='^[A-Za-z0-9 ._-]{1,20}$'
+MAX_FILE=8192
+
+die() { echo "bbs-keys: $*" >&2; exit 1; }
+usage() {
+    cat >&2 <<'EOF'
+usage: bbs-keys list [name]
+       bbs-keys add <name> <file> [--label L] [--legacy]
+       bbs-keys remove <name> <fingerprint> [--force]
+       bbs-keys restore <name> <historyfile>
+EOF
+    exit 64
+}
+
+need_name() { keys_name_ok "$1" || die "invalid account name"; }
+lock_or_die() {
+    keys_init
+    keys_lock_take || die "lock busy (another key change is running), try again"
+}
+
+# keycheck_line <line> [--legacy] -> sets C_TYPE C_BODY C_FP C_BITS, or C_ERR; returns keycheck rc.
+keycheck_line() {
+    local line=$1 out rc st
+    shift
+    out=$(printf '%s\n' "$line" | "$KEYCHECK" "$@"); rc=$?
+    C_ERR=
+    if (( rc == 0 )); then
+        IFS=$'\t' read -r st C_TYPE C_BODY C_FP C_BITS <<< "$out"
+        [[ $st == OK ]] || { C_ERR="Invalid key."; return 1; }
+    else
+        IFS=$'\t' read -r st _ C_ERR <<< "$out"
+        [[ -n $C_ERR ]] || C_ERR="Invalid key."
+    fi
+    return $rc
+}
+
+find_fp() { # find_fp <fp> -> index in K_FP
+    local i
+    for i in "${!K_FP[@]}"; do
+        [[ ${K_FP[$i]} == "$1" ]] && { printf '%s\n' "$i"; return 0; }
+    done
+    return 1
+}
+
+cmd_list() {
+    local only=${1:-} f name i flags
+    keys_init
+    if [[ -n $only ]]; then need_name "$only"; fi
+    for f in "$KEYS_DIR"/bbs-*; do
+        [[ -f $f && ! -L $f ]] || continue
+        name=${f##*/bbs-}
+        keys_name_ok "$name" || continue
+        [[ -z $only || $only == "$name" ]] || continue
+        keys_load "$name" || { echo "bbs-$name: key file unreadable"; continue; }
+        echo "bbs-$name: ${#K_LINES[@]} key(s)"
+        for i in "${!K_LINES[@]}"; do
+            flags=
+            [[ ${K_LEGACY[$i]} == 1 ]] && flags+=" legacy"
+            [[ ${K_SEEN[$i]} == - ]] && flags+=" untested"
+            printf '  %s  %s %s  %s  added=%s source=%s seen=%s%s\n' "${K_FP[$i]}" "${K_TYPE[$i]}" \
+                "${K_BITS[$i]}" "${K_LABEL[$i]}" "${K_ADDED[$i]}" "${K_SOURCE[$i]}" "${K_SEEN[$i]}" "$flags"
+        done
+    done
+    if [[ -n $only && ! -f $KEYS_DIR/bbs-$only ]]; then
+        die "no key file for bbs-$only"
+    fi
+    return 0
+}
+
+cmd_add() {
+    local name=${1:-} file=${2:-} label=key legacy=0 args=() holder i n_leg=0 islegacy=0 out rc st
+    shift 2 2>/dev/null || usage
+    while (( $# )); do
+        case $1 in
+            --label) (( $# >= 2 )) || usage; label=$2; shift ;;
+            --legacy) legacy=1 ;;
+            *) usage ;;
+        esac
+        shift
+    done
+    need_name "$name"
+    [[ -f $file && ! -L $file ]] || die "key file not found: $file"
+    [[ $(stat -c %s -- "$file") -le $MAX_FILE ]] || die "key file too large"
+    out=$(printf '%s' "$label" | "$KEYCHECK" --label) || die "invalid label (1-20 letters, digits, space . _ -)"
+    label=${out#OK$'\t'}
+    keys_init
+    if (( legacy )); then
+        keys_legacy_allowed || die "legacy RSA keys are turned off in etc/keys.conf"
+        args=(--legacy)
+    fi
+    # The whole file goes through the validator: more than one line is refused there.
+    out=$("$KEYCHECK" "${args[@]}" < "$file"); rc=$?
+    if (( rc != 0 )); then
+        IFS=$'\t' read -r st _ C_ERR <<< "$out"
+        if (( rc == 2 )); then die "$C_ERR (use --legacy)"; fi
+        die "key refused: ${C_ERR:-invalid key}"
+    fi
+    IFS=$'\t' read -r st C_TYPE C_BODY C_FP C_BITS <<< "$out"
+    [[ $st == OK ]] || die "key refused"
+    [[ $C_TYPE == ssh-rsa && $C_BITS == 1536 ]] && islegacy=1
+
+    lock_or_die
+    keys_load "$name" || { keys_lock_drop; die "no key file or user dir for bbs-$name"; }
+    if (( ${#K_LINES[@]} >= KEYS_MAX )); then
+        keys_lock_drop; keys_log "bbs-$name" add "$C_FP" "$label" failed "sysop-limit"; die "key limit reached ($KEYS_MAX)"
+    fi
+    if find_fp "$C_FP" >/dev/null; then keys_lock_drop; die "key already on bbs-$name"; fi
+    if holder=$(keys_owner_of "$C_TYPE" "$C_BODY"); then
+        keys_lock_drop; keys_log "bbs-$name" add "$C_FP" "$label" failed "sysop-in-use-by-bbs-$holder"
+        die "key already in use by bbs-$holder"
+    fi
+    for i in "${!K_LEGACY[@]}"; do [[ ${K_LEGACY[$i]} == 1 ]] && n_leg=$((n_leg + 1)); done
+    if (( islegacy && n_leg > 0 )); then keys_lock_drop; die "only one legacy key per account"; fi
+    K_LINES+=("$C_TYPE $C_BODY") K_FP+=("$C_FP") K_LABEL+=("$label") K_ADDED+=("$(keys_now)")
+    K_SOURCE+=(sysop) K_SEEN+=(-) K_LEGACY+=("$islegacy") K_BITS+=("$C_BITS") K_TYPE+=(-)
+    if ! keys_write "$name"; then
+        keys_lock_drop; keys_log "bbs-$name" add "$C_FP" "$label" failed "sysop-write-failed"; die "could not write the key file"
+    fi
+    (( islegacy )) && keys_log "bbs-$name" add "$C_FP" "$label" info legacy-accepted
+    keys_log "bbs-$name" add "$C_FP" "$label" done sysop
+    keys_lock_drop
+    echo "added $C_FP to bbs-$name (label: $label)"
+}
+
+cmd_remove() {
+    local name=${1:-} fp=${2:-} force=0 idx label i left=0 tested=0
+    shift 2 2>/dev/null || usage
+    while (( $# )); do
+        case $1 in
+            --force) force=1 ;;
+            *) usage ;;
+        esac
+        shift
+    done
+    need_name "$name"
+    [[ $fp =~ $FP_RE ]] || die "invalid fingerprint (expected SHA256:...)"
+    lock_or_die
+    keys_load "$name" || { keys_lock_drop; die "no key file or user dir for bbs-$name"; }
+    idx=$(find_fp "$fp") || { keys_lock_drop; die "key not found on bbs-$name"; }
+    label=${K_LABEL[$idx]}
+    local -a nl=() nf=() nlab=() na=() ns=() nseen=() nleg=() nb=() nt=()
+    for i in "${!K_FP[@]}"; do
+        [[ $i == "$idx" ]] && continue
+        nl+=("${K_LINES[$i]}") nf+=("${K_FP[$i]}") nlab+=("${K_LABEL[$i]}") na+=("${K_ADDED[$i]}")
+        ns+=("${K_SOURCE[$i]}") nseen+=("${K_SEEN[$i]}") nleg+=("${K_LEGACY[$i]}") nb+=("${K_BITS[$i]}") nt+=("${K_TYPE[$i]}")
+        left=$((left + 1))
+        [[ ${K_FP[$i]} != - && ${K_SEEN[$i]} != - && -n ${K_SEEN[$i]} ]] && tested=$((tested + 1))
+    done
+    if (( left == 0 )); then
+        keys_lock_drop; keys_log "bbs-$name" remove "$fp" "$label" failed "sysop-last-key"
+        die "that is the last key of bbs-$name; it cannot be removed (use bbs-drop for the account)"
+    fi
+    if (( tested == 0 && ! force )); then
+        keys_lock_drop; keys_log "bbs-$name" remove "$fp" "$label" failed "sysop-no-tested-key"
+        die "no remaining key has logged in yet (seen); refused. Use --force if you are sure"
+    fi
+    K_LINES=("${nl[@]}") K_FP=("${nf[@]}") K_LABEL=("${nlab[@]}") K_ADDED=("${na[@]}")
+    K_SOURCE=("${ns[@]}") K_SEEN=("${nseen[@]}") K_LEGACY=("${nleg[@]}") K_BITS=("${nb[@]}") K_TYPE=("${nt[@]}")
+    if ! keys_write "$name"; then
+        keys_lock_drop; keys_log "bbs-$name" remove "$fp" "$label" failed "sysop-write-failed"; die "could not write the key file"
+    fi
+    if (( force && tested == 0 )); then
+        keys_log "bbs-$name" remove "$fp" "$label" done "sysop-force"
+    elif (( force )); then
+        keys_log "bbs-$name" remove "$fp" "$label" done "sysop-force-not-needed"
+    else
+        keys_log "bbs-$name" remove "$fp" "$label" done sysop
+    fi
+    keys_lock_drop
+    if (( force )); then echo "removed $fp from bbs-$name (forced)"; else echo "removed $fp from bbs-$name"; fi
+}
+
+cmd_restore() {
+    local name=${1:-} hist=${2:-} dir base line n=0 i holder
+    [[ $# -eq 2 ]] || usage
+    need_name "$name"
+    keys_init
+    # The history file must live in state/keys-history and be named <name>-*.
+    [[ -n $hist ]] || usage
+    [[ $hist == */* ]] || hist=$KEYS_HIST/$hist
+    [[ -f $hist && ! -L $hist ]] || die "history file not found"
+    dir=$(dirname -- "$(readlink -f -- "$hist")")
+    [[ $dir == "$(readlink -f -- "$KEYS_HIST")" ]] || die "history file must be inside $KEYS_HIST"
+    base=${hist##*/}
+    [[ $base == "$name"-* ]] || die "history file does not belong to bbs-$name"
+    [[ $(stat -c %s -- "$hist") -le 65536 ]] || die "history file too large"
+
+    local -a nl=() nf=() nb=() nleg=()
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -n ${line//[[:space:]]/} ]] || continue
+        keycheck_line "$line" --legacy || die "history file holds a line that fails validation: ${C_ERR}"
+        [[ $line == "$C_TYPE $C_BODY" ]] || die "history file holds a line that is not exactly 'type body'"
+        for i in "${!nf[@]}"; do [[ ${nf[$i]} == "$C_FP" ]] && die "history file holds a duplicate key"; done
+        nl+=("$C_TYPE $C_BODY") nf+=("$C_FP") nb+=("$C_BITS")
+        if [[ $C_TYPE == ssh-rsa && $C_BITS == 1536 ]]; then nleg+=(1); else nleg+=(0); fi
+        n=$((n + 1))
+    done < "$hist"
+    (( n >= 1 )) || die "history file holds no keys"
+    (( n <= KEYS_MAX )) || die "history file holds more than $KEYS_MAX keys"
+    (( $(printf '%s\n' "${nleg[@]}" | grep -c 1) <= 1 )) || die "history file holds more than one legacy key"
+
+    lock_or_die
+    [[ -f $KEYS_DIR/bbs-$name && -d $KEYS_USERS/$name ]] || { keys_lock_drop; die "no key file or user dir for bbs-$name"; }
+    for i in "${!nl[@]}"; do
+        read -r t b _ <<< "${nl[$i]}"
+        if holder=$(keys_owner_of "$t" "$b") && [[ $holder != "$name" ]]; then
+            keys_lock_drop; die "a key in the history file now belongs to bbs-$holder; refused"
+        fi
+    done
+    # Keep labels, dates and `seen` for keys that are still known.
+    local -A oa=() ol=() os=() oseen=()
+    if keys_load "$name"; then
+        for i in "${!K_FP[@]}"; do
+            oa[${K_FP[$i]}]=${K_ADDED[$i]} ol[${K_FP[$i]}]=${K_LABEL[$i]}
+            os[${K_FP[$i]}]=${K_SOURCE[$i]} oseen[${K_FP[$i]}]=${K_SEEN[$i]}
+        done
+    fi
+    K_LINES=() K_FP=() K_LABEL=() K_ADDED=() K_SOURCE=() K_SEEN=() K_LEGACY=() K_BITS=() K_TYPE=()
+    for i in "${!nl[@]}"; do
+        K_LINES+=("${nl[$i]}") K_FP+=("${nf[$i]}") K_BITS+=("${nb[$i]}") K_TYPE+=(-) K_LEGACY+=("${nleg[$i]}")
+        if [[ -n ${ol[${nf[$i]}]+x} ]]; then
+            K_LABEL+=("${ol[${nf[$i]}]}") K_ADDED+=("${oa[${nf[$i]}]}") K_SOURCE+=("${os[${nf[$i]}]}") K_SEEN+=("${oseen[${nf[$i]}]}")
+        else
+            K_LABEL+=(key) K_ADDED+=("$(keys_now)") K_SOURCE+=(sysop) K_SEEN+=(-)
+        fi
+    done
+    if ! keys_write "$name"; then
+        keys_lock_drop; keys_log "bbs-$name" restore - - failed "sysop-write-failed"; die "could not write the key file"
+    fi
+    keys_log "bbs-$name" restore - - done "sysop-from-$base"
+    keys_lock_drop
+    echo "restored bbs-$name from $base ($n key(s)); the previous file is in $KEYS_HIST"
+}
+
+(( $# >= 1 )) || usage
+cmd=$1; shift
+case $cmd in
+    list) (( $# <= 1 )) || usage; cmd_list "$@" ;;
+    add) (( $# >= 2 )) || usage; cmd_add "$@" ;;
+    remove) (( $# >= 2 )) || usage; cmd_remove "$@" ;;
+    restore) cmd_restore "$@" ;;
+    *) usage ;;
+esac

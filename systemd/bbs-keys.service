@@ -1,0 +1,7 @@
+[Unit]
+Description=BashBBS SSH key requests (installs queued key changes)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbs-keys-apply
+PrivateTmp=yes

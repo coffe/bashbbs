@@ -23,6 +23,11 @@ install -m 0755 "$src/sbin/bbs-history-expire" /usr/local/sbin/bbs-history-expir
 install -m 0644 "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
 install -m 0755 "$src/lib/wrap.py" /usr/local/lib/bashbbs/wrap.py
 install -m 0755 "$src/lib/news.sh" /usr/local/lib/bashbbs/news.sh
+# SSH keys: validator (run by users and root), root handler, shared root code.
+install -m 0755 "$src/sbin/bbs-keycheck" /usr/local/sbin/bbs-keycheck
+install -m 0755 "$src/sbin/bbs-keys-apply" /usr/local/sbin/bbs-keys-apply
+install -m 0755 "$src/sbin/bbs-keys" /usr/local/sbin/bbs-keys
+install -m 0644 "$src/lib/keys-common.sh" /usr/local/lib/bashbbs/keys-common.sh
 
 # Data layout. Users never write into boards/ or keys/ directly.
 install -d -m 0755 /srv/bashbbs /srv/bashbbs/home /srv/bashbbs/keys /srv/bashbbs/users
@@ -43,6 +48,13 @@ install -d -m 1733 /srv/bashbbs/queue/incoming
 # bbs-publish. Root only. install -d sets the mode only on the last level, so each is listed.
 install -d -m 0700 /srv/bashbbs/state/history /srv/bashbbs/state/admin-backup
 
+# SSH key requests: users drop .keys files into queue/keys (write only, sticky),
+# bbs-keys-apply (root) installs them. History of key files is root only; results
+# are readable by the menu. Optional sysop config in etc/keys.conf.
+install -d -m 1733 /srv/bashbbs/queue/keys
+install -d -m 0700 /srv/bashbbs/state/keys-history
+install -d -m 0755 /srv/bashbbs/state/keys-results /srv/bashbbs/etc
+
 # Private boards: one meta file per board (owner, created). Sysops are listed
 # one name per line, without the bbs- prefix, and are added to every private board.
 install -d -m 0755 /srv/bashbbs/meta
@@ -58,13 +70,13 @@ getent group bbsdrop >/dev/null || groupadd bbsdrop
 install -d -m 2775 -o root -g bbsdrop /srv/bashbbs/drop/news
 install -d -m 0750 -o root -g root /srv/bashbbs/drop/rejected
 
-# Timers: the publisher every minute, the drop folder every 5 minutes,
-# history retention daily at 04:10.
-for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer; do
+# Timers: the publisher and the key handler every minute, the drop folder every
+# 5 minutes, history retention daily at 04:10.
+for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer; do
     install -m 0644 "$src/systemd/$u" "/etc/systemd/system/$u"
 done
 systemctl daemon-reload
-systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer
+systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer
 
 # Application form. www-data writes new applications into incoming/ (write only,
 # no listing). The sysop moves them to done/ or rejected/ with bbs-approve.
