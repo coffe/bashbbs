@@ -269,42 +269,42 @@ maxlen() { python3 -I -c 'import sys; print(max([len(l.rstrip("\n")) for l in op
 
 newroot
 mkpost general bbs-alice "menyens text"; A=$MP
-printf 'e\nNy rubrik\nb\n' | menuf alice post_actions general "$A"
+printf 'eNy rubrik\nk' | menuf alice post_actions general "$A"
 check "menu: author edit, text kept: one request" eq "$(queued)" 1
 RQ=$(ls "$root"/queue/incoming/*.req)
 check "menu: request is edit-post" grep -qxF 'Action: edit-post' "$RQ"
 check "menu: request has the new subject" grep -qxF 'Subject: Ny rubrik' "$RQ"
 check "menu: kept text is the old body" grep -qxF 'menyens text' "$RQ"
 sent
-printf 'e\n\nn\nny text rad\n.\n' | menuf alice post_actions general "$A"
+printf 'e\nnny text rad\n.\n' | menuf alice post_actions general "$A"
 check "menu: author edit, new text: one request" eq "$(queued)" 1
 RQ=$(ls "$root"/queue/incoming/*.req)
 check "menu: Enter keeps the old subject" grep -qxF "Subject: $(hval "$A" Subject)" "$RQ"
 check "menu: new text in request" grep -qxF 'ny text rad' "$RQ"
 sent
-printf 'e\n\nn\n.\n' | menuf alice post_actions general "$A"
+printf 'e\nn.\n' | menuf alice post_actions general "$A"
 check "menu: empty new text: nothing queued" eq "$(queued)" 0
 printf 'e\nd\nDELETE\n' | menuf bob post_actions general "$A"
 check "menu: other user cannot edit or delete" eq "$(queued)" 0
-printf 'd\nja\n' | menuf alice post_actions general "$A"
+printf 'dja\n' | menuf alice post_actions general "$A"
 check "menu: wrong confirm word: nothing queued: nothing queued" eq "$(queued)" 0
-printf 'd\ndelete\n' | menuf alice post_actions general "$A"
+printf 'ddelete\n' | menuf alice post_actions general "$A"
 check "menu: lowercase delete is refused" eq "$(queued)" 0
-printf 'd\nDELETE\n' | menuf alice post_actions general "$A"
+printf 'dDELETE\n' | menuf alice post_actions general "$A"
 check "menu: author delete: one request" eq "$(queued)" 1
 RQ=$(ls "$root"/queue/incoming/*.req)
 check "menu: request is delete-post" grep -qxF 'Action: delete-post' "$RQ"
 ASOWNER=bbs-alice lib process "$RQ"
 check "menu: after the publisher the post is a stub" eq "$(hval "$A" Subject)" "[deleted]"
-printf 'e\nx\nb\nr\nHej\n.\n' | menuf alice post_actions general "$A"
+printf 'e\nx\nr\nHej\n.\n' | menuf alice post_actions general "$A"
 check "menu: stub has no commands: nothing queued" eq "$(queued)" 0
 
 mkpost general bbs-bob "bobs inlägg"; BO=$MP
-printf 'd\nDELETE\n' | menuf carol post_actions general "$BO"
+printf 'dDELETE\n' | menuf carol post_actions general "$BO"
 check "menu: sysop can delete other's post: one request" eq "$(queued)" 1
 sent
 mkpost priv bbs-bob "hemligt"; PO=$MP
-printf 'd\nDELETE\n' | menuf alice post_actions priv "$PO"
+printf 'dDELETE\n' | menuf alice post_actions priv "$PO"
 check "menu: board owner can delete member's post: one request" eq "$(queued)" 1
 sent
 mkpost news bbs-news "nyhet"; NO=$MP
@@ -371,7 +371,7 @@ check "mail: sendmail failure: no sent copy" eq "$(count_in "$root/home/bbs-alic
 check "mail: sendmail failure: message says so" grep -q 'Could not queue the message' "$log"
 
 B1=$(plant bob m-hej "Hej där" alice)
-printf '1\nR\n\nTack, svar här\n.\ny\n\n' | menuf bob mail_view Inbox
+printf '1R\nTack, svar här\n.\ny\n\n' | menuf bob mail_view Inbox
 DM=$(lastmsg)
 check "reply: To is the sender" grep -qxF "To: alice@$hostn" "$DM"
 check "reply: Subject gets Re: once" grep -qxF 'Subject: Re: Hej där' "$DM"
@@ -384,10 +384,10 @@ queued_before=$(count_msgs)
 printf '1\nS\n\n' | menuf alice mail_view Inbox
 check "trash: S no longer replies: nothing queued" eq "$(count_msgs)" "$queued_before"
 check "trash: S keeps the message in Inbox" test -n "$(ls "$root/home/bbs-alice/Maildir/cur" | grep m-del)"
-printf '1\nD\nn\n\n' | menuf alice mail_view Inbox
+printf '1Dn\n' | menuf alice mail_view Inbox
 check "trash: answering n keeps the message in Inbox" test -n "$(ls "$root/home/bbs-alice/Maildir/cur" | grep m-del)"
 check "trash: n moves nothing" test -z "$(ls "$root/home/bbs-alice/Maildir/.Trash/cur" 2>/dev/null | grep m-del)"
-printf '1\nD\ny\n\n' | menuf alice mail_view Inbox
+printf '1Dy\n' | menuf alice mail_view Inbox
 check "trash: own inbox copy moved to .Trash/cur" test -n "$(ls "$root/home/bbs-alice/Maildir/.Trash/cur" | grep m-del)"
 check "trash: inbox no longer has it" test -z "$(ls "$root/home/bbs-alice/Maildir/new" "$root/home/bbs-alice/Maildir/cur" 2>/dev/null | grep m-del)"
 

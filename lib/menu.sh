@@ -1,6 +1,7 @@
 #!/bin/bash
 # BashBBS main menu. Runs as the login shell of a bbs-<name> account.
-# Input is read line by line with read -r and never reaches eval or a shell.
+# Menu choices are single keys (read_key). Text is read line by line with
+# read -r. Neither reaches eval or a shell.
 set -u
 umask 077
 
@@ -19,7 +20,126 @@ sendmail=/usr/sbin/sendmail
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
 
-pause() { read -r -p "[Enter] " _ || true; }
+# ---- Keys -------------------------------------------------------------------
+# A menu choice is one key, no Enter. MKEY holds the key; it is empty for Enter
+# and for escape sequences (arrow keys), which are read to the end and ignored.
+
+# Input that arrived before a screen was drawn is thrown away (a stray Enter, a paste,
+# a double press). That happens BEFORE the screen or the prompt is drawn: drain_input,
+# then draw, then read. Nothing that drains runs between the prompt and the read, so a
+# key typed as soon as the prompt is visible is never lost. Never waits for more.
+# A pipe is not drained: the tests feed it whole, and a person cannot type into it.
+drain_input() {
+    [[ -t 0 ]] || return 0
+    while read -t 0; do
+        read -rsn1 -t 0.01 _ || break
+    done
+    return 0
+}
+
+# Start of a screen: drain, then clear. The screen is drawn after this.
+redraw() {
+    drain_input
+    clear
+}
+
+# One key, no draining, so keys typed on purpose a moment ago are not lost.
+read_key_raw() {
+    local c o
+    MKEY=
+    IFS= read -rsn1 c || return 1
+    if [[ $c == $'\e' ]]; then
+        # Arrow keys are ESC [ A or ESC O A, longer ones ESC [ 1 ; 5 C. Read to the
+        # final byte (64..126). 0.2 s so the rest survives a slow link.
+        if IFS= read -rsn1 -t 0.2 c && [[ $c == '[' || $c == O ]]; then
+            while IFS= read -rsn1 -t 0.2 c; do
+                printf -v o '%d' "'$c" 2>/dev/null || break
+                (( o >= 64 && o <= 126 )) && break
+            done
+        fi
+        return 0
+    fi
+    MKEY=$c
+}
+
+# Drain what is waiting, then show the prompt, then read one key (no draining after
+# the prompt is shown). Returns 1 at end of input.
+read_key() { # read_key [prompt]
+    drain_input
+    [[ -n ${1:-} ]] && printf '%s' "$1"
+    read_key_raw
+}
+
+# Only y or Y confirms. Enter, an arrow key or any other key means no.
+read_confirm() { # read_confirm <prompt>
+    read_key "$1" || { echo; return 1; }
+    case $MKEY in
+        [YyNn]) printf '%s\n' "$MKEY" ;;
+        *) echo ;;
+    esac
+    [[ $MKEY == [Yy] ]]
+}
+
+# A screen that only waits: any key goes on.
+pause() { read_key "[Any key] " || true; echo; }
+
+# Up to nine digit keys for a list of <n> entries: "123" for three.
+digit_keys() { # digit_keys <n>
+    local d out=""
+    for (( d = 1; d <= $1 && d <= 9; d++ )); do out+=$d; done
+    printf '%s' "$out"
+}
+
+# MKEY is a digit that starts a number up to <max>. A second digit is waited for
+# only when a longer number could still be valid; Enter ends the number early.
+# The number is in NUM. Returns 1 when it is abandoned or too big.
+read_num() { # read_num <max>
+    local n=$MKEY
+    NUM=
+    printf '%s' "$n"
+    while (( n * 10 <= $1 )); do
+        read_key_raw || return 1
+        case $MKEY in
+            [0-9]) n=$((n * 10 + MKEY)); printf '%s' "$MKEY" ;;
+            '') break ;;
+            *) return 1 ;;
+        esac
+    done
+    (( n >= 1 && n <= $1 )) || return 1
+    NUM=$n
+}
+
+# Help: a header and at most three lines, then the way back. Any key returns.
+show_help() { # show_help <text, lines separated by newlines>
+    redraw
+    local_header "Help"
+    printf '%s\n' "$1"
+    echo "[Any key] Back"
+    read_key_raw || true   # redraw drained before the help was drawn
+    MKEY='?'
+}
+
+# Wait for one menu key. Letters match in both cases. ? (help) always works; B M P W G
+# (jump) work on a top-level screen only; <chars> adds this screen's keys. Enter, arrows and other keys are
+# ignored without redrawing. ? shows the help and returns with MKEY set to ?, so
+# the screen redraws. A fourth argument "local" turns the jump keys off (an open post
+# or message, a folder, a question in the middle of a task); they are then ignored. Does not drain: the caller's screen did that before drawing
+# (redraw). Returns 1 at end of input.
+menu_key() { # menu_key <prompt> <chars> <help text> [local]
+    printf '%s' "$1"
+    while read_key_raw; do
+        [[ -n $MKEY ]] || continue
+        case $MKEY in
+            '?') [[ -n ${3:-} ]] && show_help "$3"; [[ -n ${3:-} ]] && return 0 ;;
+            [BbMmPpWwGg]) [[ ${4:-} == local ]] || return 0 ;;&
+            *) [[ ${2:-} == *"$MKEY"* ]] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Log out? One key; only y or Y says yes.
+confirm_logout() { read_confirm "Log out? [y/N] "; }
 
 # News reader (sections, article list, article view).
 # shellcheck source=news.sh
@@ -31,12 +151,20 @@ valid_user() {
 }
 
 list_users() {
-    local f name uuid
+    local f name uuid width
+    redraw
+    local_header "Users"
+    # Name (padded to 16), a space, then as much of the UUID as the terminal has room for.
+    width=$(( $(list_width) - 17 ))
     for f in "$BBS_ROOT"/users/*/profile; do
         [[ -f $f && ! -L $f ]] || continue
         name=$(sed -n 's/^name=//p' "$f" | safe)
         uuid=$(sed -n 's/^uuid=//p' "$f" | safe)
-        printf '%-16s %s\n' "$name" "$uuid"
+        if (( width >= 8 )); then
+            printf '%-16s %s\n' "$(list_fit 16 "$name")" "$(list_fit "$width" "$uuid")"
+        else
+            printf '%s\n' "$(list_fit "$(( $(list_width) ))" "$name")"
+        fi
     done
 }
 
@@ -44,8 +172,15 @@ my_account() {
     local uuid keys
     uuid=$(sed -n 's/^uuid=//p' "$BBS_ROOT/users/$me/profile" 2>/dev/null | safe)
     keys=$(grep -c . "$BBS_ROOT/keys/$USER" 2>/dev/null || echo 0)
+    redraw
+    local_header "My account"
     echo "Name:  $me"
-    echo "UUID:  $uuid"
+    if (( ${#uuid} + 7 > $(list_width) )); then   # 36 characters do not fit beside the label at 40 columns
+        echo "UUID:"
+        echo "  $uuid"
+    else
+        echo "UUID:  $uuid"
+    fi
     echo "Keys:  $keys registered"
 }
 
@@ -77,19 +212,37 @@ nav_key() {
         [Mm]) nav_req=main ;;
         [Pp]) nav_req=mail ;;
         [Ww]) nav_req=wall ;;
-        [Gg]) nav_req=quit ;;
+        # The question reads its own key into MKEY. A "no" must not reach the caller's
+        # case as a command (n = New post, q = Back), so MKEY is put back to G.
+        [Gg]) if confirm_logout; then nav_req=quit; else MKEY=$1; return 1; fi ;;
         *) return 1 ;;
     esac
+}
+
+# The top of every screen: the quick-key bar, the title, one blank line.
+screen_header() { # screen_header <title> [bar text]
+    top_bar "[?] Help${2:+  $2}"
+    echo "== $1 =="
+    echo
+}
+
+# The top of a screen that is inside something (an open post or message, a folder, a
+# short form): no jump keys are shown, because none work there. Same layout as
+# screen_header.
+local_header() { # local_header <title> [bar text]
+    echo "[?] Help${2:+  $2}"
+    echo
+    echo "== $1 =="
+    echo
 }
 
 # ---- Stage B: public boards -------------------------------------------------
 
 board_menu() {
-    local boards b choice
+    local boards b
     while true; do
-        clear
-        top_bar "[Q] Back"
-        echo "== Public boards =="
+        redraw
+        screen_header "Public boards" "[Q] Back"
         boards=()
         for b in "$BBS_ROOT"/boards/*/; do
             b=${b%/}
@@ -103,15 +256,18 @@ board_menu() {
             i=$((i + 1))
         done
         echo "K) New private board   Q) Back"
-        read -r -p "> " choice || return
-        nav_key "$choice" && return
-        case $choice in
+        menu_key "> " "KkQq$(digit_keys "${#boards[@]}")" \
+"Number: open a board
+K: new private board   Q: back
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
             [Qq]) return ;;
             [Kk]) new_private_board; continue ;;
-            ''|*[!0-9]*) continue ;;
+            [1-9]) read_num "${#boards[@]}" || continue ;;
+            *) continue ;;
         esac
-        (( choice >= 1 && choice <= ${#boards[@]} )) || continue
-        board_view "${boards[choice - 1]}"
+        board_view "${boards[NUM - 1]}"
         [[ -n $nav_req ]] && return
     done
 }
@@ -199,7 +355,7 @@ show_post() {
 }
 
 board_view() {
-    local board=$1 f n body choice
+    local board=$1 f rc keys hint wrapw
     local -a files=()
     # A news board with a section marker shows sections, not a thread list.
     if [[ $board == news && -f $BBS_ROOT/meta/news.sections ]]; then
@@ -207,9 +363,11 @@ board_view() {
         return
     fi
     while true; do
-        clear
-        top_bar "[Q] Back"
-        echo "== $board =="
+        redraw
+        screen_header "$board" "[Q] Back"
+        # Measured here, not inside the pipe below: there stdin is not the terminal and
+        # term_width would fall back to 76 columns.
+        wrapw=$(( $(term_width) - 5 ))
         files=()
         for f in "$BBS_ROOT"/boards/"$board"/*.msg; do
             [[ -f $f && ! -L $f ]] || continue
@@ -217,33 +375,48 @@ board_view() {
         done
         local i=1 subject
         for f in "${files[@]}"; do
-            # Word wrap with a hanging indent, so a title fits a phone-width terminal.
+            # Word wrap with a hanging indent, so a title fits the terminal. wrap.py counts
+            # columns, not bytes, so å ä ö and wide characters never split.
             subject=$(sed -n 's/^Subject: //p' "$f" | head -n 1 | safe)
-            printf '%3d) %s\n' "$i" "$(printf '%s' "$subject" | fold -s -w 26 | sed '2,$s/^/     /')"
+            printf '%s' "$subject" | python3 "$NEWS_LIB/wrap.py" "$wrapw" \
+                | awk -v n="$i" 'NR == 1 { printf "%3d) %s\n", n, $0; next } { print "     " $0 }'
             echo
             i=$((i + 1))
         done
+        keys=Qq hint="Q: back"
         if is_readonly "$board"; then
             echo "Q) Back"
         elif manages "$board"; then
             echo "N) New post   S) Members   Q) Back"
+            keys+=NnSs hint="N: new post   S: members   Q: back"
         else
             echo "N) New post   Q) Back"
+            keys+=Nn hint="N: new post   Q: back"
         fi
-        read -r -p "> " choice || return
-        nav_key "$choice" && return
-        case $choice in
+        # A read-only board has no N. Its owner can still reach S.
+        is_readonly "$board" && manages "$board" && keys+=Ss
+        menu_key "> " "$keys$(digit_keys "${#files[@]}")" \
+"Number: read a post
+$hint
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
             [Qq]) return ;;
             [Nn]) is_readonly "$board" || compose "$board" ""; continue ;;
             [Ss]) manages "$board" && members_menu "$board"; continue ;;
-            ''|*[!0-9]*) continue ;;
+            [1-9]) read_num "${#files[@]}" || continue ;;
+            *) continue ;;
         esac
-        (( choice >= 1 && choice <= ${#files[@]} )) || continue
-        clear
-        f=${files[choice - 1]}
-        show_post "$f" "$(term_width)"
-        echo
-        post_actions "$board" "$f" || return
+        f=${files[NUM - 1]}
+        while true; do
+            redraw
+            local_header "$board" "[Q] Back"
+            show_post "$f" "$(term_width)"
+            echo
+            post_actions "$board" "$f"; rc=$?
+            (( rc == 2 )) || break
+        done
+        (( rc == 1 )) && return
     done
 }
 
@@ -252,20 +425,26 @@ post_hdr() { sed '/^$/q' "$1" | sed -n "s/^$2: *//p" | head -n 1 | safe; }
 
 # Commands under an open post. Deleted posts and read-only boards have none.
 # Edit is for the author. Delete is for the author, the board owner and sysops.
+# Returns 0 for back to the list, 1 at end of input, 2 to redraw the post.
 post_actions() { # post_actions <board> <file>
-    local board=$1 f=$2 cmd cmds="" author
+    local board=$1 f=$2 cmds="" keys=Qq hint="Q: back"
+    local author
     author=$(post_hdr "$f" Author)
     if [[ -z $(post_hdr "$f" Deleted) ]] && ! is_readonly "$board"; then
-        cmds="R) Reply"
-        [[ $author == "$me" ]] && cmds+="   E) Edit"
-        if [[ $author == "$me" ]] || is_sysop || manages "$board"; then cmds+="   D) Delete"; fi
+        cmds="R) Reply"; keys+=Rr hint="R: reply"
+        [[ $author == "$me" ]] && { cmds+="  E) Edit"; keys+=Ee; hint+="  E: edit"; }
+        if [[ $author == "$me" ]] || is_sysop || manages "$board"; then
+            cmds+="  D) Delete"; keys+=Dd; hint+="  D: delete"
+        fi
     fi
-    read -r -p "${cmds:+$cmds   }[Enter] Back: " cmd || return 1
-    nav_key "$cmd" && return 1
-    case $cmd in
-        [Rr]) [[ $cmds == *"R)"* ]] && compose "$board" "$(post_hdr "$f" Msgid)" ;;
-        [Ee]) [[ $cmds == *"E)"* ]] && edit_post "$board" "$f" ;;
-        [Dd]) [[ $cmds == *"D)"* ]] && delete_post "$board" "$f" ;;
+    echo "${cmds:+$cmds  }Q) Back"
+    # Inside an open post the jump keys are off.
+    menu_key "> " "$keys" "$hint  Q: back" local || return 1
+    case $MKEY in
+        '?') return 2 ;;
+        [Rr]) compose "$board" "$(post_hdr "$f" Msgid)" ;;
+        [Ee]) edit_post "$board" "$f" ;;
+        [Dd]) delete_post "$board" "$f" ;;
     esac
     return 0
 }
@@ -273,14 +452,23 @@ post_actions() { # post_actions <board> <file>
 # Ask for a new subject and, optionally, a new text. Enter keeps the old subject.
 # The publisher keeps the old version in its history.
 edit_post() { # edit_post <board> <file>
-    local board=$1 f=$2 subject new choice body
+    local board=$1 f=$2 subject new body
     subject=$(post_hdr "$f" Subject)
     echo
-    read -r -p "Subject: $subject   [Enter] keep: " new || return
+    echo "Subject: $(list_fit "$(( $(list_width) - 9 ))" "$subject")"
+    read -r -p "New subject ([Enter] keeps): " new || return
     new=$(printf '%s' "$new" | safe | head -c 100)
     [[ -n $new ]] && subject=$new
-    read -r -p "[k]eep text   [n]ew text: " choice || return
-    if [[ $choice == [Nn] ]]; then
+    while true; do
+        drain_input   # before the prompt is drawn, never between it and the read
+        echo "K) Keep text   N) New text   Q) Cancel"
+        menu_key "> " "KkNnQq" "K: keep the text   N: write new text
+Q: cancel the edit" local || return
+        [[ $MKEY == '?' ]] || break
+        redraw
+    done
+    [[ $MKEY == [Qq] ]] && return
+    if [[ $MKEY == [Nn] ]]; then
         echo "Write text. End with a single dot (.)."
         body=$(read_body)
     else
@@ -369,12 +557,22 @@ new_private_board() {
 }
 
 members_menu() {
-    local board=$1 choice action user
-    echo "Members: $(getent group "bbsb-$board" | cut -d: -f4 | sed 's/bbs-//g; s/,/ /g')"
-    read -r -p "[a] Add  [r] Remove  [Enter] Back: " choice || return
-    case $choice in
-        a) action=invite ;;
-        r) action=remove ;;
+    local board=$1 action user cols
+    while true; do
+        redraw
+        local_header "Members"
+        cols=$(term_width)   # not inside the pipe: there term_width cannot see the terminal
+        echo "Members: $(getent group "bbsb-$board" | cut -d: -f4 | sed 's/bbs-//g; s/,/ /g')" \
+            | python3 "$NEWS_LIB/wrap.py" "$cols"
+        echo
+        echo "A) Add   R) Remove   Q) Back"
+        menu_key "> " "AaRrQq" "A: add a member   R: remove one
+Q: back" local || return
+        [[ $MKEY == '?' ]] || break
+    done
+    case $MKEY in
+        [Aa]) action=invite ;;
+        [Rr]) action=remove ;;
         *) return ;;
     esac
     read -r -p "User: " user || return
@@ -392,22 +590,22 @@ members_menu() {
 # files in the own Maildir. The other side keeps its copy.
 
 mail_menu() {
-    local choice
     while true; do
-        clear
-        top_bar "[Q] Back"
-        echo "== Private messages =="
+        redraw
+        screen_header "Private messages" "[Q] Back"
         echo "1) Inbox   2) Write"
         echo "3) Sent    4) Trash   Q) Back"
-        read -r -p "> " choice || return
-        nav_key "$choice" && return
-        case $choice in
+        menu_key "> " "1234Qq" "1-4: Inbox, Write, Sent, Trash
+Q: back   B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
             1) mail_view Inbox ;;
             2) mail_write ;;
             3) mail_view Sent ;;
             4) mail_view Trash ;;
             [Qq]) return ;;
         esac
+        [[ -n $nav_req ]] && return
     done
 }
 
@@ -480,7 +678,7 @@ mail_body() {
 # Send one message and keep a copy in Sent. The body is read from stdin.
 # The sender is the login account. Nothing from the environment or the input sets it.
 mail_send() { # mail_send <name> <subject> [in-reply-to]
-    local to=$1 subject=$2 reply=${3:-} acct host tmp answer
+    local to=$1 subject=$2 reply=${3:-} acct host tmp
     valid_user "$me" || return 1
     acct=$(resolve_local "$to") || return 1
     host=$(hostname)
@@ -495,8 +693,7 @@ mail_send() { # mail_send <name> <subject> [in-reply-to]
         printf '\n'
     } > "$tmp"
     if ! mail_body >> "$tmp"; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
-    read -r -p "Send? [y/N]: " answer || answer=
-    if [[ $answer != [Yy] ]]; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
+    if ! read_confirm "Send? [y/N] "; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
     # The recipient goes on the command line, so the To header cannot change delivery.
     # env -i: sendmail runs with an empty environment, and -f is always bbs-<login>.
     if /usr/bin/env -i "$sendmail" -i -f "bbs-$me" "$acct" < "$tmp"; then
@@ -540,19 +737,20 @@ mail_reply() { # mail_reply <file>
 
 # A folder list. Unread messages in new are marked with *.
 mail_view() { # mail_view <Inbox|Sent|Trash>
-    local folder=$1 dir f mark choice i width
+    local folder=$1 dir f mark i width
     local -a files
     while true; do
-        clear
+        redraw
         dir=$(mail_dir "$folder")
         files=()
         for f in "$dir"/new/* "$dir"/cur/*; do
             [[ -f $f && ! -L $f ]] || continue
             files+=("$f")
         done
-        echo "== $folder =="
+        local_header "$folder" "[Q] Back"
         if (( ${#files[@]} == 0 )); then
             echo "No messages."
+            echo
             pause
             return
         fi
@@ -564,50 +762,66 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
             printf '%3d) %s %s\n' "$i" "$mark" "$(list_fit "$width" "$(post_hdr "$f" Subject)")"
             i=$((i + 1))
         done
-        read -r -p "Number ([Enter] Back): " choice || return
-        nav_key "$choice" && return
-        [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#files[@]} )) || return
-        mail_open "$folder" "${files[choice - 1]}"
+        echo
+        echo "Number: open   Q) Back"
+        # Inside a mailbox the jump keys are off: Q goes back one level.
+        menu_key "> " "Qq$(digit_keys "${#files[@]}")" \
+"Number: open a message
+Q: back" local || return
+        case $MKEY in
+            [Qq]) return ;;
+            [1-9]) read_num "${#files[@]}" || continue ;;
+            *) continue ;;
+        esac
+        mail_open "$folder" "${files[NUM - 1]}"
     done
 }
 
 # Show one message. Reading moves it from new to cur, the Maildir way.
 mail_open() { # mail_open <folder> <file>
-    local folder=$1 f=$2 dir name
+    local folder=$1 f=$2 dir name rc
     dir=$(mail_dir "$folder")
     if [[ $f == "$dir"/new/* ]]; then
         name=$(mail_cur_name "$(basename "$f")")
         mkdir -p "$dir/cur"
         mv -n "$f" "$dir/cur/$name" && f=$dir/cur/$name
     fi
-    clear
-    show_post "$f" "$(term_width)"
-    echo
-    mail_actions "$folder" "$f"
+    while true; do
+        redraw
+        local_header "$folder" "[Q] Back"
+        show_post "$f" "$(term_width)"
+        echo
+        mail_actions "$folder" "$f"; rc=$?
+        (( rc == 2 )) || break
+    done
+    return 0
 }
 
 # Commands under a message. Inbox: reply and delete. Sent: delete the own copy. Trash: none.
 # R is Reply and D is Delete, the same keys as on the boards.
+# Returns 0 for back to the list, 1 at end of input, 2 to redraw.
 mail_actions() { # mail_actions <folder> <file>
-    local folder=$1 f=$2 cmd cmds=""
+    local folder=$1 f=$2 cmds="" keys=Qq hint="Q: back"
     case $folder in
-        Inbox) cmds="R) Reply   D) Delete   " ;;
-        Sent) cmds="D) Delete   " ;;
+        Inbox) cmds="R) Reply   D) Delete   "; keys+=RrDd; hint="R: reply  D: delete  Q: back" ;;
+        Sent) cmds="D) Delete   "; keys+=Dd; hint="D: delete  Q: back" ;;
     esac
-    read -r -p "${cmds}[Enter] Back: " cmd || return
-    nav_key "$cmd" && return
-    case $cmd in
-        [Rr]) [[ $cmds == *"R)"* ]] && mail_reply "$f" ;;
-        [Dd]) [[ $cmds == *"D)"* ]] && mail_delete "$f" ;;
+    echo "${cmds}Q) Back"
+    # Inside an open message the jump keys are off.
+    menu_key "> " "$keys" "$hint" local || return 1
+    case $MKEY in
+        '?') return 2 ;;
+        [Rr]) mail_reply "$f" ;;
+        [Dd]) mail_delete "$f" ;;
     esac
+    return 0
 }
 
 # Move the own copy to Trash. Other copies are not touched. Nothing is erased in 1.3.
 mail_delete() { # mail_delete <file>
-    local trash name answer
+    local trash name
     echo
-    read -r -p "Move to Trash? [y/N]: " answer || answer=
-    if [[ $answer != [Yy] ]]; then echo "Not moved."; pause; return; fi
+    if ! read_confirm "Move to Trash? [y/N] "; then echo "Not moved."; pause; return; fi
     trash=$(mail_dir Trash)
     name=$(mail_cur_name "$(basename "$1")")
     mkdir -p "$trash"/{tmp,new,cur}
@@ -618,23 +832,27 @@ mail_delete() { # mail_delete <file>
 # ---- Main menu --------------------------------------------------------------
 
 main_menu() {
-    local choice
     while true; do
-        clear
-        top_bar ""
-        echo "== BashBBS =="
+        redraw
+        screen_header "BashBBS"
         echo "1) Public boards"
         echo "2) Wall"
         echo "3) Users"
         echo "4) My account"
         echo "5) Private messages   ($(mail_unread) unread)"
-        read -r -p "> " choice || { nav_req=quit; return; }
-        nav_key "$choice" && return
-        case $choice in
+        echo "Q) Log out"
+        menu_key "> " "12345Qq" "1-5: pick a section
+Q or G: log out
+B M P W: jump" || { nav_req=quit; return; }
+        case $MKEY in
+            [QqGg]) confirm_logout && { nav_req=quit; return; }; continue ;;
+        esac
+        nav_key "$MKEY" && return
+        case $MKEY in
             1) nav_req=boards; return ;;
             2) nav_req=wall; return ;;
-            3) clear; list_users; pause ;;
-            4) clear; my_account; pause ;;
+            3) list_users; pause ;;
+            4) my_account; pause ;;
             5) nav_req=mail; return ;;
         esac
     done
@@ -664,7 +882,7 @@ wall_entry() { # wall_entry <file> <width>
 # Write one greeting into the queue. Empty input cancels.
 wall_write() {
     local text len tmp
-    echo "Write a greeting (max $WALL_MAX_CHARS chars). [Enter] Back."
+    echo "Greeting, max $WALL_MAX_CHARS chars. [Enter] Back."
     read -r -p "> " text || return
     text=$(printf '%s' "$text" | safe)
     [[ -n $text ]] || return
@@ -681,10 +899,10 @@ wall_write() {
     pause
 }
 
-# Newest first, WALL_PAGE per page. Enter goes to the next page, after the last one to the first.
+# Newest first, WALL_PAGE per page. Space goes to the next page, after the last one to the first.
 wall_menu() {
     local -a files=() newest=()
-    local f i page=0 pages start choice
+    local f i page=0 pages start
     while true; do
         files=()
         for f in "$BBS_ROOT"/wall/*.msg; do
@@ -695,10 +913,8 @@ wall_menu() {
         pages=$(( (${#newest[@]} + WALL_PAGE - 1) / WALL_PAGE ))
         (( pages > 0 )) || pages=1
         (( page < pages )) || page=0
-        clear
-        top_bar ""
-        echo "== Wall =="
-        echo
+        redraw
+        screen_header "Wall"
         if (( ${#newest[@]} == 0 )); then
             echo "No greetings yet."
             echo
@@ -712,14 +928,17 @@ wall_menu() {
             echo
         fi
         echo "Page $((page + 1)) of $pages"
-        echo "N) Write   [Enter] Next   Q) Back"
-        read -r -p "> " choice || { nav_req=quit; return; }
-        nav_key "$choice" && return
-        case $choice in
+        echo "[Space] Next  N) Write  Q) Back  [?]"
+        menu_key "> " "NnQq " "N: write a greeting
+[Space]: next page   Q: back
+B M P W: jump   G: log out" || { nav_req=quit; return; }
+        nav_key "$MKEY" && return
+        case $MKEY in
             [Qq]) return ;;
             [Nn]) wall_write ;;
-            '') page=$(( (page + 1) % pages )) ;;
+            ' ') page=$(( (page + 1) % pages )) ;;
         esac
+        [[ -n $nav_req ]] && return
     done
 }
 
@@ -782,29 +1001,38 @@ count_text() { # count_text <n> <singular> <plural>
 
 # First screen after login. Sets nav_req: [Enter] main menu, or a quick key.
 welcome_screen() {
-    local seen=$HOME/.bashbbs-seen prev="" choice
+    local seen=$HOME/.bashbbs-seen prev=""
     prev=$(sed -n 's/^login=//p' "$seen" 2>/dev/null | head -n 1)
     [[ $prev =~ ^[0-9]+$ ]] || prev=""
     printf 'login=%s\n' "$(date +%s)" > "$seen" 2>/dev/null || true
-    clear
-    top_bar ""
-    echo "== Welcome, $me =="
-    echo
-    if [[ -n $prev ]]; then
-        echo "Last login: $(local_time "@$prev")"
+    while true; do
+        redraw
+        screen_header "Welcome, $me"
+        if [[ -n $prev ]]; then
+            echo "Last login: $(local_time "@$prev")"
+            echo
+            echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
+            echo "  $(count_text "$(new_board_posts "$prev")" "new post" "new posts") on Public boards"
+            echo "  $(count_text "$(new_wall_greetings "$prev")" "new greeting" "new greetings") on the Wall"
+        else
+            echo "First visit. Welcome to BashBBS."
+            echo
+            echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
+        fi
         echo
-        echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
-        echo "  $(count_text "$(new_board_posts "$prev")" "new post" "new posts") on Public boards"
-        echo "  $(count_text "$(new_wall_greetings "$prev")" "new greeting" "new greetings") on the Wall"
-    else
-        echo "First visit. Welcome to BashBBS."
+        echo "[Any key] Main"
+        printf '> '
+        # redraw drained before this screen was drawn; nothing drains here.
+        read_key_raw || { nav_req=quit; return; }
         echo
-        echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
-    fi
-    echo
-    echo "[Enter] Main"
-    read -r -p "> " choice || { nav_req=quit; return; }
-    nav_key "$choice" || nav_req=main
+        case $MKEY in
+            '?') show_help "Any key: go to the main menu
+    B M P W: jump   G: log out"; continue ;;
+            [Gg]) confirm_logout && { nav_req=quit; return; }; continue ;;
+        esac
+        nav_key "$MKEY" || nav_req=main
+        return
+    done
 }
 
 # ---- Start ------------------------------------------------------------------

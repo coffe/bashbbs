@@ -171,7 +171,7 @@ for w in 40 60 80; do
     mk_mail "$subj"
     ( export BBS_ROOT="$root" USER=bbs-carol BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol \
           HOME="$root/home/bbs-carol" TERM=dumb
-      source "$here/lib/menu.sh"; list_width() { echo "$w"; }; printf '\n' | mail_view Inbox ) > "$root/list-$w.txt" 2>>"$log"
+      source "$here/lib/menu.sh"; list_width() { echo "$w"; }; term_width() { echo "$w"; }; printf '\n' | mail_view Inbox ) > "$root/list-$w.txt" 2>>"$log"
     check "list $w: no row wider than $w columns" fits "$root/list-$w.txt" "$w"
     check "list $w: stored subject unchanged on disk" grep -qxF "Subject: $subj" "$root/home/bbs-carol/Maildir/new/"*
     ( export BBS_ROOT="$root" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb HOME="$root/home/bbs-carol"
@@ -181,16 +181,49 @@ for w in 40 60 80; do
 done
 # The real terminal width, not a stub: a pty set to 40 columns.
 mk_mail "$subj"
-printf '\n' | script -qfc "stty cols 40; env BBS_ROOT=$root HOME=$root/home/bbs-carol BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb bash -c 'source $here/lib/menu.sh; mail_view Inbox'" /dev/null > "$root/pty-40.txt" 2>>"$log"
+# Expect-style: the key goes in when the prompt is visible; no fixed delay.
+check "pty 40: every prompt appeared, keys sent" python3 "$here/tests/pty_drive.py" --cols 40 --out "$root/pty-40.txt" --timeout 30 --step 'Number: open   Q) Back=>q' -- \
+    env BBS_ROOT="$root" HOME="$root/home/bbs-carol" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb \
+    bash -c "source $here/lib/menu.sh; mail_view Inbox" 2>>"$log"
 check "pty 40: real 40-column terminal, no row wider than 40" fits "$root/pty-40.txt" 40
 # Reply prompt: the bracketed default is cut to the line; Enter keeps the full subject.
 # read -p only prints its prompt on a terminal, so this runs in a real 40-column pty.
 reset
-printf '\n.\ny\n\n' | script -qfc "stty cols 40; env BBS_ROOT=$root HOME=$root/home/bbs-alice BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb BBS_SENDMAIL=$root/t/sendmail bash -c 'source $here/lib/menu.sh; mail_write bob \"Re: $subj\"'" /dev/null > "$root/prompt-40.txt" 2>>"$log"
+check "prompt 40: every prompt appeared, keys sent" python3 "$here/tests/pty_drive.py" --cols 40 --out "$root/prompt-40.txt" --timeout 30 \
+    --step '(/cancel stops): =>\n' --step 'single dot (.).=>.\n' --step 'Send? [y/N] =>y' --step '[Any key] =>q' -- \
+    env BBS_ROOT="$root" HOME="$root/home/bbs-alice" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb BBS_SENDMAIL="$root/t/sendmail" \
+    bash -c "source $here/lib/menu.sh; mail_write bob \"Re: $subj\"" 2>>"$log"
 check "prompt 40: prompt is shown" grep -q '^Subject \[' "$root/prompt-40.txt"
 # Measure only the prompt itself: the scripted input can put the next output on the same line.
 check "prompt 40: Subject line no wider than 40" fits <(grep -o '^Subject \[.*(/cancel stops): ' "$root/prompt-40.txt") 40
 check "prompt 40: Enter keeps the full subject" grep -qxF "Subject: Re: $subj" "$(onemsg)"
+
+# --- Jump keys stay out of a mailbox, an open message and an open post ------
+mailnav() { mail_menu; echo "NAV=[$nav_req]"; }
+mk_mail "Jump test"
+reset; mk_mail "Jump test"
+o=$root/jump1.txt; printf '1bmpwgBMPWGqq' | run_as carol mailnav > "$o" 2>>"$log"
+check "mailbox: B M P W G are ignored, Q goes back" grep -q 'NAV=\[\]$' "$o"
+check "mailbox: no logout question" not grep -q 'Log out' "$o"
+check "mailbox: the folder is drawn once (ignored keys do not redraw)" eq "$(grep -c '== Inbox ==' "$o")" 1
+reset; mk_mail "Jump test"
+o=$root/jump2.txt; printf '11bmpwgBMPWGqqq' | run_as carol mailnav > "$o" 2>>"$log"
+check "message: B M P W G are ignored" grep -q 'NAV=\[\]$' "$o"
+check "message: no logout question" not grep -q 'Log out' "$o"
+check "message: Q goes back to the folder, then the menu (folder, message, folder)" eq "$(grep -c "== Inbox ==" "$o")" 3
+check "message: the open message shows no jump bar" eq "$(grep -c '\[B\] Boards' "$o")" 2
+check "local header has no jump keys" not grep -q 'Boards' <(run_as carol local_header Test '[Q] Back')
+mkdir -p "$root/boards/general"; printf 'Author: bbs-bob\nSubject: Hej\nMsgid: <x@y>\n\nText\n' > "$root/boards/general/1-a.msg"
+pa() { post_actions general "$root/boards/general/1-a.msg"; echo "RC=$? NAV=[$nav_req]"; }
+o=$root/jump3.txt; printf 'bmpwgq' | run_as carol pa > "$o" 2>>"$log"
+check "open post: jump keys ignored, no logout question, Q returns 0" grep -q 'RC=0 NAV=\[\]$' "$o"
+check "open post: no logout question" not grep -q 'Log out' "$o"
+# Main menu: Q and G both ask; only y logs out.
+mmn() { main_menu; echo "NAV=[$nav_req]"; }
+o=$root/main1.txt; printf 'qngn' | run_as carol mmn > "$o" 2>>"$log"
+check "main menu: Q and G ask 'Log out?', n stays (end of input quits)" eq "$(grep -c 'Log out? \[y/N\]' "$o")" 2
+o=$root/main2.txt; printf 'gy' | run_as carol mmn > "$o" 2>>"$log"
+check "main menu: G then y logs out" grep -q 'NAV=\[quit\]$' "$o"
 
 echo "pm_security_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

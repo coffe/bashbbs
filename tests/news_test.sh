@@ -203,7 +203,7 @@ check("Legacy root file" not in idx.stdout and "Unknown category" not in idx.std
 t = Term(["bash", "-c", 'source "$1"; board_menu', "bash", menu], env_for(cols))
 t.read()
 check("Public boards" in t.screen and "1) news" in t.screen, "A: board menu lists the news board")
-ok = t.send("1\n", "NEWS")
+ok = t.send("1", "NEWS")
 check(ok and re.search(r"1  ai +10", t.screen) and re.search(r"2  security +2", t.screen), "A: sections with counts", t.screen[:200])
 check("[1-7] Open section" in t.screen, "A: section footer")
 ok = t.send("1", "NEWS / ai")

@@ -87,13 +87,18 @@ printf 'login=%s\n' "$T0" > "$home/.bashbbs-seen"
 welcome "b" "$root/nav-b.txt";   check "key B opens Public boards" grep -qx 'NAV=boards' "$root/nav-b.txt"
 welcome "p" "$root/nav-p.txt";   check "key P opens Mail" grep -qx 'NAV=mail' "$root/nav-p.txt"
 welcome "w" "$root/nav-w.txt";   check "key W opens the Wall" grep -qx 'NAV=wall' "$root/nav-w.txt"
-welcome "g" "$root/nav-g.txt";   check "key G quits" grep -qx 'NAV=quit' "$root/nav-g.txt"
+welcome "gy" "$root/nav-g.txt";  check "key G, then y, quits" grep -qx 'NAV=quit' "$root/nav-g.txt"
 welcome "" "$root/nav-e.txt";    check "Enter goes to the main menu" grep -qx 'NAV=main' "$root/nav-e.txt"
 welcome "x" "$root/nav-x.txt";   check "unknown key goes to the main menu" grep -qx 'NAV=main' "$root/nav-x.txt"
+welcome "gn" "$root/nav-gn.txt"; check "key G, then n, stays logged in (main menu)" grep -qx 'NAV=main' "$root/nav-gn.txt"
 
 # 5. The real terminal width, not a stub: pty at 40 and 80 columns.
 for w in 40 80; do
-    printf 'm\n' | script -qfc "stty cols $w; env BBS_ROOT=$root HOME=$home BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb bash -c 'source $here/lib/menu.sh; printf \"login=%s\\n\" $T0 > \$HOME/.bashbbs-seen; welcome_screen; echo NAV=\$nav_req'" /dev/null > "$root/pty-$w.txt" 2>>"$log"
+    # Expect-style: the key is sent when the prompt text is on the screen, no fixed delay.
+    check "pty $w: the prompt appeared and the key was sent" python3 "$here/tests/pty_drive.py" --cols "$w" --out "$root/pty-$w.txt" --timeout 30 \
+        --step '[Any key] Main=>m' -- \
+        env BBS_ROOT="$root" HOME="$home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb \
+        bash -c "source $here/lib/menu.sh; printf 'login=%s\\n' $T0 > \$HOME/.bashbbs-seen; welcome_screen; echo NAV=\$nav_req" 2>>"$log"
     check "pty $w: no row wider than $w" fits "$root/pty-$w.txt" "$w"
     check "pty $w: key M goes to the main menu" ends 'NAV=main' "$root/pty-$w.txt"
 done

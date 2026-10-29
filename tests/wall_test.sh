@@ -181,10 +181,14 @@ assert not any(L[k] == "" and L[k + 1] == "" for k in range(i + 1, p - 2))
 ' "$o1"
 
 o2=$scratch/wall-menu-2.out
-printf '\n\nq\n' | menu_run "$o2" wall_menu
-check "Enter goes to page 2" grep -q '^Page 2 of 2$' "$o2"
+printf '  q' | menu_run "$o2" wall_menu
+check "Space goes to page 2" grep -q '^Page 2 of 2$' "$o2"
 check "page 2 shows 2" grep -qxF 'Greeting number 2' "$o2"
 check "page 2 shows 1" grep -qxF 'Greeting number 1' "$o2"
+
+o2e=$scratch/wall-menu-enter.out
+printf '\n\nq' | menu_run "$o2e" wall_menu
+check "Enter does not turn the page" not_in 'Page 2 of 2' "$o2e"
 
 o3=$scratch/wall-main.out
 printf '2\n' | menu_run "$o3" main_nav
