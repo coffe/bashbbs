@@ -26,7 +26,8 @@ else
     printf '4 greetings.txt\n10 art.txt art-narrow.txt caption.txt caption-narrow.txt\n' > "$root/etc/intro/intro.conf"
 fi
 art=$root/etc/intro/art.txt
-fastconf() { printf '2 greetings.txt\n2 art.txt art-narrow.txt caption.txt caption-narrow.txt\n' > "$root/etc/intro/intro.conf"; }
+[[ -f $root/etc/intro/greetings-narrow.txt ]] && gn=greetings-narrow.txt || gn=-
+fastconf() { printf "2 greetings.txt $gn\\n2 art.txt art-narrow.txt caption.txt caption-narrow.txt\n" > "$root/etc/intro/intro.conf"; }
 realconf=$(cat "$root/etc/intro/intro.conf")
 
 # run <cols> <script of "delay_s:text" steps> <out>: prints elapsed seconds to <out>.t
@@ -74,10 +75,15 @@ clean() { tr -d '\r' < "$1"; }
 
 # 1. Real timing at 80 columns: no key; greetings 4 s + art 10 s, then the next screen.
 echo "$realconf" > "$root/etc/intro/intro.conf"
-TAIL=18 run 80 "" "$root/real.out"
+total=$(awk '/^[0-9]/{s+=$1} END{print s}' "$root/etc/intro/intro.conf")
+TAIL=$((total + 4)) run 80 "" "$root/real.out"
 t=$(<"$root/real.out.t")
-check "real timeouts: next screen after about 14 s ($t)" awk -v t="$t" 'BEGIN{exit !(t>=13.5 && t<=16.5)}'
-check "greetings text is exact" bash -c "clean() { tr -d '\r' < \"\$1\"; }; clean '$root/real.out' | grep -qF 'the Up Rough Crew©' && clean '$root/real.out' | grep -qF 'with the BashBBS Beta Party™'"
+check "real timeouts: next screen after about $total s ($t)" awk -v t="$t" -v n="$total" 'BEGIN{exit !(t>=n-0.5 && t<=n+2.5)}'
+[[ -f $src/art.txt ]] && check "greetings text is exact (80 columns)" python3 -c "
+import re, sys
+t = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', open(sys.argv[1], 'rb').read().decode().replace('\r', ''))
+want = 'This BBS sends greetings to\nthe Up Rough Crew (c) and is made in collab\nwith the BashBBS Beta Party (tm)\n\nFor maximum laz0r experience, please haz\nthe supreme Topaz font handy.'
+sys.exit(0 if want in t else 1)" "$root/real.out"
 check "caption below the art" bash -c "tr -d '\r' < '$root/real.out' | grep -q 'CRASH THE PARTY!.*SMASH THE SPACEBAR!'"
 
 # 2. Art unchanged at 80 columns: every non-empty art line is on screen as it is.
@@ -102,6 +108,7 @@ check "no fallback text at 80 columns" bash -c "! grep -q 'Amiga art by dNo: use
 for c in 40 60; do
     TAIL=6 run $c "" "$root/c$c.out"
     check "fallback at $c columns" bash -c "grep -q 'use an' '$root/c$c.out' || grep -q small '$root/c$c.out'"
+    [[ -f $root/etc/intro/greetings-narrow.txt ]] && check "greetings fit and are shown at $c columns" grep -q 'Party (tm)' "$root/c$c.out"
     check "art not shown at $c columns" bash -c "! grep -q '_/\\\\_____' '$root/c$c.out'"
     check "no line wider than $c at $c columns" python3 -c "
 import re, sys
