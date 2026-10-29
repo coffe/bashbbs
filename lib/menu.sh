@@ -1343,6 +1343,86 @@ count_text() { # count_text <n> <singular> <plural>
     if (( $1 == 1 )); then printf '%d %s' "$1" "$2"; else printf '%d %s' "$1" "$3"; fi
 }
 
+# ---- Intro ------------------------------------------------------------------
+# Optional screens before the welcome screen. An installation shows its own, or none:
+# without $BBS_ROOT/etc/intro/intro.conf nothing happens. The text and art live in
+# files next to intro.conf, never in this script. One screen per line in intro.conf:
+#     <seconds> <file> [<narrow-file> [<caption-file> [<narrow-caption-file>]]]   (- = no narrow-file)
+# <file> is shown as it is when the terminal is at least as wide as its widest line,
+# otherwise <narrow-file>; with no fitting file the screen is skipped. <caption-file>
+# is printed under the file with one empty line between. Lines are never wrapped,
+# centred or changed (a CR from a DOS file is dropped, empty lines at the end of the
+# art are not shown). Space ends a screen at once, any other key is ignored. File
+# names are plain names in the intro directory.
+INTRO_MAX_BYTES=16384
+
+intro_file() { # intro_file <name>: prints the path when it is a plain, small file
+    [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    local f=$BBS_ROOT/etc/intro/$1
+    [[ -f $f && ! -L $f && -r $f ]] || return 1
+    (( $(stat -c %s "$f") <= INTRO_MAX_BYTES )) || return 1
+    printf '%s' "$f"
+}
+
+intro_width() { # intro_width <file>: widest line in terminal columns
+    tr -d '\r' < "$1" | LC_ALL=C.UTF-8 wc -L
+}
+
+# Wait up to <seconds> for Space. Returns 0 when it ended on Space, 1 on timeout,
+# 2 when the input is gone.
+intro_wait() {
+    local end=$(( SECONDS + $1 )) c
+    while (( SECONDS < end )); do
+        if IFS= read -rsn1 -t 0.25 c; then
+            [[ $c == ' ' ]] && return 0
+        elif (( $? <= 128 )); then
+            return 2
+        fi
+    done
+    return 1
+}
+
+# After the last screen: Space presses still on their way (someone smashing the bar)
+# are eaten until it is quiet for 0.3 s, but for 2 s at the most.
+intro_swallow() {
+    local end=$(( SECONDS + 2 ))
+    while (( SECONDS < end )) && IFS= read -rsn1 -t 0.3 _; do :; done
+}
+
+intro_run() {
+    local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols f w c shown=0
+    [[ -t 0 && -t 1 && -r $conf ]] || return 0
+    cols=$(list_width)
+    while read -r -u 3 secs file narrow caption ncaption extra; do
+        [[ $secs =~ ^[0-9]+$ ]] && (( secs >= 1 && secs <= 60 )) || continue
+        f=$(intro_file "${file:-}") || continue
+        w=$(intro_width "$f")
+        if (( w > cols )); then
+            [[ -n $narrow ]] && f=$(intro_file "$narrow") || continue
+            w=$(intro_width "$f")
+            (( w <= cols )) || continue
+        fi
+        (( shown )) && drain_input
+        redraw
+        tr -d '\r' < "$f" | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
+        printf '\033[0m'
+        c=$(intro_file "${caption:--}") || c=""
+        if [[ -n $c ]] && (( $(intro_width "$c") > cols )); then
+            c=$(intro_file "${ncaption:--}") || c=""
+            [[ -z $c ]] || (( $(intro_width "$c") <= cols )) || c=""
+        fi
+        if [[ -n $c ]]; then
+            echo
+            tr -d '\r' < "$c"
+            printf '\033[0m\n'
+        fi
+        shown=1
+        intro_wait "$secs"; (( $? == 2 )) && return 0
+    done 3< <(grep -v '^[[:space:]]*#' "$conf")   # fd 3: the key reads below use stdin
+    (( shown )) && intro_swallow
+    return 0
+}
+
 # First screen after login. Sets nav_req: [Enter] main menu, or a quick key.
 welcome_screen() {
     local seen=$HOME/.bashbbs-seen prev=""
@@ -1383,6 +1463,7 @@ welcome_screen() {
 
 # The tests source this file for its functions and skip the start loop.
 if [[ -z ${BASHBBS_TEST:-} ]]; then
+    intro_run
     welcome_screen
     # A section that returns without a nav request (Q) goes back to the main menu.
     while true; do
