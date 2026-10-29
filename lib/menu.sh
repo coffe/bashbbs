@@ -699,6 +699,40 @@ show_post() {
     sed '1,/^$/d' "$file" | safe | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
 }
 
+# Posts of a board that are shown to users, in file order, one path per line. A
+# deleted post (Deleted header) is a stub: it stays on disk with its Msgid and Parent, but
+# it is listed only while an active post is below it (a reply, at any depth), so that
+# thread stays readable. Deleted posts with nothing active below them are hidden.
+# Only the headers are read; nothing is written.
+visible_posts() { # visible_posts <board>
+    local f dir=$BBS_ROOT/boards/$1
+    for f in "$dir"/*.msg; do
+        [[ -f $f && ! -L $f ]] && printf '%s\n' "$f"
+    done | awk '
+        function hdr(line) { sub(/\r$/, "", line); return substr(line, index(line, ":") + 2) }
+        { file[++n] = $0; id[n] = ""; par[n] = ""; del[n] = 0
+          while ((getline line < $0) > 0 && line != "" && line != "\r") {
+              if (line ~ /^Msgid:/) id[n] = hdr(line)
+              else if (line ~ /^Parent:/) par[n] = hdr(line)
+              else if (line ~ /^Deleted:/) del[n] = 1
+          }
+          close($0)
+          if (id[n] != "") at[id[n]] = n }
+        END {
+            for (i = 1; i <= n; i++) if (!del[i]) {
+                keep[i] = 1
+                # Mark every ancestor as needed context. The step limit guards against a loop.
+                j = i
+                for (step = 0; step < 1000 && par[j] != "" && (par[j] in at); step++) {
+                    j = at[par[j]]
+                    if (keep[j]) break
+                    keep[j] = 1
+                }
+            }
+            for (i = 1; i <= n; i++) if (keep[i]) print file[i]
+        }'
+}
+
 board_view() {
     local board=$1 f rc keys hint wrapw
     local -a files=()
@@ -713,11 +747,7 @@ board_view() {
         # Measured here, not inside the pipe below: there stdin is not the terminal and
         # term_width would fall back to 76 columns.
         wrapw=$(( $(term_width) - 5 ))
-        files=()
-        for f in "$BBS_ROOT"/boards/"$board"/*.msg; do
-            [[ -f $f && ! -L $f ]] || continue
-            files+=("$f")
-        done
+        mapfile -t files < <(visible_posts "$board")
         local i=1 subject
         for f in "${files[@]}"; do
             # Word wrap with a hanging indent, so a title fits the terminal. wrap.py counts
@@ -1311,7 +1341,8 @@ EOF
 # The last login is kept in ~/.bashbbs-seen as login=<epoch>. Only counts are
 # shown, never subjects or names. News has its own menu and is not counted.
 
-# Public board posts newer than <since>. The file name starts with the publish epoch.
+# Public board posts newer than <since>, deleted ones not counted. The file name starts
+# with the publish epoch.
 new_board_posts() { # new_board_posts <since>
     local since=$1 b f pre n=0
     for b in "$BBS_ROOT"/boards/*/; do
@@ -1322,7 +1353,9 @@ new_board_posts() { # new_board_posts <since>
         for f in "$b"/*.msg; do
             [[ -f $f && ! -L $f ]] || continue
             pre=$(basename "$f"); pre=${pre%%-*}
-            [[ $pre =~ ^[0-9]+$ ]] && (( 10#$pre > since )) && n=$((n + 1))
+            [[ $pre =~ ^[0-9]+$ ]] && (( 10#$pre > since )) || continue
+            # A deleted post is a stub, not new activity.
+            [[ -z $(post_hdr "$f" Deleted) ]] && n=$((n + 1))
         done
     done
     printf '%d' "$n"
