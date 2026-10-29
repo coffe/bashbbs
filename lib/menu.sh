@@ -40,7 +40,8 @@ drain_input() {
 # Start of a screen: drain, then clear. The screen is drawn after this.
 redraw() {
     drain_input
-    clear
+    # A terminal type without a terminfo entry (SyncTERM sends "syncterm") makes clear fail.
+    clear 2>/dev/null || printf '\033[H\033[2J'
 }
 
 # One key, no draining, so keys typed on purpose a moment ago are not lost.
@@ -1348,7 +1349,7 @@ count_text() { # count_text <n> <singular> <plural>
 # without $BBS_ROOT/etc/intro/intro.conf nothing happens. The text and art live in
 # files next to intro.conf, never in this script. One screen per line in intro.conf:
 #     <seconds> <file> [<narrow-file> [<caption-file> [<narrow-caption-file>]]]   (- = no narrow-file)
-# <file> is shown as it is when the terminal is at least as wide as its widest line,
+# <file> may be a|b|c: one of them is picked at random for each login. It is shown as it is when the terminal is at least as wide as its widest line,
 # otherwise <narrow-file>; with no fitting file the screen is skipped. <caption-file>
 # is printed under the file with one empty line between. Lines are never wrapped,
 # centred or changed (a CR from a DOS file is dropped, empty lines at the end of the
@@ -1389,13 +1390,20 @@ intro_swallow() {
     while (( SECONDS < end )) && IFS= read -rsn1 -t 0.3 _; do :; done
 }
 
+# One of the names in <a|b|c>, each with the same chance. A single name is returned as is.
+intro_pick() {
+    local -a alts
+    IFS='|' read -ra alts <<< "$1"
+    printf '%s\n' "${alts[RANDOM % ${#alts[@]}]}"
+}
+
 intro_run() {
     local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols f w c shown=0
     [[ -t 0 && -t 1 && -r $conf ]] || return 0
     cols=$(list_width)
     while read -r -u 3 secs file narrow caption ncaption extra; do
         [[ $secs =~ ^[0-9]+$ ]] && (( secs >= 1 && secs <= 60 )) || continue
-        f=$(intro_file "${file:-}") || continue
+        f=$(intro_file "$(intro_pick "${file:-}")") || continue
         w=$(intro_width "$f")
         if (( w > cols )); then
             [[ -n $narrow ]] && f=$(intro_file "$narrow") || continue

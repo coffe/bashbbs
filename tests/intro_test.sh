@@ -17,17 +17,18 @@ check() { local d=$1; shift
 root=$(mktemp -d "$scratch/intro.XXXXXX")
 mkdir -p "$root/etc/intro"
 src=$here/ascii-art/intro
-if [[ -f $src/art.txt ]]; then cp "$src"/* "$root/etc/intro/"
+if [[ -f $src/art-1.txt ]]; then cp "$src"/* "$root/etc/intro/"
 else
     printf '\n\nGreetings\n' > "$root/etc/intro/greetings.txt"
-    printf ' /\\ /\\\n/__\\__\\ x\n' > "$root/etc/intro/art.txt"
-    printf 'small\n' > "$root/etc/intro/art-narrow.txt"
-    printf 'CAPTION\n' > "$root/etc/intro/caption.txt"; printf 'cap\n' > "$root/etc/intro/caption-narrow.txt"
-    printf '4 greetings.txt\n10 art.txt art-narrow.txt caption.txt caption-narrow.txt\n' > "$root/etc/intro/intro.conf"
+    pad=$(printf '%-50s' x | tr ' ' '_')
+    printf ' /\\ /\\\n/__\\__\\ one %s\n' "$pad" > "$root/etc/intro/art-1.txt"; printf ' /\\ /\\\n/__\\__\\ two %s\n' "$pad" > "$root/etc/intro/art-2.txt"
+    printf 'use an 80-column terminal\n' > "$root/etc/intro/art-narrow.txt"
+    printf 'CRASH THE PARTY! SMASH THE SPACEBAR!\n' > "$root/etc/intro/caption.txt"; printf 'CRASH THE PARTY!\nSMASH THE SPACEBAR!\n' > "$root/etc/intro/caption-narrow.txt"
+    printf '4 greetings.txt\n10 art-1.txt|art-2.txt art-narrow.txt caption.txt caption-narrow.txt\n' > "$root/etc/intro/intro.conf"
 fi
-art=$root/etc/intro/art.txt
+art1=$root/etc/intro/art-1.txt; art2=$root/etc/intro/art-2.txt
 [[ -f $root/etc/intro/greetings-narrow.txt ]] && gn=greetings-narrow.txt || gn=-
-fastconf() { printf "2 greetings.txt $gn\\n2 art.txt art-narrow.txt caption.txt caption-narrow.txt\n" > "$root/etc/intro/intro.conf"; }
+fastconf() { printf "2 greetings.txt $gn\\n2 art-1.txt|art-2.txt art-narrow.txt caption.txt caption-narrow.txt\n" > "$root/etc/intro/intro.conf"; }
 realconf=$(cat "$root/etc/intro/intro.conf")
 
 # run <cols> <script of "delay_s:text" steps> <out>: prints elapsed seconds to <out>.t
@@ -79,30 +80,30 @@ total=$(awk '/^[0-9]/{s+=$1} END{print s}' "$root/etc/intro/intro.conf")
 TAIL=$((total + 4)) run 80 "" "$root/real.out"
 t=$(<"$root/real.out.t")
 check "real timeouts: next screen after about $total s ($t)" awk -v t="$t" -v n="$total" 'BEGIN{exit !(t>=n-0.5 && t<=n+2.5)}'
-[[ -f $src/art.txt ]] && check "greetings text is exact (80 columns)" python3 -c "
+[[ -f $src/art-1.txt ]] && check "greetings text is exact (80 columns)" python3 -c "
 import re, sys
 t = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', open(sys.argv[1], 'rb').read().decode().replace('\r', ''))
 want = 'This BBS sends greetings to\nthe Up Rough Crew (c) and is made in collab\nwith the BashBBS Beta Party (tm)\n\nFor maximum laz0r experience, please haz\nthe supreme Topaz font handy.'
 sys.exit(0 if want in t else 1)" "$root/real.out"
 check "caption below the art" bash -c "tr -d '\r' < '$root/real.out' | grep -q 'CRASH THE PARTY!.*SMASH THE SPACEBAR!'"
 
-# 2. Art unchanged at 80 columns: every non-empty art line is on screen as it is.
+# 2. At 80 columns exactly one of the two arts is on screen, unchanged.
 # (the escape bytes are removed from the screen text first)
 fastconf
 TAIL=6 run 80 "" "$root/c80.out"
-python3 - "$art" "$root/c80.out" <<'PY' >>"$log" 2>&1
+python3 - "$art1" "$art2" "$root/c80.out" <<'PY' >>"$log" 2>&1
 import re, sys
-art = open(sys.argv[1], "rb").read().decode().replace("\r", "").rstrip().split("\n")
-scr = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", open(sys.argv[2], "rb").read().decode(errors="replace")).replace("\r", "")
+arts = [open(f, "rb").read().decode().replace("\r", "").rstrip().split("\n") for f in sys.argv[1:3]]
+scr = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", open(sys.argv[3], "rb").read().decode(errors="replace")).replace("\r", "")
 lines = scr.split("\n")
-# the art block must appear as consecutive lines, byte for byte
-i = next((k for k in range(len(lines)) if lines[k] == art[0]), None)
-ok = i is not None and lines[i:i + len(art)] == art
-print("art block found at", i, "identical:", ok)
-sys.exit(0 if ok else 1)
+def has(a):
+    return any(lines[k:k + len(a)] == a for k in range(len(lines)))
+n = sum(has(a) for a in arts)
+print("arts on screen:", n)
+sys.exit(0 if n == 1 and scr.count("dNo") <= 1 else 1)
 PY
-check "art identical at 80 columns" test $? -eq 0
-check "no fallback text at 80 columns" bash -c "! grep -q 'Amiga art by dNo: use' '$root/c80.out' || ! [ -f '$src/art.txt' ]"
+check "one art on screen, unchanged, at 80 columns" test $? -eq 0
+check "no fallback text at 80 columns" bash -c "! grep -q 'Amiga art by dNo: use' '$root/c80.out' || ! [ -f '$src/art-1.txt' ]"
 
 # 3. Narrow terminals show the fallback, not the art.
 for c in 40 60; do
@@ -138,6 +139,16 @@ check "no intro.conf: straight to the next screen" bash -c "grep -q SENTINEL '$r
 printf '2 ../../etc/passwd\n2 nonexist.txt\nabc greetings.txt\n' > "$root/etc/intro/intro.conf"
 TAIL=1.5 run 80 "" "$root/bad.out"
 check "bad names and bad seconds are skipped" bash -c "grep -q SENTINEL '$root/bad.out' && ! grep -q root: '$root/bad.out'"
+
+# 6b. intro_pick: alternatives a|b are chosen with the same chance; a single name as it is.
+check "intro_pick: both alternatives, about half each" bash -c "
+export BBS_ROOT='$root' BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 TERM=dumb; source '$here/lib/menu.sh'
+[[ \$(intro_pick single.txt) == single.txt ]] || exit 1
+for i in \$(seq 400); do intro_pick 'a|b'; done | sort | uniq -c | awk '{ n[\$2] = \$1 } END { exit !(n[\"a\"] >= 150 && n[\"b\"] >= 150) }'"
+# 6c. A terminal type without terminfo (SyncTERM sends "syncterm"): redraw still clears.
+check "redraw clears with an unknown TERM" bash -c "
+export BBS_ROOT='$root' BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 TERM=syncterm; source '$here/lib/menu.sh'
+redraw | grep -q \$'\\033\\[H\\033\\[2J'"
 
 # 7. The start loop calls intro_run before the welcome screen.
 check "start block: intro_run before welcome_screen" bash -c "grep -n -A2 -F '\${BASHBBS_TEST:-} ]]; then' '$here/lib/menu.sh' | tail -3 | tr '\n' ' ' | grep -q 'intro_run.*welcome_screen'"
