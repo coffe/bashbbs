@@ -203,6 +203,8 @@ list_users() {
     width=$(( $(list_width) - 17 ))
     for f in "$BBS_ROOT"/users/*/profile; do
         [[ -f $f && ! -L $f ]] || continue
+        # hidden=yes keeps test and staff accounts off the public list.
+        grep -qx 'hidden=yes' "$f" && continue
         name=$(sed -n 's/^name=//p' "$f" | safe)
         uuid=$(sed -n 's/^uuid=//p' "$f" | safe)
         if (( width >= 8 )); then
