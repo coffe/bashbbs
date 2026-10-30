@@ -1,7 +1,7 @@
 #!/bin/bash
 # BashBBS main menu. Runs as the login shell of a bbs-<name> account.
 # Menu choices are single keys (read_key). Text is read line by line with
-# read -r. Neither reaches eval or a shell.
+# rline (read -r). Neither reaches eval or a shell.
 set -u
 umask 077
 
@@ -42,6 +42,50 @@ redraw() {
     drain_input
     # A terminal type without a terminfo entry (SyncTERM sends "syncterm") makes clear fail.
     clear 2>/dev/null || printf '\033[H\033[2J'
+}
+
+# ---- Input lines ------------------------------------------------------------
+# A typed line is at most INPUT_MAX characters (a mail body is 8192 bytes, so no honest
+# line is longer). Over a terminal the kernel already caps a line near 4 KB and handles
+# backspace; over a pipe (ssh -T) nothing caps it,
+# so one endless line would grow bash until the Pi runs out of memory. A longer line
+# is thrown away up to its Enter, so what is left of it can never act as menu keys.
+# rline <var> [prompt] [raw]: RLINE_LONG=1 and <var> empty when the line was too long
+# (the notice goes to stderr, stdout may be a post file). Returns 1 at end of input.
+# Unless "raw" is given, leading and trailing blanks are trimmed, as read -r does.
+INPUT_MAX=8192
+RLINE_LONG=
+
+rline_drain() { # discard the rest of the current line, in bounded pieces
+    local d
+    while IFS= read -r -n 4096 d; do
+        (( ${#d} < 4096 )) && return 0
+    done
+    return 1
+}
+
+rline() {
+    local __v=$1 __p=${2-} __raw=${3-} __l __c
+    RLINE_LONG=
+    if [[ -t 0 ]]; then
+        IFS= read -r -p "$__p" __l || return 1
+        (( ${#__l} > INPUT_MAX )) && RLINE_LONG=1
+    else
+        IFS= read -r -n "$INPUT_MAX" __l || return 1
+        if (( ${#__l} >= INPUT_MAX )); then
+            # Exactly INPUT_MAX read and no Enter yet: an Enter next is still a fit.
+            IFS= read -r -n 1 __c || return 1
+            [[ -z $__c ]] || { RLINE_LONG=1; rline_drain || true; }
+        fi
+    fi
+    if [[ -n $RLINE_LONG ]]; then
+        __l=
+        echo "Line too long (max $INPUT_MAX characters), ignored." >&2
+    elif [[ -z $__raw ]]; then
+        __l=${__l#"${__l%%[![:space:]]*}"}; __l=${__l%"${__l##*[![:space:]]}"}
+    fi
+    printf -v "$__v" '%s' "$__l"
+    return 0
 }
 
 # One key, no draining, so keys typed on purpose a moment ago are not lost.
@@ -376,7 +420,7 @@ keys_label_ask() { # keys_label_ask <prompt>
     KEYS_LABEL=
     echo "Letters, digits, space . _ - (max 20)."
     echo "[Enter] cancels."
-    read -r -p "$1" l || return 1
+    rline l "$1" || return 1
     l=${l#"${l%%[![:space:]]*}"}; l=${l%"${l##*[![:space:]]}"}
     [[ -n $l ]] || return 1
     [[ $l =~ ^[A-Za-z0-9\ ._-]{1,20}$ ]] || { echo "Not a valid label."; pause; return 1; }
@@ -407,7 +451,7 @@ keys_add() {
     fi
     echo "Paste ONE public key line."
     echo "[Enter] cancels."
-    read -r -p "> " line || return
+    rline line "> " || return
     line=${line#"${line%%[![:space:]]*}"}; line=${line%"${line##*[![:space:]]}"}
     [[ -n $line ]] || return
     if [[ ${line^^} == -----BEGIN* || ${line^^} == *"PRIVATE KEY"* || ${line^^} == *"PUTTY-USER-KEY-FILE"* ]]; then
@@ -430,7 +474,7 @@ keys_add() {
         IFS=$'\t' read -r kind ty body <<< "$out"
         echo
         printf '%s\n' "$body" | safe | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
-        read -r -p "Type LEGACY to accept: " ans || return
+        rline ans "Type LEGACY to accept: " || return
         [[ $ans == LEGACY ]] || { echo "Cancelled."; pause; return; }
         legacy=yes
         out=$(keys_check "$line" --legacy); rc=$?
@@ -831,7 +875,7 @@ edit_post() { # edit_post <board> <file>
     subject=$(post_hdr "$f" Subject)
     echo
     echo "Subject: $(list_fit "$(( $(list_width) - 9 ))" "$subject")"
-    read -r -p "New subject ([Enter] keeps): " new || return
+    rline new "New subject ([Enter] keeps): " || return
     new=$(printf '%s' "$new" | safe | head -c 100)
     [[ -n $new ]] && subject=$new
     while true; do
@@ -862,7 +906,7 @@ Q: cancel the edit" local || return
 delete_post() { # delete_post <board> <file>
     local answer
     echo
-    read -r -p "Type DELETE ([Enter] Back): " answer || return
+    rline answer "Type DELETE ([Enter] Back): " || return
     [[ $answer == DELETE ]] || return
     printf 'Action: delete-post\nBoard: %s\nMsgid: %s\n\n' "$1" "$(post_hdr "$2" Msgid)" | queue_request
     echo "Sent. Appears within a minute."
@@ -872,7 +916,8 @@ delete_post() { # delete_post <board> <file>
 # Text lines up to a line with only a dot, at most 200 lines. Used by compose and edit.
 read_body() {
     local line count=0
-    while IFS= read -r line; do
+    while rline line "" raw; do
+        [[ -n $RLINE_LONG ]] && continue
         [[ $line == . ]] && break
         count=$((count + 1))
         (( count > 200 )) && break
@@ -884,7 +929,7 @@ read_body() {
 # into boards/. Users cannot write into boards/ themselves.
 compose() {
     local board=$1 parent=$2 subject tmp
-    read -r -p "Subject: " subject || return
+    rline subject "Subject: " || return
     subject=$(printf '%s' "$subject" | safe | head -c 100)
     [[ -n $subject ]] || return
     echo "Write text. End with a single dot (.)."
@@ -924,7 +969,7 @@ queue_request() {
 
 new_private_board() {
     local name
-    read -r -p "Name (a-z, 0-9, - and _; 2-24 chars): " name || return
+    rline name "Name (a-z, 0-9, - and _; 2-24 chars): " || return
     [[ $name =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]] || { echo "Bad name."; pause; return; }
     printf 'Action: create-board\nBoard: %s\n' "$name" | queue_request
     echo "Sent. Applies in a minute. Log in again."
@@ -950,7 +995,7 @@ Q: back" local || return
         [Rr]) action=remove ;;
         *) return ;;
     esac
-    read -r -p "User: " user || return
+    rline user "User: " || return
     valid_user "$user" || { echo "Unknown user."; pause; return; }
     printf 'Action: %s\nBoard: %s\nUser: %s\n' "$action" "$board" "$user" | queue_request
     echo "Sent. Applies in a minute. Log in again."
@@ -1037,10 +1082,12 @@ mail_subject() { # mail_subject <text>; prints the subject, or a reason on stder
 }
 
 # Body: lines up to a line with only a dot. Limit 8 192 bytes, line ends included.
-# A line with /cancel stops without output. Returns 1 on cancel or when too long.
+# A line with /cancel stops without output. Returns 1 on cancel, a line over INPUT_MAX
+# or a body that is too long.
 mail_body() {
     local line total=0 LC_ALL=C
-    while IFS= read -r line; do
+    while rline line "" raw; do
+        [[ -n $RLINE_LONG ]] && return 1
         [[ $line == . ]] && break
         [[ $line == /cancel ]] && return 1
         total=$((total + ${#line} + 1))
@@ -1084,13 +1131,13 @@ mail_send() { # mail_send <name> <subject> [in-reply-to]
 # Write a new message, or a reply when called from mail_reply. /cancel stops at any prompt.
 mail_write() { # mail_write [name subject in-reply-to]
     local to=${1:-} subject=${2:-} reply=${3:-} line
-    if [[ -z $to ]]; then read -r -p "To (/cancel stops): " to || return; fi
+    if [[ -z $to ]]; then rline to "To (/cancel stops): " || return; fi
     [[ $to == /cancel ]] && return
     resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
     # The default in brackets is shown cut to the line; Enter still keeps the full subject.
     local shown=""
     [[ -n $subject ]] && shown=" [$(list_fit $(( $(list_width) - 28 )) "$subject")]"
-    read -r -p "Subject${shown} (/cancel stops): " line || return
+    rline line "Subject${shown} (/cancel stops): " || return
     [[ $line == /cancel ]] && return
     [[ -n $line ]] && subject=$line
     subject=$(mail_subject "$subject") || { pause; return; }
@@ -1258,7 +1305,7 @@ wall_entry() { # wall_entry <file> <width>
 wall_write() {
     local text len tmp
     echo "Greeting, max $WALL_MAX_CHARS chars. [Enter] Back."
-    read -r -p "> " text || return
+    rline text "> " || return
     text=$(printf '%s' "$text" | safe)
     [[ -n $text ]] || return
     len=$(printf '%s' "$text" | LC_ALL=C.UTF-8 wc -m)
