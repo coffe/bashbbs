@@ -20,6 +20,7 @@ install -m 0755 "$src/sbin/bbs-approve" /usr/local/sbin/bbs-approve
 install -m 0755 "$src/bin/bbs-news-status" /usr/local/sbin/bbs-news-status
 install -m 0755 "$src/sbin/bbs-news-index" /usr/local/sbin/bbs-news-index
 install -m 0755 "$src/sbin/bbs-history-expire" /usr/local/sbin/bbs-history-expire
+install -m 0755 "$src/sbin/bbs-maildir" /usr/local/sbin/bbs-maildir
 install -m 0644 "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
 install -m 0755 "$src/lib/wrap.py" /usr/local/lib/bashbbs/wrap.py
 install -m 0755 "$src/lib/news.sh" /usr/local/lib/bashbbs/news.sh
@@ -32,6 +33,16 @@ install -m 0644 "$src/lib/keys-common.sh" /usr/local/lib/bashbbs/keys-common.sh
 # Data layout. Users never write into boards/ or keys/ directly.
 install -d -m 0755 /srv/bashbbs /srv/bashbbs/home /srv/bashbbs/keys /srv/bashbbs/users
 install -d -m 0755 /srv/bashbbs/boards/general
+
+# Maildir folders for every existing account. Only accounts that already have a
+# profile and a home get folders; install.sh never creates accounts or messages.
+for profile in /srv/bashbbs/users/*/profile; do
+    [[ -f $profile && ! -L $profile ]] || continue
+    name=$(sed -n 's/^name=//p' "$profile")
+    [[ $name =~ ^[a-z][a-z0-9]{2,8}$ ]] || continue
+    id "bbs-$name" >/dev/null 2>&1 || continue
+    /usr/local/sbin/bbs-maildir "/srv/bashbbs/home/$name" "bbs-$name:bbs-$name" || [[ ! -d /srv/bashbbs/home/$name ]]
+done
 install -d -m 0755 /srv/bashbbs/queue
 
 # One-line greetings (the wall). The publisher writes them as root and keeps the newest 100.
@@ -41,7 +52,8 @@ install -d -m 0755 /srv/bashbbs/wall
 # so the publisher can mv into place atomically). The category allowlist is read
 # by bbs-publish and bbs-drop from /srv/bashbbs/lib.
 install -d -m 0755 /srv/bashbbs/state /srv/bashbbs/state/tmp /srv/bashbbs/lib
-install -m 0644 "$src/lib/news-categories.conf" /srv/bashbbs/lib/news-categories.conf
+# The sysop may edit this file, so it is copied only when missing. A re-run keeps the edits.
+[[ -e /srv/bashbbs/lib/news-categories.conf ]] || install -m 0644 "$src/lib/news-categories.conf" /srv/bashbbs/lib/news-categories.conf
 install -d -m 1733 /srv/bashbbs/queue/incoming
 
 # Protected history (old versions of edited posts) and admin backups, written by

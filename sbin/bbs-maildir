@@ -1,0 +1,17 @@
+#!/bin/bash
+# Make the Maildir folders for one account: the Inbox, Sent and Trash, each with
+# tmp, new and cur. Idempotent: it creates what is missing and sets the mode and
+# owner of the folders, but never touches a message. bbs-provision runs it for a
+# new account, install.sh for every existing one.
+# Usage: bbs-maildir <home-dir> <owner:group>
+set -euo pipefail
+home=${1:?usage: bbs-maildir <home-dir> <owner:group>}
+owner=${2:?usage: bbs-maildir <home-dir> <owner:group>}
+
+[[ -d $home && ! -L $home ]] || { echo "home missing: $home" >&2; exit 1; }
+md=$home/Maildir
+for folder in "$md" "$md/.Sent" "$md/.Trash"; do
+    for sub in "$folder" "$folder/tmp" "$folder/new" "$folder/cur"; do
+        install -d -m 0700 -o "${owner%%:*}" -g "${owner##*:}" "$sub"
+    done
+done

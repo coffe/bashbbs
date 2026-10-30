@@ -34,6 +34,7 @@ home=$BBS_ROOT/home/$name
 
 useradd --home-dir "$home" --no-create-home --shell /usr/local/sbin/bbs-shell --user-group "$account"
 install -d -m 0700 -o "$account" -g "$account" "$home"
+/usr/local/sbin/bbs-maildir "$home" "$account:$account"
 
 install -d -m 0755 "$BBS_ROOT/keys" "$BBS_ROOT/users/$name"
 printf '%s\n' "$key_line" > "$BBS_ROOT/keys/$account"
