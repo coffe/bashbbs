@@ -20,8 +20,8 @@ eq() { [[ $1 == "$2" ]]; }
 not() { ! "$@"; }
 
 root=$(mktemp -d "$scratch/pm.XXXXXX")
-mkdir -p "$root"/{users/alice,users/bob,users/carol,users/coffe,users/news,t}
-for u in alice bob carol coffe news; do : > "$root/users/$u/profile"; done
+mkdir -p "$root"/{users/alice,users/bob,users/carol,users/coffe,users/news,users/newsstatus,t}
+for u in alice bob carol coffe news newsstatus; do : > "$root/users/$u/profile"; done
 printf 'carol\ncoffe\n' > "$root/sysops"
 cat > "$root/t/sendmail" <<'SH'
 #!/bin/bash
@@ -121,12 +121,22 @@ printf 'Hej\n.\ny\n\n' | ( export BBS_ROOT="$root" USER=bbs-mallory BASHBBS_TEST
 check "identity: without the seam a non-bbs login is refused" eq "$(delivered)" 0
 check "identity: refusal says Bad account" grep -q 'Bad account' "$log"
 
-# --- 6. Recipients: registered users only, never sysops or news --------------
+# --- 6. Recipients: registered users and sysops, with or without bbs-, any case.
+# News accounts, unknown names and Linux-only accounts get nothing.
 reset
-for to in coffe carol news bbs-news bbs-bob nope ../bob; do
+for to in bob bbs-bob BOB Bob bbs-BOB coffe Coffe bbs-coffe carol; do
+    printf '%s\nHej\nText\n.\ny\n\n' "$to" | run_as alice mail_write >>"$log" 2>&1
+done
+check "recipients: 9 names accepted (users and sysops)" eq "$(delivered)" 9
+check "recipients: sysop coffe goes to bbs-coffe" grep -q -- '-f bbs-alice bbs-coffe' "$root/t/delivered/args"
+reset
+for to in news bbs-news newsstatus nope root bbs-root bbs-bbs-bob bbs- ../bob; do
     printf '%s\n\n' "$to" | run_as alice mail_write >>"$log" 2>&1
 done
-check "recipients: sysops, news and unknown names get nothing" eq "$(delivered)" 0
+check "recipients: news, unknown and Linux-only names get nothing" eq "$(delivered)" 0
+reset
+printf 'BBS-Bob\nHej\nText\n.\ny\n\n' | run_as alice mail_write >>"$log" 2>&1
+check "recipients: To header holds the plain name" grep -qxF "To: bob@$hostn" "$(onemsg)"
 
 # --- 7. Parallel sends: 20 at once, 20 messages and 20 Sent copies ----------
 reset

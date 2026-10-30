@@ -1045,13 +1045,21 @@ mail_unread() {
     printf '%d' "$n"
 }
 
+# The name a user typed as a BBS name: lower case, with one leading bbs- dropped.
+pm_name() {
+    local name=${1,,}
+    printf '%s' "${name#bbs-}"
+}
+
 # The only place that knows local addresses: a name becomes a local account.
+# Only names with a BBS profile count, so no Linux account is reachable this way.
 resolve_local() {
-    valid_user "$1" || return 1
-    # Sysops and the news account are never private-message recipients, even with a profile.
-    grep -qx -- "$1" "$BBS_ROOT/sysops" 2>/dev/null && return 1
-    [[ $1 == news ]] && return 1
-    printf 'bbs-%s' "$1"
+    local name
+    name=$(pm_name "$1")
+    valid_user "$name" || return 1
+    # The news accounts are never private-message recipients, even with a profile.
+    [[ $name == news || $name == newsstatus ]] && return 1
+    printf 'bbs-%s' "$name"
 }
 
 # File name for a message in cur. Maildir needs a flag suffix there.
@@ -1103,6 +1111,7 @@ mail_send() { # mail_send <name> <subject> [in-reply-to]
     local to=$1 subject=$2 reply=${3:-} acct host tmp
     valid_user "$me" || return 1
     acct=$(resolve_local "$to") || return 1
+    to=$(pm_name "$to")
     host=$(hostname)
     tmp=$(mktemp) || return 1
     {
@@ -1131,7 +1140,7 @@ mail_send() { # mail_send <name> <subject> [in-reply-to]
 # Write a new message, or a reply when called from mail_reply. /cancel stops at any prompt.
 mail_write() { # mail_write [name subject in-reply-to]
     local to=${1:-} subject=${2:-} reply=${3:-} line
-    if [[ -z $to ]]; then rline to "To (/cancel stops): " || return; fi
+    if [[ -z $to ]]; then rline to "To, e.g. kitty (/cancel stops): " || return; fi
     [[ $to == /cancel ]] && return
     resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
     # The default in brackets is shown cut to the line; Enter still keeps the full subject.
