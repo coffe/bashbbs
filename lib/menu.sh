@@ -1397,6 +1397,57 @@ EOF
     echo "Bye."
 }
 
+# ---- Ads at logout ----------------------------------------------------------
+# After Goodbye, one ad from $BBS_ROOT/etc/ads: a plain *.txt file (letters, digits,
+# dot, dash, underscore in the name), at most 16 KB, shown exactly as it is, until
+# Space. No ad, no screen. The ads belong to the installation; BashBBS ships none.
+# The ad shown last time (in $HOME/.bashbbs-ad) is not shown again at once, unless it
+# is the only ad. Lines are never wrapped or changed; the screen is 80 columns wide.
+ADS_MAX_BYTES=16384
+
+ad_pick() { # ad_pick: prints the name of one ad, or nothing
+    local f n last=""
+    local -a fit=() again=()
+    last=$(head -n 1 "$HOME/.bashbbs-ad" 2>/dev/null) || last=""
+    for f in "$BBS_ROOT"/etc/ads/*.txt; do
+        n=${f##*/}
+        [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.txt$ && -f $f && ! -L $f && -r $f ]] || continue
+        (( $(stat -c %s "$f") <= ADS_MAX_BYTES )) || continue
+        fit+=("$n")
+        [[ $n == "$last" ]] || again+=("$n")
+    done
+    if (( ${#again[@]} )); then printf '%s\n' "${again[RANDOM % ${#again[@]}]}"
+    elif (( ${#fit[@]} )); then printf '%s\n' "${fit[0]}"
+    fi
+    return 0
+}
+
+# Writes the name to a temp file in $HOME, then renames it over the old one: a
+# logout that overlaps another one never leaves a half-written file behind.
+ad_remember() { # ad_remember <name>
+    local tmp
+    tmp=$(mktemp "$HOME/.bashbbs-ad.XXXXXX") || return 0
+    printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$HOME/.bashbbs-ad" || rm -f "$tmp"
+    return 0
+}
+
+# Shows one ad. Space ends it; so does end of input (a lost connection), so logout
+# never hangs. Keys typed before the ad are drained, so a stray Space cannot skip it.
+ad_run() {
+    local name c
+    [[ -t 0 && -t 1 ]] || return 0
+    name=$(ad_pick)
+    [[ -n $name ]] || return 0
+    redraw
+    tr -d '\r' < "$BBS_ROOT/etc/ads/$name" || return 0
+    printf '\033[0m\n[Space] Bye\n'
+    ad_remember "$name"
+    while IFS= read -rsn1 c; do
+        [[ $c == ' ' ]] && break
+    done
+    return 0
+}
+
 # ---- What's new: summary at login -------------------------------------------
 # The counts are new since the previous login. Nothing is marked as read.
 # The last login is kept in ~/.bashbbs-seen as login=<epoch>. Only counts are
@@ -1581,4 +1632,5 @@ if [[ -z ${BASHBBS_TEST:-} ]]; then
         [[ -n $nav_req ]] || nav_req=main
     done
     goodbye
+    ad_run
 fi
