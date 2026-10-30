@@ -1,11 +1,14 @@
 # BashBBS: ban SSH brute force. LAN is never banned.
 # Debian 12 logs sshd under ssh.service, not sshd.service.
+# iptables is not installed on the Pi, so bans go through nftables.
 [DEFAULT]
-ignoreip = 127.0.0.1/8 192.168.1.0/24
+ignoreip = 127.0.0.0/8 ::1 192.168.1.0/24
 bantime  = 1h
 findtime = 10m
 maxretry = 5
 backend  = systemd
+banaction = nftables
+banaction_allports = nftables[type=allports]
 
 [sshd]
 enabled = true
