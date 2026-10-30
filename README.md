@@ -47,21 +47,34 @@ Run on a Debian host as root, from a checkout:
 sudo ./install.sh
 ```
 
-The installer needs `python3` and `flock`. It installs the scripts under
-`/usr/local/lib/bashbbs` and `/usr/local/sbin`, and creates `/srv/bashbbs`.
+It installs the scripts under `/usr/local/lib/bashbbs` and `/usr/local/sbin`, and
+creates `/srv/bashbbs`.
+
+**Dependencies.** The installer checks for the packages it needs and lists the
+missing ones. Required: `python3`, `util-linux` (flock), `systemd`, `openssh-server`.
+Optional: `postfix` (private messages), `lighttpd` (web part), `fail2ban` with
+`python3-systemd` and `nftables` (sshd jail). A missing optional package skips its
+part. To install the missing packages with apt, run `sudo ./install.sh --install-deps`.
+A plain re-run never installs packages.
+
+Config the sysop may have edited is kept on a re-run. `/etc/fail2ban/jail.local`,
+`/etc/lighttpd/bashbbs.conf` and `/srv/bashbbs/lib/news-categories.conf` are never
+overwritten. If the repo version differs, the new one goes to `<file>.new` and a
+note says so. Compare with `diff`, merge by hand, then delete the `.new` file.
 
 Before you run it, read these gotchas:
 
-- **It overwrites files without a backup.** `/etc/fail2ban/jail.local` and
-  `/srv/bashbbs/lib/news-categories.conf` are replaced on every run. Do not run it
-  on a system where you have edited either file.
+- **Postfix is never changed by the installer.** It warns when `home_mailbox` is not
+  `Maildir/` and prints the command to fix it. `etc/nftables-egress.example.nft` and
+  `etc/sshd-hardening.example.conf` are templates for the host's own firewall and
+  sshd settings. They are not installed.
 - **The sshd `Match` block is appended once** and must stay at the end of
   `sshd_config`. The installer copies the original to
   `/etc/ssh/sshd_config.pre-bashbbs.<date>` first.
-- **fail2ban needs `python3-systemd`** on Debian, because the jail uses the
-  systemd backend. The jail matches `ssh.service`, not `sshd.service`.
-- **Not set up by the installer:** Postfix (the installer only warns when
-  `home_mailbox` or sendmail is wrong), the `bbs-news`
+- **fail2ban needs `python3-systemd` and `nftables`** on Debian. The jail uses the
+  systemd backend and bans through nft. The installer sets up the jail only when all
+  three are present. The jail matches `ssh.service`, not `sshd.service`.
+- **Not set up by the installer:** the `bbs-news`
   account and its SSH key, and the port forward (the public SSH port is 6464 on
   the router, forwarded to port 22 on the Pi). Set these up by hand.
 - **Only the core parts are installed.** News timers and the status channel are
@@ -73,6 +86,9 @@ Every test is a standalone script:
 
 ```sh
 bash tests/wall_test.sh [logfile]        # prints PASS/FAIL lines and a summary
+bash tests/maildir_test.sh               # Maildir folders, owners, message survival
+bash tests/install_helpers_test.sh       # dependency list, kept config files
+bash tests/fail2ban_config_test.sh       # jail: loopback only, nftables bans, no iptables
 python3 tests/test_wrap.py               # wrapping
 ```
 
@@ -97,11 +113,14 @@ This code was written for one installation. These values are hardcoded:
 
 - `web/index.html` line 43: the public host `bbs.piewpiew.se` and port 6464.
 - `web/index.html` lines 47 and 75: the sysop's name in the footer.
-- `etc/fail2ban-jail.local` line 4: the LAN subnet in `ignoreip`.
 - Some tests default their scratch directory to a session-specific path.
 
 ## Status
 
+- **A clean Debian install is not tested yet.** The installer has been checked only
+  by the helper tests and by reading the code. The `--install-deps` apt branch has not
+  run either, and the fail2ban jail cannot run on the dev host. Test a fresh install
+  on a separate Debian machine before the installer is called release-ready.
 - Version 1.2 is released (Wall). Version 1.3 (private messages, English UI) is
   built on branch `bashbbs-1.3-pm` and is not rolled out.
 - There are no TODO or FIXME comments in the code.

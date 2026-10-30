@@ -1,8 +1,10 @@
-# BashBBS: ban SSH brute force. LAN is never banned.
+# BashBBS: ban SSH brute force. Loopback is never banned. To exempt a LAN, add its
+# subnet to ignoreip on the host.
 # Debian 12 logs sshd under ssh.service, not sshd.service.
-# iptables is not installed on the Pi, so bans go through nftables.
+# Bans go through nftables only. Debian's jail.conf defaults to iptables-multiport,
+# and this [DEFAULT] section replaces those defaults. The nftables package must be installed.
 [DEFAULT]
-ignoreip = 127.0.0.0/8 ::1 192.168.1.0/24
+ignoreip = 127.0.0.0/8 ::1
 bantime  = 1h
 findtime = 10m
 maxretry = 5

@@ -1,0 +1,21 @@
+# Example outbound ruleset for a BashBBS host. The host may reach its DNS server and
+# the internet, but not the local networks. Not installed by install.sh.
+# Before loading: replace every <PLACEHOLDER>, then check the syntax with
+#   nft -c -f etc/nftables-egress.example.nft
+# and load it with
+#   nft -f etc/nftables-egress.example.nft
+# Test from a console or a second session first: a wrong rule can cut off SSH.
+table inet bashbbs_egress {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" accept
+		ct state established,related accept
+		meta l4proto ipv6-icmp accept
+		udp sport 68 udp dport 67 accept
+		udp dport 5353 accept
+		ip daddr <DNS_SERVER_IPV4> meta l4proto { tcp, udp } th dport 53 accept
+		ip6 daddr <DNS_SERVER_IPV6> meta l4proto { tcp, udp } th dport 53 accept
+		ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } reject with icmp admin-prohibited
+		ip6 daddr { <LAN_IPV6_PREFIX>, fc00::/7 } reject with icmpv6 admin-prohibited
+	}
+}

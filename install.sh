@@ -1,13 +1,35 @@
 #!/bin/bash
 # Install BashBBS on this host. Run as root from the checkout directory.
+# Usage: sudo ./install.sh [--install-deps]
+#   --install-deps  apt-get installs the missing Debian packages. Without it, the
+#                   installer only lists them. A normal re-run never installs packages.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 src=$(dirname "$(readlink -f "$0")")
+source "$src/lib/install-helpers.sh"
 
-# Required tools. Everything else is in the Debian base system.
-for tool in python3 flock; do
-    command -v "$tool" >/dev/null || { echo "missing: $tool" >&2; exit 1; }
+install_deps=no
+for arg in "$@"; do
+    case $arg in
+        --install-deps) install_deps=yes ;;
+        *) echo "usage: install.sh [--install-deps]" >&2; exit 2 ;;
+    esac
 done
+
+# Required packages stop the install. Optional ones skip their part, which is reported below.
+req=$(bashbbs_missing_deps required)
+opt=$(bashbbs_missing_deps optional)
+if [[ -n "$req$opt" ]]; then
+    read -ra pkgs <<<"$req $opt"
+    if [[ $install_deps == yes ]]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${pkgs[@]}"
+        req=$(bashbbs_missing_deps required)
+    else
+        echo "missing packages: ${pkgs[*]}" >&2
+        echo "install them with: apt-get install ${pkgs[*]}   (or run install.sh --install-deps)" >&2
+    fi
+fi
+[[ -z $req ]] || { echo "required packages missing, install stopped: $req" >&2; exit 1; }
 
 install -d -m 0755 /usr/local/lib/bashbbs
 install -m 0755 "$src/lib/menu.sh" /usr/local/lib/bashbbs/menu.sh
@@ -104,7 +126,7 @@ install -m 0644 "$src/web/index.html" /var/www/bbs/index.html
 install -m 0755 "$src/web/apply.cgi" /var/www/bbs/apply.cgi
 if command -v lighttpd >/dev/null; then
     install -d -m 0755 /var/log/lighttpd
-    install -m 0644 "$src/etc/lighttpd-bashbbs.conf" /etc/lighttpd/bashbbs.conf
+    keep_or_note "$src/etc/lighttpd-bashbbs.conf" /etc/lighttpd/bashbbs.conf
     # Drop-in: lighttpd's own unit starts the stock config, so override ExecStart.
     install -d -m 0755 /etc/systemd/system/lighttpd.service.d
     install -m 0644 "$src/systemd/lighttpd.service.d/bashbbs.conf" /etc/systemd/system/lighttpd.service.d/bashbbs.conf
@@ -118,14 +140,13 @@ else
     echo "lighttpd not installed: web part skipped"
 fi
 
-# fail2ban on sshd. The systemd backend needs python3-systemd on Debian.
-if command -v fail2ban-client >/dev/null; then
-    dpkg -s python3-systemd >/dev/null 2>&1 || apt-get install -y -q --no-install-recommends python3-systemd
-    install -m 0644 "$src/etc/fail2ban-jail.local" /etc/fail2ban/jail.local
+# fail2ban on sshd. The systemd backend needs python3-systemd (see the dependency check).
+if command -v fail2ban-client >/dev/null && command -v nft >/dev/null && python3 -c 'import systemd.journal' 2>/dev/null; then
+    keep_or_note "$src/etc/fail2ban-jail.local" /etc/fail2ban/jail.local
     systemctl enable --now fail2ban
     systemctl restart fail2ban
 else
-    echo "fail2ban not installed: sshd jail skipped"
+    echo "fail2ban, nftables or python3-systemd not installed: sshd jail skipped"
 fi
 
 # sshd: append the Match block once. It must stay at the end of the file.
@@ -138,8 +159,9 @@ systemctl reload ssh
 
 # Private messages need local Postfix delivery into Maildir. Warn only: this never edits /etc/postfix.
 if command -v postconf >/dev/null; then
-    [[ $(postconf -h home_mailbox 2>/dev/null) == Maildir/ ]] ||
-        echo "WARNING: Postfix home_mailbox is not Maildir/. Private messages will not arrive. Fix: postconf -e 'home_mailbox = Maildir/'" >&2
+    mailbox=$(postconf -h home_mailbox 2>/dev/null || true)
+    [[ $mailbox == Maildir/ ]] ||
+        echo "WARNING: Postfix home_mailbox is '${mailbox:-unset}', must be 'Maildir/'. Private messages will not arrive. Not changed by install.sh. To set it: postconf -e 'home_mailbox = Maildir/' && systemctl reload postfix" >&2
     postconf -h mydestination 2>/dev/null | grep -q 'myhostname' ||
         echo "WARNING: Postfix mydestination does not include \$myhostname. Check it before using private messages." >&2
 else
