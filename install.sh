@@ -20,7 +20,7 @@ done
 req=$(bashbbs_missing_deps required)
 opt=$(bashbbs_missing_deps optional)
 if [[ -n "$req$opt" ]]; then
-    read -ra pkgs <<<"$req $opt"
+    read -ra pkgs <<<"$(bashbbs_missing_words)"
     if [[ $install_deps == yes ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${pkgs[@]}"
         req=$(bashbbs_missing_deps required)
@@ -159,11 +159,9 @@ systemctl reload ssh
 
 # Private messages need local Postfix delivery into Maildir. Warn only: this never edits /etc/postfix.
 if command -v postconf >/dev/null; then
-    mailbox=$(postconf -h home_mailbox 2>/dev/null || true)
-    [[ $mailbox == Maildir/ ]] ||
-        echo "WARNING: Postfix home_mailbox is '${mailbox:-unset}', must be 'Maildir/'. Private messages will not arrive. Not changed by install.sh. To set it: postconf -e 'home_mailbox = Maildir/' && systemctl reload postfix" >&2
-    postconf -h mydestination 2>/dev/null | grep -q 'myhostname' ||
-        echo "WARNING: Postfix mydestination does not include \$myhostname. Check it before using private messages." >&2
+    bashbbs_postfix_warnings "$(postconf -h myorigin 2>/dev/null || true)" \
+        "$(postconf -h mydestination 2>/dev/null || true)" \
+        "$(postconf -h home_mailbox 2>/dev/null || true)" /etc/mailname
 else
     echo "WARNING: Postfix not installed. Private messages cannot be delivered." >&2
 fi

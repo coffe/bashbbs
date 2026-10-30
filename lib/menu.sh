@@ -7,6 +7,9 @@ umask 077
 
 BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
 LIB=/usr/local/lib/bashbbs
+# Domain of the private-message addresses. Same value as BASHBBS_MAIL_DOMAIN in
+# lib/install-helpers.sh. It must be a domain that local Postfix delivers to.
+BBS_MAIL_DOMAIN=${BBS_MAIL_DOMAIN:-bbs.localdomain}
 # Who is logged in is the kernel's account name, never $USER. BASHBBS_TEST_ID
 # exists only for the test harness and is ignored unless BASHBBS_TEST is set.
 login=$(id -un) || exit 1
@@ -1114,7 +1117,7 @@ mail_send() { # mail_send <name> <subject> [in-reply-to]
     valid_user "$me" || return 1
     acct=$(resolve_local "$to") || return 1
     to=$(pm_name "$to")
-    host=$(hostname)
+    host=$BBS_MAIL_DOMAIN
     tmp=$(mktemp) || return 1
     {
         printf 'Message-ID: <%s@%s>\n' "$(cat /proc/sys/kernel/random/uuid)" "$host"

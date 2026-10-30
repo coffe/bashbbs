@@ -47,5 +47,30 @@ check "optional lists only the failing optional packages" \
 check "a passing package is never listed" \
     bash -c '! grep -q gamma <<<"$1"' _ "$(bashbbs_missing_deps required)"
 
+# bashbbs_missing_words: every missing package of both levels, on one line (apt-get gets all of them).
+check "missing words joins both levels on one line" \
+    test "$(bashbbs_missing_words | xargs)" = "alpha beta delta"
+
+# bashbbs_postfix_warnings: a correct setup prints nothing. Each deviation prints its own warning.
+echo "bbs.localdomain" > "$root/mailname"
+good=$(bashbbs_postfix_warnings /etc/mailname '$myhostname, localhost, $myorigin' 'Maildir/' "$root/mailname" 2>&1)
+check "correct Postfix setup prints nothing" test -z "$good"
+origin=$(bashbbs_postfix_warnings pocket-scout.local '$myhostname, localhost' 'Maildir/' "$root/mailname" 2>&1)
+check "wrong myorigin is reported" grep -q 'myorigin is' <<<"$origin"
+check "missing \$myorigin in mydestination is reported" grep -q 'does not include \$myorigin' <<<"$origin"
+nohost=$(bashbbs_postfix_warnings bbs.localdomain 'localhost' 'Maildir/' "$root/mailname" 2>&1)
+check "missing \$myhostname is reported" grep -q 'does not include \$myhostname' <<<"$nohost"
+mbox=$(bashbbs_postfix_warnings bbs.localdomain '$myhostname, $myorigin' '' "$root/mailname" 2>&1)
+check "wrong home_mailbox is reported" grep -q "home_mailbox is 'unset'" <<<"$mbox"
+check "myorigin read from a missing mailname file is reported" \
+    grep -q "myorigin is 'unset'" <<<"$(bashbbs_postfix_warnings /nonexistent/mailname '$myhostname, $myorigin' 'Maildir/' "$root/nope" 2>&1)"
+
+# sshd fragment: the newsstatus block is present, has no pty or forwarding, and runs only bbs-news-status.
+frag="$here/etc/sshd-bashbbs.conf"
+check "sshd fragment has a newsstatus Match block" grep -qx 'Match User newsstatus' "$frag"
+check "newsstatus forces bbs-news-status" grep -qx '    ForceCommand /usr/local/sbin/bbs-news-status' "$frag"
+check "newsstatus block has no pty" bash -c 'awk "/^Match User newsstatus/{f=1;next} /^Match /{f=0} f" "$1" | grep -qx "    PermitTTY no"' _ "$frag"
+check "newsstatus block has no forwarding" bash -c 'awk "/^Match User newsstatus/{f=1;next} /^Match /{f=0} f" "$1" | grep -qx "    AllowTcpForwarding no"' _ "$frag"
+
 echo "install_helpers_test: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

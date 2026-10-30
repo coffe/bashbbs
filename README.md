@@ -64,8 +64,9 @@ note says so. Compare with `diff`, merge by hand, then delete the `.new` file.
 
 Before you run it, read these gotchas:
 
-- **Postfix is never changed by the installer.** It warns when `home_mailbox` is not
-  `Maildir/` and prints the command to fix it. `etc/nftables-egress.example.nft` and
+- **Postfix is never changed by the installer.** It warns when `myorigin` is not
+  `bbs.localdomain`, when `mydestination` lacks `$myhostname` or `$myorigin`, and when
+  `home_mailbox` is not `Maildir/`. It prints the command to fix `home_mailbox`. `etc/nftables-egress.example.nft` and
   `etc/sshd-hardening.example.conf` are templates for the host's own firewall and
   sshd settings. They are not installed.
 - **The sshd `Match` block is appended once** and must stay at the end of
@@ -75,8 +76,12 @@ Before you run it, read these gotchas:
   systemd backend and bans through nft. The installer sets up the jail only when all
   three are present. The jail matches `ssh.service`, not `sshd.service`.
 - **Not set up by the installer:** the `bbs-news`
-  account and its SSH key, and the port forward (the public SSH port is 6464 on
-  the router, forwarded to port 22 on the Pi). Set these up by hand.
+  account and its SSH key, the `newsstatus` account and its key (the status channel
+  for the news producer, key forced to `bbs-news-status`), and the port forward (the public SSH port is 6464 on
+  the router, forwarded to port 22 on the Pi). Set these up by hand. `newsstatus` and
+  `bbs-news` need `/bin/bash` as login shell: sshd runs the ForceCommand through the login
+  shell with `-c`, so `nologin` or `/bin/false` breaks it. The `Match User newsstatus`
+  block in `etc/sshd-bashbbs.conf` already forbids a terminal, forwarding and rc files.
 - **Only the core parts are installed.** News timers and the status channel are
   not part of `install.sh` yet.
 
@@ -117,10 +122,11 @@ This code was written for one installation. These values are hardcoded:
 
 ## Status
 
-- **A clean Debian install is not tested yet.** The installer has been checked only
-  by the helper tests and by reading the code. The `--install-deps` apt branch has not
-  run either, and the fail2ban jail cannot run on the dev host. Test a fresh install
-  on a separate Debian machine before the installer is called release-ready.
+- **A fresh Raspberry Pi OS Trixie install (Pi Zero W, armv6l) is tested.** The installer
+  exits 0, is idempotent on a second run, and its `Match` block is written once. The
+  `--install-deps` apt branch ran and installed every package. Not yet tested: the
+  newsstatus account (not provisioned, see above) and the PM read view as a second user.
+  The fail2ban jail cannot run on the dev host, so it is checked only on the test card.
 - Version 1.2 is released (Wall). Version 1.3 (private messages, English UI) is
   built on branch `bashbbs-1.3-pm` and is not rolled out.
 - There are no TODO or FIXME comments in the code.

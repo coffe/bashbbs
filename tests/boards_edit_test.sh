@@ -321,7 +321,8 @@ for w in 40 60 80; do
 done
 
 # ---- E. private messages: Maildir, delivery, reply, trash -------------------
-hostn=$(hostname)
+# PM headers use the BBS mail domain, not the host name (BBS_MAIL_DOMAIN in lib/menu.sh).
+hostn=bbs.localdomain
 mkdir -p "$root"/users/{alice,bob}
 : > "$root/users/alice/profile"
 : > "$root/users/bob/profile"

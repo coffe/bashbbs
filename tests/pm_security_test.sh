@@ -9,7 +9,8 @@ scratch=${SCRATCH:-/tmp/claude-1000/-home-coffe-ai/9506b390-481f-488f-a1f9-0e791
 log=${1:-$scratch/pm_security_test.log}
 : > "$log"
 pass=0; fail=0
-hostn=$(hostname)
+# PM headers use the BBS mail domain, not the host name (BBS_MAIL_DOMAIN in lib/menu.sh).
+hostn=bbs.localdomain
 
 check() { # check <description> <command...>
     local d=$1; shift
