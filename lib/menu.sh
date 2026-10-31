@@ -1431,14 +1431,16 @@ ad_remember() { # ad_remember <name>
     return 0
 }
 
-# Shows one ad. Space ends it; so does end of input (a lost connection), so logout
-# never hangs. Keys typed before the ad are drained, so a stray Space cannot skip it.
+# Shows one ad under the Goodbye screen, which stays on the screen. Space ends it; so
+# does end of input (a lost connection), so logout never hangs. Keys typed before the
+# ad are drained, so a stray Space cannot skip it.
 ad_run() {
     local name c
     [[ -t 0 && -t 1 ]] || return 0
     name=$(ad_pick)
     [[ -n $name ]] || return 0
-    redraw
+    drain_input
+    printf '\n'
     tr -d '\r' < "$BBS_ROOT/etc/ads/$name" || return 0
     printf '\033[0m\n[Space] Bye\n'
     ad_remember "$name"
