@@ -105,10 +105,26 @@ source "$3"
 my_account; echo "RESULT=$COLOR"
 EOF
 python3 "$here/tests/pty_drive.py" --cols 80 --out "$root/g.out" --timeout 15 \
-    --step '[Any key] =>c' --step '[Any key] =>q' -- bash "$root/acct_drv.sh" "$root" "$h5" "$lib" >>"$log" 2>&1
+    --step 'Any key=>c' --step 'Any key=>q' -- bash "$root/acct_drv.sh" "$root" "$h5" "$lib" >>"$log" 2>&1
 check "(g) C turns colour off and saves it" bash -c 'grep -q "RESULT=0" "$1" && [[ $(cat "$2") == color=0 ]]' x "$root/g.out" "$h5/.bashbbs-prefs"
 check "(g) the menu showed Colour: on, then off" bash -c 'grep -q "Colour: on" "$1" && grep -q "Colour: off" "$1"' x "$root/g.out"
 check "(g) no temp files left" eq "$(ls -A "$h5" | grep -c '^\.bashbbs-prefs\.')" 0
+
+# (h) key prompts: coloured with colour on, unchanged with colour off
+check "(h) prompts coloured" bash -c '[[ $(cat "$1") == *"$2[1;33mAny key$2[0;36m]"*"Main"* ]]' x <(fn 1 paint_bar "[Any key] Main") "$ESC"
+check "(h) prompts plain unchanged" eq "$(fn 0 paint_bar "[Space] Bye")" "[Space] Bye"
+check "(h) pause prompt: ESC on / none off" bash -c '[[ $(cat "$1") == *"$3"* && $(cat "$2") != *"$3"* ]]' x \
+    <(fn 1 paint_bar "[Any key] ") <(fn 0 paint_bar "[Any key] ") "$ESC"
+
+# (i) a scene .ans of 160 visible bytes with no newline: two lines of 80, fits the intro
+printf '%0160d' 0 | tr 0 'x' > "$root/nl.ans"
+check "(i) 160 bytes wrap to 80+80" eq "$(fn 0 art_raw "$root/nl.ans" | awk '{printf "%d,", length($0)}')" "80,80,"
+check "(i) intro_width <= 80" bash -c '(( $1 <= 80 ))' x "$(fn 1 intro_width "$root/nl.ans")"
+# (j) ESC[5C counts as 5 columns
+{ printf 'x%.0s' $(seq 1 77); printf '\033[5Cab'; } > "$root/cuf.ans"
+check "(j) ESC[5C counts 5 columns" eq "$(fn 0 art_raw "$root/cuf.ans" | LC_ALL=C sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | awk '{printf "%d,", length($0)}')" "77,2,"
+{ printf 'x%.0s' $(seq 1 70); printf '\033[1;31m'; printf 'y%.0s' $(seq 1 15); } > "$root/sgr.ans"
+check "(j) SGR counts 0 columns" eq "$(fn 1 art_raw "$root/sgr.ans" | LC_ALL=C sed 's/\x1b\[[0-9;]*m//g' | awk '{printf "%d,", length($0)}')" "80,5,"
 
 echo "color_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

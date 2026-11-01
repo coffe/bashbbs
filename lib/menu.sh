@@ -103,9 +103,46 @@ ansi_strip() { _ansi_filter 0; }
 
 # The text of an art file as UTF-8, CR dropped, ESC sequences untouched. A .ans file is
 # CP437: the SAUCE record (from the first Ctrl-Z) is cut off, then iconv.
+# Scene .ans files often have no newlines and rely on the terminal wrapping at 80 columns.
+# Width from SAUCE (TInfo1, DataType 1 / FileType 1) when it is 1-255, else 80.
+_ans_width() { # _ans_width <file>
+    local w
+    w=$(LC_ALL=C tail -c 128 "$1" 2>/dev/null | LC_ALL=C od -An -tu1 -v | tr -s ' \n' ' ' | awk '
+        { for (i = 1; i <= NF; i++) b[i-1] = $i }
+        END { if (NF == 128 && b[0]==83 && b[1]==65 && b[2]==85 && b[3]==67 && b[4]==69 && b[94]==1 && b[95]==1) print b[96] + 256 * b[97]; }')
+    [[ $w =~ ^[0-9]+$ ]] && (( w >= 1 && w <= 255 )) && echo "$w" || echo 80
+}
+# Insert a newline where the visible column would pass <width>. Runs on CP437 bytes.
+_ans_wrap() { # _ans_wrap <width>
+    LC_ALL=C awk -v W="${1:-80}" '{ col = 0; n = length($0); i = 1; out = ""
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c == "\033" && substr($0, i + 1, 1) == "[") {
+            j = i + 2
+            while (j <= n && substr($0, j, 1) ~ /[0-?]/) j++
+            while (j <= n && substr($0, j, 1) ~ /[ -\/]/) j++
+            if (j <= n && substr($0, j, 1) ~ /[@-~]/) {
+                seq = substr($0, i, j - i + 1)
+                if (substr($0, j, 1) == "C") {
+                    p = substr($0, i + 2, j - i - 2); k = (p ~ /^[0-9]+$/) ? p + 0 : 1
+                    if (k == 0) k = 1
+                    if (col + k > W) { out = out "\n"; col = 0 }
+                    col += k
+                }
+                out = out seq; i = j + 1; continue
+            }
+            out = out c; i++; continue
+        }
+        if (c == "\r") { i++; continue }
+        if (col >= W) { out = out "\n"; col = 0 }
+        out = out c; col++; i++
+      }
+      print out }'
+}
+
 art_raw() { # art_raw <file>
     if [[ $1 == *.ans ]]; then
-        LC_ALL=C sed -n '/\x1a/{s/\x1a.*//;p;q};p' "$1" | iconv -f CP437 -t UTF-8 2>/dev/null | tr -d '\r'
+        LC_ALL=C sed -n '/\x1a/{s/\x1a.*//;p;q};p' "$1" | _ans_wrap "$(_ans_width "$1")" | iconv -f CP437 -t UTF-8 2>/dev/null | tr -d '\r'
     else
         tr -d '\r' < "$1"
     fi
@@ -235,7 +272,7 @@ read_confirm() { # read_confirm <prompt>
 }
 
 # A screen that only waits: any key goes on.
-pause() { read_key "[Any key] " || true; echo; }
+pause() { read_key "$(paint_bar "[Any key] ")" || true; echo; }
 
 # Up to nine digit keys for a list of <n> entries: "123" for three.
 digit_keys() { # digit_keys <n>
@@ -268,7 +305,7 @@ show_help() { # show_help <text, lines separated by newlines>
     redraw
     local_header "Help"
     printf '%s\n' "$1"
-    echo "[Any key] Back"
+    paint_bar "[Any key] Back"; echo
     read_key_raw || true   # redraw drained before the help was drawn
     MKEY='?'
 }
@@ -342,7 +379,7 @@ my_account() {
     echo
     echo "[K] SSH keys"
     echo "[C] Colour: $( ((COLOR)) && echo on || echo off )"
-    read_key "[Any key] " || true
+    read_key "$(paint_bar "[Any key] ")" || true
     echo
     if [[ $MKEY == [Cc] ]]; then
         COLOR=$(( 1 - COLOR )); color_init; prefs_save
@@ -1478,7 +1515,7 @@ wall_menu() {
             echo
         fi
         echo "Page $((page + 1)) of $pages"
-        echo "[Space] Next  N) Write  Q) Back  [?]"
+        paint_bar "[Space] Next  N) Write  Q) Back  [?]"; echo
         menu_key "> " "NnQq " "N: write a greeting
 [Space]: next page   Q: back
 B M P W: jump   G: log out" || { nav_req=quit; return; }
@@ -1573,7 +1610,7 @@ ad_run() {
     drain_input
     printf '\n'
     art_cat "$BBS_ROOT/etc/ads/$name" || return 0
-    printf '\033[0m\n[Space] Bye\n'
+    printf '\033[0m\n'; paint_bar "[Space] Bye"; echo
     ad_remember "$name"
     while IFS= read -rsn1 c; do
         [[ $c == ' ' ]] && break
@@ -1736,7 +1773,7 @@ welcome_screen() {
             echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
         fi
         echo
-        echo "[Any key] Main"
+        paint_bar "[Any key] Main"; echo
         printf '> '
         # redraw drained before this screen was drawn; nothing drains here.
         read_key_raw || { nav_req=quit; return; }
