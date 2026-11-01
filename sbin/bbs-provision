@@ -47,4 +47,8 @@ created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PROFILE
 chmod 0644 "$BBS_ROOT/users/$name/profile"
 
+# Short login name (ptrko for bbs-ptrko). Reserved or taken names just get no alias.
+alias_msg=$(/usr/local/sbin/bbs-alias add "$name" 2>&1) || true
+echo "$alias_msg" >&2
+
 echo "created $account uuid=$uuid"

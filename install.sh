@@ -39,10 +39,14 @@ install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
 install -m 0755 "$src/bin/bbs-ingest" /usr/local/sbin/bbs-ingest
 install -m 0755 "$src/sbin/bbs-drop" /usr/local/sbin/bbs-drop
 install -m 0755 "$src/sbin/bbs-approve" /usr/local/sbin/bbs-approve
+install -m 0755 "$src/sbin/bbs-svara" /usr/local/sbin/bbs-svara
 install -m 0755 "$src/bin/bbs-news-status" /usr/local/sbin/bbs-news-status
 install -m 0755 "$src/sbin/bbs-news-index" /usr/local/sbin/bbs-news-index
 install -m 0755 "$src/sbin/bbs-history-expire" /usr/local/sbin/bbs-history-expire
 install -m 0755 "$src/sbin/bbs-maildir" /usr/local/sbin/bbs-maildir
+install -m 0755 "$src/sbin/bbs-alias" /usr/local/sbin/bbs-alias
+install -m 0755 "$src/sbin/bbs-admin" /usr/local/sbin/bbs-admin
+install -m 0644 "$src/lib/reserved-names.conf" /usr/local/lib/bashbbs/reserved-names.conf
 install -m 0644 "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
 install -m 0755 "$src/lib/wrap.py" /usr/local/lib/bashbbs/wrap.py
 install -m 0755 "$src/lib/news.sh" /usr/local/lib/bashbbs/news.sh
@@ -153,6 +157,12 @@ fi
 if ! grep -q '^Match User bbs-' /etc/ssh/sshd_config; then
     cp -a /etc/ssh/sshd_config "/etc/ssh/sshd_config.pre-bashbbs.$(date +%Y%m%d)"
     cat "$src/etc/sshd-bashbbs.conf" >> /etc/ssh/sshd_config
+fi
+# Short-name block (Match Group bbsalias), also at the end. Inert until AllowGroups lists bbsalias.
+getent group bbsalias >/dev/null || groupadd --system bbsalias
+if ! grep -q '^Match Group bbsalias' /etc/ssh/sshd_config; then
+    [[ -e /etc/ssh/sshd_config.pre-bashbbs.$(date +%Y%m%d) ]] || cp -a /etc/ssh/sshd_config "/etc/ssh/sshd_config.pre-bashbbs.$(date +%Y%m%d)"
+    cat "$src/etc/sshd-bashbbs-alias.conf" >> /etc/ssh/sshd_config
 fi
 sshd -t
 systemctl reload ssh

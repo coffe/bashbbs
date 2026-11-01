@@ -395,7 +395,7 @@ list_users() {
 my_account() {
     local uuid keys
     uuid=$(sed -n 's/^uuid=//p' "$BBS_ROOT/users/$me/profile" 2>/dev/null | safe)
-    keys=$(grep -c . "$BBS_ROOT/keys/$USER" 2>/dev/null || echo 0)
+    keys=$(grep -c . "$BBS_ROOT/keys/$login" 2>/dev/null || echo 0)
     while true; do
     redraw
     local_header "My account"

@@ -2,7 +2,9 @@
 # Application form for BashBBS. Runs under lighttpd as www-data.
 # It only writes one file into applications/incoming. It never creates
 # accounts; the sysop does that with bbs-approve.
+import grp
 import os
+import pwd
 import re
 import sys
 import time
@@ -17,6 +19,31 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9]{2,8}$")
 KEY_TYPES = {"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
              "ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com"}
 KEY_BODY_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
+# Reserved short names (same file as bbs-alias). Test hook: BASHBBS_TEST=1 moves the paths.
+RESERVED = "/usr/local/lib/bashbbs/reserved-names.conf"
+if os.environ.get("BASHBBS_TEST") == "1":
+    APP_DIR = os.environ.get("BBS_APP_DIR", APP_DIR)
+    USERS = os.environ.get("BBS_USERS", USERS)
+    RESERVED = os.environ.get("BBS_RESERVED", RESERVED)
+
+
+def reserved(name):
+    """True if the name is on the blocklist or already a system user or group.
+    A missing list refuses everything (fail closed)."""
+    try:
+        with open(RESERVED, encoding="utf-8") as f:
+            listed = {ln.split("#")[0].strip() for ln in f}
+    except OSError:
+        return True
+    if name in listed:
+        return True
+    for lookup in (pwd.getpwnam, grp.getgrnam):
+        try:
+            lookup(name)
+            return True
+        except KeyError:
+            pass
+    return False
 
 
 def page(status, text):
@@ -58,10 +85,13 @@ def main():
     name = field(form, "name", 9)
     key = field(form, "key", 2048)
     note = field(form, "note", 300)
+    contact = field(form, "contact", 100)
 
     if not NAME_RE.match(name):
         return page("400 Bad Request",
                     "Name: 3-9 characters, lowercase letters and digits, starting with a letter.")
+    if reserved(name):
+        return page("409 Conflict", "That name is reserved. Pick another one.")
     if os.path.exists(os.path.join(USERS, name)):
         return page("409 Conflict", "That name is taken or was used before.")
 
@@ -76,7 +106,7 @@ def main():
     os.umask(0o077)
     try:
         with open(tmp, "x", encoding="utf-8") as f:
-            f.write(f"name={name}\nkey={parts[0]} {parts[1]}\nnote={note}\n")
+            f.write(f"name={name}\nkey={parts[0]} {parts[1]}\nnote={note}\ncontact={contact}\n")
         os.rename(tmp, final)
     except OSError:
         return page("500 Internal Server Error",

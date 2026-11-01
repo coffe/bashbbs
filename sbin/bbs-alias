@@ -1,0 +1,110 @@
+#!/bin/bash
+# Short login names: `ptrko` as an alias for the BBS account `bbs-ptrko`.
+# The alias is its own passwd entry with the SAME uid, gid, home and shell, added
+# AFTER bbs-<name> so glibc (and `id -un`) still resolve the uid to bbs-<name>.
+# The BBS identity, keys and home are therefore unchanged. Run as root.
+#   bbs-alias check <name>             exit 0 if <name> may become an alias
+#   bbs-alias add <name>               create the alias for bbs-<name>
+#   bbs-alias remove <name>            remove the alias only (never the home)
+#   bbs-alias shell <name> <shell>     set the alias shell (disable/enable follows the account)
+#   bbs-alias backfill [--apply]       alias for every bbs-* account; dry run by default
+# Spec: thoughts/kristofer/kortnamn.md. Test hooks (only with BASHBBS_TEST=1):
+# BBS_GETENT BBS_USERADD BBS_USERDEL BBS_USERMOD BBS_GROUPADD BBS_RESERVED.
+set -uo pipefail
+umask 022
+
+GETENT=/usr/bin/getent USERADD=/usr/sbin/useradd USERDEL=/usr/sbin/userdel
+USERMOD=/usr/sbin/usermod GROUPADD=/usr/sbin/groupadd
+RESERVED=/usr/local/lib/bashbbs/reserved-names.conf
+GROUP=bbsalias
+BBS_SHELL=/usr/local/sbin/bbs-shell
+if [[ -n ${BASHBBS_TEST:-} ]]; then
+    GETENT=${BBS_GETENT:-$GETENT}; USERADD=${BBS_USERADD:-$USERADD}
+    USERDEL=${BBS_USERDEL:-$USERDEL}; USERMOD=${BBS_USERMOD:-$USERMOD}
+    GROUPADD=${BBS_GROUPADD:-$GROUPADD}; RESERVED=${BBS_RESERVED:-$RESERVED}
+elif [[ $EUID -ne 0 ]]; then
+    echo "must run as root" >&2; exit 1
+fi
+
+die() { echo "bbs-alias: $*" >&2; exit 1; }
+
+reserved_name() { # reserved_name <name>: 0 if the name is on the blocklist
+    [[ -r $RESERVED ]] || return 0   # fail closed: no list, no aliases
+    grep -qxF -- "$1" <(sed 's/[[:space:]]*#.*//; s/[[:space:]]*$//' "$RESERVED")
+}
+
+# check_name <name>: prints the reason and returns 1 if <name> cannot be an alias.
+check_name() {
+    local n=$1 g
+    [[ $n =~ ^[a-z][a-z0-9]{2,8}$ ]] || { echo "invalid name"; return 1; }
+    reserved_name "$n" && { echo "reserved name"; return 1; }
+    "$GETENT" group "$n" >/dev/null 2>&1 && { echo "a group with that name exists"; return 1; }
+    "$GETENT" passwd "$n" >/dev/null 2>&1 && { echo "a user with that name exists"; return 1; }
+    return 0
+}
+
+acct_field() { # acct_field <bbs-name> <field no>
+    "$GETENT" passwd "$1" 2>/dev/null | cut -d: -f"$2"
+}
+
+is_alias() { # is_alias <name>: 0 if <name> is an alias of bbs-<name>
+    local n=$1 au bu
+    au=$(acct_field "$n" 3); bu=$(acct_field "bbs-$n" 3)
+    [[ -n $au && $au == "$bu" ]] && "$GETENT" group "$GROUP" 2>/dev/null | cut -d: -f4 | tr , '\n' | grep -qxF -- "$n"
+}
+
+add_alias() { # add_alias <name>; prints a status line
+    local n=$1 uid gid home shell why
+    [[ $n =~ ^[a-z][a-z0-9]{2,8}$ ]] || { echo "invalid name"; return 1; }
+    uid=$(acct_field "bbs-$n" 3); gid=$(acct_field "bbs-$n" 4)
+    home=$(acct_field "bbs-$n" 6); shell=$(acct_field "bbs-$n" 7)
+    [[ -n $uid ]] || { echo "no account bbs-$n"; return 1; }
+    if is_alias "$n"; then echo "$n: alias exists"; return 0; fi
+    why=$(check_name "$n") || { echo "$n: skipped ($why)"; return 1; }
+    "$GETENT" group "$GROUP" >/dev/null 2>&1 || "$GROUPADD" --system "$GROUP" || { echo "groupadd failed"; return 1; }
+    "$USERADD" -o -u "$uid" -g "$gid" -M -N -d "$home" -s "${shell:-$BBS_SHELL}" -G "$GROUP" "$n" \
+        || { echo "$n: useradd failed"; return 1; }
+    echo "$n: alias created (uid $uid)"
+}
+
+cmd=${1:-}
+case $cmd in
+    check)
+        [[ -n ${2:-} ]] || die "usage: bbs-alias check <name>"
+        why=$(check_name "$2") || { echo "$why"; exit 1; }
+        ;;
+    add)
+        [[ -n ${2:-} ]] || die "usage: bbs-alias add <name>"
+        add_alias "$2" || exit 1
+        ;;
+    remove)
+        n=${2:-}; [[ $n =~ ^[a-z][a-z0-9]{2,8}$ ]] || die "usage: bbs-alias remove <name>"
+        is_alias "$n" || { echo "$n: no alias"; exit 0; }
+        # Never -r: the home belongs to bbs-$n.
+        "$USERDEL" "$n" || die "userdel $n failed"
+        echo "$n: alias removed"
+        ;;
+    shell)
+        n=${2:-}; sh=${3:-}; [[ $n =~ ^[a-z][a-z0-9]{2,8}$ && -n $sh ]] || die "usage: bbs-alias shell <name> <shell>"
+        is_alias "$n" || exit 0
+        "$USERMOD" -s "$sh" "$n" || die "usermod $n failed"
+        ;;
+    backfill)
+        apply=0; [[ ${2:-} == --apply ]] && apply=1
+        rc=0
+        while IFS=: read -r acct _ _ _ _ _ _; do
+            [[ $acct == bbs-* ]] || continue
+            n=${acct#bbs-}
+            [[ $n =~ ^[a-z][a-z0-9]{2,8}$ ]] || { echo "$n: skipped (invalid name)"; continue; }
+            if is_alias "$n"; then echo "$n: alias exists"; continue; fi
+            if why=$(check_name "$n"); then
+                if (( apply )); then add_alias "$n" || rc=1; else echo "$n: would create alias"; fi
+            else
+                echo "$n: skipped ($why)"
+            fi
+        done < <("$GETENT" passwd)
+        (( apply )) || echo "dry run; add --apply to create"
+        exit $rc
+        ;;
+    *) die "usage: bbs-alias check|add|remove|shell|backfill" ;;
+esac
