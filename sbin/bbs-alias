@@ -4,7 +4,8 @@
 # AFTER bbs-<name> so glibc (and `id -un`) still resolve the uid to bbs-<name>.
 # The BBS identity, keys and home are therefore unchanged. Run as root.
 #   bbs-alias check <name>             exit 0 if <name> may become an alias
-#   bbs-alias add <name>               create the alias for bbs-<name>
+#   bbs-alias add <name> [bbs-<acct>]  create the alias for bbs-<name> (or for bbs-<acct>,
+#                                      e.g. `add sys0p bbs-coffe`)
 #   bbs-alias remove <name>            remove the alias only (never the home)
 #   bbs-alias shell <name> <shell>     set the alias shell (disable/enable follows the account)
 #   bbs-alias backfill [--apply]       alias for every bbs-* account; dry run by default
@@ -47,19 +48,31 @@ acct_field() { # acct_field <bbs-name> <field no>
     "$GETENT" passwd "$1" 2>/dev/null | cut -d: -f"$2"
 }
 
+in_group() { # in_group <name>: 0 if <name> is a member of the alias group
+    "$GETENT" group "$GROUP" 2>/dev/null | cut -d: -f4 | tr , '\n' | grep -qxF -- "$1"
+}
+
 is_alias() { # is_alias <name>: 0 if <name> is an alias of bbs-<name>
     local n=$1 au bu
     au=$(acct_field "$n" 3); bu=$(acct_field "bbs-$n" 3)
-    [[ -n $au && $au == "$bu" ]] && "$GETENT" group "$GROUP" 2>/dev/null | cut -d: -f4 | tr , '\n' | grep -qxF -- "$n"
+    [[ -n $au && $au == "$bu" ]] && in_group "$n"
 }
 
-add_alias() { # add_alias <name>; prints a status line
-    local n=$1 uid gid home shell why
+alias_owner() { # alias_owner <name>: prints the bbs-* account that alias <name> belongs to
+    local n=$1 uid
+    uid=$(acct_field "$n" 3)
+    [[ -n $uid ]] && in_group "$n" || return 1
+    "$GETENT" passwd | awk -F: -v u="$uid" '$3 == u && $1 ~ /^bbs-/ { print $1; f = 1; exit } END { exit !f }'
+}
+
+add_alias() { # add_alias <name> [bbs-<acct>]; prints a status line
+    local n=$1 acct=${2:-bbs-$1} uid gid home shell why
     [[ $n =~ ^[a-z][a-z0-9]{2,8}$ ]] || { echo "invalid name"; return 1; }
-    uid=$(acct_field "bbs-$n" 3); gid=$(acct_field "bbs-$n" 4)
-    home=$(acct_field "bbs-$n" 6); shell=$(acct_field "bbs-$n" 7)
-    [[ -n $uid ]] || { echo "no account bbs-$n"; return 1; }
-    if is_alias "$n"; then echo "$n: alias exists"; return 0; fi
+    [[ $acct =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || { echo "invalid account"; return 1; }
+    uid=$(acct_field "$acct" 3); gid=$(acct_field "$acct" 4)
+    home=$(acct_field "$acct" 6); shell=$(acct_field "$acct" 7)
+    [[ -n $uid ]] || { echo "no account $acct"; return 1; }
+    if [[ $(alias_owner "$n") == "$acct" ]]; then echo "$n: alias exists"; return 0; fi
     why=$(check_name "$n") || { echo "$n: skipped ($why)"; return 1; }
     "$GETENT" group "$GROUP" >/dev/null 2>&1 || "$GROUPADD" --system "$GROUP" || { echo "groupadd failed"; return 1; }
     "$USERADD" -o -u "$uid" -g "$gid" -M -N -d "$home" -s "${shell:-$BBS_SHELL}" -G "$GROUP" "$n" \
@@ -74,19 +87,19 @@ case $cmd in
         why=$(check_name "$2") || { echo "$why"; exit 1; }
         ;;
     add)
-        [[ -n ${2:-} ]] || die "usage: bbs-alias add <name>"
-        add_alias "$2" || exit 1
+        [[ -n ${2:-} ]] || die "usage: bbs-alias add <name> [bbs-<account>]"
+        add_alias "$2" ${3:+"$3"} || exit 1
         ;;
     remove)
         n=${2:-}; [[ $n =~ ^[a-z][a-z0-9]{2,8}$ ]] || die "usage: bbs-alias remove <name>"
-        is_alias "$n" || { echo "$n: no alias"; exit 0; }
+        alias_owner "$n" >/dev/null || { echo "$n: no alias"; exit 0; }
         # Never -r: the home belongs to bbs-$n.
         "$USERDEL" "$n" || die "userdel $n failed"
         echo "$n: alias removed"
         ;;
     shell)
         n=${2:-}; sh=${3:-}; [[ $n =~ ^[a-z][a-z0-9]{2,8}$ && -n $sh ]] || die "usage: bbs-alias shell <name> <shell>"
-        is_alias "$n" || exit 0
+        alias_owner "$n" >/dev/null || exit 0
         "$USERMOD" -s "$sh" "$n" || die "usermod $n failed"
         ;;
     backfill)

@@ -91,6 +91,20 @@ check "add: idempotent" not_has "$calls" "useradd"
 run add ghost; check "add: unknown account refused" rc_is "$rc" 1
 run add zed
 check "add: alias of a disabled account keeps nologin" has "$calls" "-s /usr/sbin/nologin"
+: > "$calls"
+run add sys0p bbs-coffe
+check "add named: sys0p for bbs-coffe exits 0" rc_is "$rc" 0
+check "add named: uses bbs-coffe uid, gid and home" \
+    has "$calls" "useradd -o -u 1003 -g 1003 -M -N -d /srv/bashbbs/home/coffe -s /usr/local/sbin/bbs-shell -G bbsalias sys0p"
+: > "$calls"; run add sys0p bbs-coffe
+check "add named: idempotent" not_has "$calls" "useradd"
+run add sys0p bbs-ptrko; check "add named: name already used by another alias refused" rc_is "$rc" 1
+run add root bbs-coffe; check "add named: reserved name refused" rc_is "$rc" 1
+run add sys1p coffe; check "add named: target must be a bbs- account" rc_is "$rc" 1
+run add sys1p bbs-ghost; check "add named: unknown target refused" rc_is "$rc" 1
+run shell sys0p /usr/sbin/nologin
+check "shell: works on a named alias" has "$calls" "usermod -s /usr/sbin/nologin sys0p"
+run remove sys0p; check "remove: works on a named alias" has "$calls" "userdel sys0p"
 
 # 3. shell + remove
 : > "$calls"
