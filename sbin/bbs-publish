@@ -2,6 +2,7 @@
 # Root-run publisher. Handles two kinds of file in the queue:
 #   *.post  a message for a board
 #   *.req   a board request: create-board, invite, remove
+#   *.call  a login event (counter + state/callers.log), owner only
 # The author comes from the file owner, never from the file text.
 # No errexit: a rejected file is logged and skipped, and the loop goes on.
 #
@@ -56,6 +57,12 @@ WALL_KEEP=100
 WALL_MAX_BYTES=1024
 WALL_MAX_CHARS=140
 WALL_LOCK=$STATE/wall.lock
+
+CALLERS_LOG=$STATE/callers.log      # "YYYY-MM-DDTHH:MMZ name", world readable
+CALLERS_TOTAL=$STATE/callers.total  # running number of logins
+CALLERS_LOCK=$STATE/callers.lock
+CALLERS_KEEP=${BBS_CALLERS_KEEP:-500}
+[[ $CALLERS_KEEP =~ ^[0-9]{1,6}$ ]] && (( CALLERS_KEEP >= 1 )) || CALLERS_KEEP=500
 
 host=$(cat /etc/hostname)
 
@@ -663,6 +670,35 @@ handle_wall() { # handle_wall <file> <owner account>
     return 0
 }
 
+# Count one login. The account is the file owner (aliases share the uid and so
+# resolve to the real bbs-<name>); the file content is ignored. At most one entry
+# per account per minute. The log is capped by rewriting it in place.
+# Returns 0 done, 1 rejected, 2 temporary (lock busy).
+handle_call() { # handle_call <file> <owner account>
+    local owner=$2 name stamp total last tmp
+    (( $(stat -c %s "$1") <= 64 )) || return 1
+    name=${owner#bbs-}
+    stamp=$(date -u +%Y-%m-%dT%H:%MZ)
+    exec 7>>"$CALLERS_LOCK" || return 2
+    flock -w "$LOCK_WAIT" 7 || { exec 7>&-; return 2; }
+    last=$(tail -n 20 "$CALLERS_LOG" 2>/dev/null | grep -cxF "$stamp $name")
+    if (( last == 0 )); then
+        total=$(head -n 1 "$CALLERS_TOTAL" 2>/dev/null)
+        [[ $total =~ ^[0-9]{1,12}$ ]] || total=$(wc -l < "$CALLERS_LOG" 2>/dev/null || echo 0)
+        printf '%s %s\n' "$stamp" "$name" >> "$CALLERS_LOG"
+        tmp=$CALLERS_TOTAL.tmp.$$
+        echo $(( total + 1 )) > "$tmp" && chmod 0644 "$tmp" && mv -f -- "$tmp" "$CALLERS_TOTAL"
+        chmod 0644 "$CALLERS_LOG"
+        if (( $(wc -l < "$CALLERS_LOG") > CALLERS_KEEP )); then
+            tmp=$CALLERS_LOG.tmp.$$
+            tail -n "$CALLERS_KEEP" "$CALLERS_LOG" > "$tmp" && cat "$tmp" > "$CALLERS_LOG"
+            rm -f -- "$tmp"
+        fi
+    fi
+    exec 7>&-
+    return 0
+}
+
 process() { # process <file>; returns 0 done, 1 rejected, 2 temporary
     local f=$1 owner board rc mtime id
     [[ -f $f && ! -L $f ]] || return 0
@@ -672,6 +708,16 @@ process() { # process <file>; returns 0 done, 1 rejected, 2 temporary
         [[ $owner == "$BBS_TEST_OWNER" ]] && owner=bbs-news
     fi
     [[ $owner =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || { rm -f "$f"; return 0; }
+
+    if [[ $f == *.call ]]; then
+        handle_call "$f" "$owner"; rc=$?
+        case $rc in
+            0) rm -f "$f" ;;
+            1) quarantine "$f" ;;
+            *) echo "call kept for retry: $f" >&2 ;;
+        esac
+        return $rc
+    fi
 
     # A greeting for the wall has its own rules and lock.
     if [[ $f == *.wall ]]; then
@@ -747,7 +793,7 @@ repair_index() {
 reconcile_sysops
 mkdir -p "$STATE/tmp" 2>/dev/null
 news_sections_on && repair_index
-for f in "$INCOMING"/*.post "$INCOMING"/*.req "$INCOMING"/*.wall; do
+for f in "$INCOMING"/*.post "$INCOMING"/*.req "$INCOMING"/*.wall "$INCOMING"/*.call; do
     process "$f"
 done
 if [[ -e $DIRTY ]] && news_sections_on; then

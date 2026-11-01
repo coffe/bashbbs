@@ -360,7 +360,7 @@ def s_single(w):
         # Enter alone / unknown keys
         inert(s, b"\n\r\n", b"4", ACCT, "2 main menu: Enter alone")
         s.k("x", MAIN)
-        inert(s, b"x z ! 9 0 6 7 8 /", b"4", ACCT, "2 main menu: unknown keys")
+        inert(s, b"x z ! 9 0 7 8 /", b"4", ACCT, "2 main menu: unknown keys")
         s.k("x", MAIN)
         s.k("1", BOARDS)
         inert(s, b"\n\nx!", b"1", GEN(), "2 boards list: Enter and unknown key")

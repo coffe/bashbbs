@@ -1773,8 +1773,9 @@ main_menu() {
             if (( un > 0 )); then paint ACC "($un unread)"; else printf '(%s unread)' "$un"; fi
             echo
         }
+        keyline "6) Last callers"
         keyline "Q) Log out"
-        menu_key "> " "12345Qq" "1-5: pick a section
+        menu_key "> " "123456Qq" "1-6: pick a section
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }
         case $MKEY in
@@ -1787,8 +1788,53 @@ B M P W: jump" || { nav_req=quit; return; }
             3) list_users; pause ;;
             4) my_account ;;
             5) nav_req=mail; return ;;
+            6) callers_view ;;
         esac
     done
+}
+
+# ---- Callers: visitor counter and the last callers ---------------------------
+# A login is queued as *.call (empty file). The publisher (root) takes the account
+# from the file owner, counts it and appends it to state/callers.log
+# ("YYYY-MM-DDTHH:MMZ name"). state/callers.total holds the running total.
+CALLERS_SHOW=10
+
+# Number the current visit will get: total so far plus calls still in the queue.
+caller_number() {
+    local total=0 pending=0 f
+    total=$(head -n 1 "$BBS_ROOT/state/callers.total" 2>/dev/null)
+    [[ $total =~ ^[0-9]{1,12}$ ]] || total=0
+    for f in "$BBS_ROOT"/queue/incoming/*.call; do
+        [[ -f $f ]] && pending=$((pending + 1))
+    done
+    echo $(( total + pending + 1 ))
+}
+
+# Queue this login. Silent on failure: the counter is not worth a broken login.
+caller_queue() {
+    local tmp
+    tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX" 2>/dev/null) || return 0
+    mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s%N)-$(cat /proc/sys/kernel/random/uuid).call" 2>/dev/null \
+        || rm -f "$tmp"
+    return 0
+}
+
+# The last CALLERS_SHOW callers, newest first: time (minute) and name.
+callers_view() {
+    local t n width
+    redraw
+    local_header "Last callers"
+    width=$(list_width)
+    if [[ -r $BBS_ROOT/state/callers.log ]]; then
+        tail -n "$CALLERS_SHOW" "$BBS_ROOT/state/callers.log" | tac | while read -r t n; do
+            n=$(printf '%s' "$n" | safe)
+            printf '%s  %s\n' "$(local_time "$t")" "$(list_fit $(( width - 18 )) "$n")"
+        done
+    else
+        echo "Nobody yet."
+    fi
+    echo
+    pause
 }
 
 # ---- Wall: one-line greetings -----------------------------------------------
@@ -2160,9 +2206,13 @@ welcome_screen() {
     [[ $prev =~ ^[0-9]+$ ]] || prev=""
     SEEN_PREV=$prev   # the thread list marks posts newer than this
     printf 'login=%s\n' "$(date +%s)" > "$seen" 2>/dev/null || true
+    local callno; callno=$(caller_number)
+    caller_queue
     while true; do
         redraw
         screen_header "Welcome, $me"
+        echo "You are caller #$callno"
+        echo
         if [[ -n $prev ]]; then
             echo "Last login: $(local_time "@$prev")"
             echo
