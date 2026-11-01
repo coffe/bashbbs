@@ -61,7 +61,7 @@ news_wrap() { python3 "$NEWS_LIB/wrap.py" "$1"; }
 news_rule() {
     local s
     printf -v s '%*s' "$NEWS_W" ''
-    printf '%s\n' "${s// /-}"
+    printf '%s\n' "${C_RULE:-}${s// /-}${C_RST:-}"
 }
 
 # Pack key hints into lines of at most W characters (ASCII only).

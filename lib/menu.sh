@@ -23,6 +23,112 @@ sendmail=/usr/sbin/sendmail
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
 
+# ---- Colour -----------------------------------------------------------------
+# COLOR=1|0 is the user's choice, kept in ~/.bashbbs-prefs as color=1|0 (asked once at
+# the first login, changed in My account). The palette variables are empty strings when
+# COLOR=0, so the code that draws a screen needs no branches. The colour goes only on
+# the frame of a screen (bar, title, rules) and on art files; user text stays through
+# safe(), which strips ESC.
+# Tests: BASHBBS_TEST=1 with no prefs file means COLOR=0 and no question. BASHBBS_COLOR=0|1
+# (tests only) forces the value; BASHBBS_COLOR=ask makes the first-login question appear.
+COLOR=0 COLOR_ASK=0
+C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_RST=
+
+color_init() { # color_init: set the palette from COLOR
+    if (( COLOR )); then
+        C_TITLE=$'\033[1;37m' C_BAR=$'\033[0;36m' C_KEY=$'\033[1;33m'
+        C_RULE=$'\033[0;34m' C_DIM=$'\033[0;37m' C_RST=$'\033[0m'
+    else
+        C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_RST=
+    fi
+}
+
+prefs_load() {
+    local v="" f=$HOME/.bashbbs-prefs
+    COLOR_ASK=0
+    if [[ -n ${BASHBBS_TEST:-} && ${BASHBBS_COLOR:-} == [01] ]]; then
+        COLOR=$BASHBBS_COLOR
+    else
+        v=$(sed -n 's/^color=//p' "$f" 2>/dev/null | head -n 1)
+        if [[ $v == [01] ]]; then COLOR=$v
+        elif [[ -n ${BASHBBS_TEST:-} && ${BASHBBS_COLOR:-} != ask ]]; then COLOR=0
+        else COLOR=1 COLOR_ASK=1
+        fi
+    fi
+    color_init
+}
+
+# Same pattern as ad_remember: temp file, then rename.
+prefs_save() {
+    local tmp
+    tmp=$(mktemp "$HOME/.bashbbs-prefs.XXXXXX") || return 0
+    printf 'color=%s\n' "$COLOR" > "$tmp" && mv -f "$tmp" "$HOME/.bashbbs-prefs" || rm -f "$tmp"
+    return 0
+}
+
+# Once, before the first screen: colour or plain. Not asked again once it is saved.
+prefs_ask() {
+    (( COLOR_ASK )) || return 0
+    [[ -t 0 && -t 1 ]] || { COLOR=0; color_init; return 0; }
+    printf '\033[1;37mC\033[1;33mO\033[1;32mL\033[0;36mO\033[1;35mU\033[1;31mR\033[0m\n'
+    if read_key "Colour (ANSI) or plain ASCII? [A/n] "; then
+        echo
+        [[ $MKEY == [Nn] ]] && COLOR=0 || COLOR=1
+        color_init
+        prefs_save
+    else
+        COLOR=0; color_init
+    fi
+    COLOR_ASK=0
+    return 0
+}
+
+# Art filter. Everything after ESC that is not a well-formed CSI sequence is removed, and
+# OSC (ESC ] ... BEL or ESC \) always. With COLOR=0 (or ansi_strip) CSI goes too.
+_ansi_filter() { # _ansi_filter <keep-csi 0|1>
+    if [[ $1 == 1 ]]; then
+        LC_ALL=C sed -e 's/\x01//g' \
+            -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)\{0,1\}//g' \
+            -e 's/\x1b\(\[[0-9;?]*[ -/]*[@-~]\)/\x01\1/g' \
+            -e 's/\x1b[ -/]*[0-~]\{0,1\}//g' \
+            -e 's/\x01/\x1b/g'
+    else
+        LC_ALL=C sed -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)\{0,1\}//g' \
+            -e 's/\x1b\[[0-9;?]*[ -/]*[@-~]//g' \
+            -e 's/\x1b[ -/]*[0-~]\{0,1\}//g'
+    fi
+}
+ansi_out() { _ansi_filter "$COLOR"; }
+ansi_strip() { _ansi_filter 0; }
+
+# The text of an art file as UTF-8, CR dropped, ESC sequences untouched. A .ans file is
+# CP437: the SAUCE record (from the first Ctrl-Z) is cut off, then iconv.
+art_raw() { # art_raw <file>
+    if [[ $1 == *.ans ]]; then
+        LC_ALL=C sed -n '/\x1a/{s/\x1a.*//;p;q};p' "$1" | iconv -f CP437 -t UTF-8 2>/dev/null | tr -d '\r'
+    else
+        tr -d '\r' < "$1"
+    fi
+}
+
+art_cat() { # art_cat <file>: show an art file (filtered, colour reset after a .ans)
+    art_raw "$1" | ansi_out
+    [[ $1 == *.ans ]] && (( COLOR )) && printf '\033[0m'
+    return 0
+}
+
+# The quick-key bar in colour: bar colour, with the key inside [ ] highlighted.
+paint_bar() { # paint_bar <text>
+    local s=$1 out=""
+    if (( ! COLOR )); then printf '%s' "$s"; return; fi
+    while [[ $s =~ ^([^[]*)\[([^]]*)\](.*)$ ]]; do
+        out+="${C_BAR}${BASH_REMATCH[1]}[${C_KEY}${BASH_REMATCH[2]}${C_BAR}]"
+        s=${BASH_REMATCH[3]}
+    done
+    printf '%s%s%s%s' "$out" "$C_BAR" "$s" "$C_RST"
+}
+prefs_load
+
 # ---- Keys -------------------------------------------------------------------
 # A menu choice is one key, no Enter. MKEY holds the key; it is empty for Enter
 # and for escape sequences (arrow keys), which are read to the end and ignored.
@@ -222,6 +328,7 @@ my_account() {
     local uuid keys
     uuid=$(sed -n 's/^uuid=//p' "$BBS_ROOT/users/$me/profile" 2>/dev/null | safe)
     keys=$(grep -c . "$BBS_ROOT/keys/$USER" 2>/dev/null || echo 0)
+    while true; do
     redraw
     local_header "My account"
     echo "Name:  $me"
@@ -234,10 +341,16 @@ my_account() {
     echo "Keys:  $keys registered"
     echo
     echo "[K] SSH keys"
+    echo "[C] Colour: $( ((COLOR)) && echo on || echo off )"
     read_key "[Any key] " || true
     echo
+    if [[ $MKEY == [Cc] ]]; then
+        COLOR=$(( 1 - COLOR )); color_init; prefs_save
+        continue
+    fi
     [[ $MKEY == [Kk] ]] && ssh_keys_menu
     return 0
+    done
 }
 
 # ---- SSH keys ---------------------------------------------------------------
@@ -591,11 +704,12 @@ top_bar() {
     cols=$(term_width)
     (( cols >= 50 )) && mail=" [P] Mail"
     line="[B] Boards [M] Main${mail} [W] Wall [G] Goodbye${1:+  $1}"
+    # The width is that of the plain text; the colour is added only when printing.
     if (( ${#line} <= cols )); then
-        echo "$line"
+        paint_bar "$line"; echo
     else
-        echo "[B] Boards [M] Main${mail} [W] Wall"
-        echo "[G] Goodbye${1:+  $1}"
+        paint_bar "[B] Boards [M] Main${mail} [W] Wall"; echo
+        paint_bar "[G] Goodbye${1:+  $1}"; echo
     fi
     echo
 }
@@ -616,7 +730,7 @@ nav_key() {
 # The top of every screen: the quick-key bar, the title, one blank line.
 screen_header() { # screen_header <title> [bar text]
     top_bar "[?] Help${2:+  $2}"
-    echo "== $1 =="
+    echo "${C_TITLE}== $1 ==${C_RST}"
     echo
 }
 
@@ -624,9 +738,9 @@ screen_header() { # screen_header <title> [bar text]
 # short form): no jump keys are shown, because none work there. Same layout as
 # screen_header.
 local_header() { # local_header <title> [bar text]
-    echo "[?] Help${2:+  $2}"
+    paint_bar "[?] Help${2:+  $2}"; echo
     echo
-    echo "== $1 =="
+    echo "${C_TITLE}== $1 ==${C_RST}"
     echo
 }
 
@@ -1382,19 +1496,31 @@ B M P W: jump   G: log out" || { nav_req=quit; return; }
 
 # Shown on logout. Plain ASCII only, so it works on any terminal.
 goodbye() {
+    local g f
+    for g in goodbye.ans goodbye.txt; do
+        [[ $g == *.ans ]] && (( ! COLOR )) && continue
+        f=$BBS_ROOT/etc/$g
+        if [[ -f $f && ! -L $f && -r $f ]] && (( $(stat -c %s "$f") <= ADS_MAX_BYTES )); then
+            art_cat "$f"
+            printf '%s\n' "${C_RST}Bye."
+            return 0
+        fi
+    done
+    printf '%s' "$C_TITLE"
     cat <<'EOF'
     .-----------.
     |  BashBBS  |
     |  bye bye  |
     '-----------'
 EOF
+    printf '%s' "$C_DIM"
     cat <<'EOF'
         /\_/\
        ( o.o )
         > ^ <
 
 EOF
-    echo "Bye."
+    printf '%s\n' "${C_RST}Bye."
 }
 
 # ---- Ads at logout ----------------------------------------------------------
@@ -1409,10 +1535,15 @@ ad_pick() { # ad_pick: prints the name of one ad, or nothing
     local f n last=""
     local -a fit=() again=()
     last=$(head -n 1 "$HOME/.bashbbs-ad" 2>/dev/null) || last=""
-    for f in "$BBS_ROOT"/etc/ads/*.txt; do
+    for f in "$BBS_ROOT"/etc/ads/*.txt "$BBS_ROOT"/etc/ads/*.ans; do
         n=${f##*/}
-        [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.txt$ && -f $f && ! -L $f && -r $f ]] || continue
+        [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.(txt|ans)$ && -f $f && ! -L $f && -r $f ]] || continue
         (( $(stat -c %s "$f") <= ADS_MAX_BYTES )) || continue
+        # .ans before .txt in colour; a .ans is never shown in plain mode.
+        if [[ $n == *.ans ]]; then (( COLOR )) || continue
+        elif (( COLOR )) && [[ -f ${f%.txt}.ans && ! -L ${f%.txt}.ans && -r ${f%.txt}.ans ]] \
+            && (( $(stat -c %s "${f%.txt}.ans") <= ADS_MAX_BYTES )); then continue
+        fi
         fit+=("$n")
         [[ $n == "$last" ]] || again+=("$n")
     done
@@ -1441,7 +1572,7 @@ ad_run() {
     [[ -n $name ]] || return 0
     drain_input
     printf '\n'
-    tr -d '\r' < "$BBS_ROOT/etc/ads/$name" || return 0
+    art_cat "$BBS_ROOT/etc/ads/$name" || return 0
     printf '\033[0m\n[Space] Bye\n'
     ad_remember "$name"
     while IFS= read -rsn1 c; do
@@ -1509,11 +1640,17 @@ intro_file() { # intro_file <name>: prints the path when it is a plain, small fi
     local f=$BBS_ROOT/etc/intro/$1
     [[ -f $f && ! -L $f && -r $f ]] || return 1
     (( $(stat -c %s "$f") <= INTRO_MAX_BYTES )) || return 1
+    # In colour a NAME.ans next to NAME.txt is shown instead of it.
+    if (( COLOR )) && [[ $1 == *.txt ]]; then
+        local t=${f%.txt}.ans
+        if [[ -f $t && ! -L $t && -r $t ]] && (( $(stat -c %s "$t") <= INTRO_MAX_BYTES )); then f=$t; fi
+    fi
     printf '%s' "$f"
 }
 
 intro_width() { # intro_width <file>: widest line in terminal columns
-    tr -d '\r' < "$1" | LC_ALL=C.UTF-8 wc -L
+    # Colour codes take no room: count the text without them.
+    art_raw "$1" | ansi_strip | LC_ALL=C.UTF-8 wc -L
 }
 
 # Wait up to <seconds> for Space. Returns 0 when it ended on Space, 1 on timeout,
@@ -1559,7 +1696,7 @@ intro_run() {
         fi
         (( shown )) && drain_input
         redraw
-        tr -d '\r' < "$f" | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
+        art_raw "$f" | ansi_out | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
         printf '\033[0m'
         c=$(intro_file "${caption:--}") || c=""
         if [[ -n $c ]] && (( $(intro_width "$c") > cols )); then
@@ -1568,7 +1705,7 @@ intro_run() {
         fi
         if [[ -n $c ]]; then
             echo
-            tr -d '\r' < "$c"
+            art_raw "$c" | ansi_out
             printf '\033[0m\n'
         fi
         shown=1
@@ -1618,7 +1755,7 @@ welcome_screen() {
 
 # The tests source this file for its functions and skip the start loop.
 if [[ -z ${BASHBBS_TEST:-} ]]; then
-    intro_run
+    prefs_ask; intro_run
     welcome_screen
     # A section that returns without a nav request (Q) goes back to the main menu.
     while true; do
