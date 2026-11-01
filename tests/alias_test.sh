@@ -130,6 +130,18 @@ r=$(cgi daemon); check "apply.cgi refuses a system user not on the list" [ "$r" 
 check "apply.cgi saved nothing for refused names" bash -c '[[ -z $(ls -A "$1") ]]' _ "$appdir"
 r=$(cgi zzqqx); check "apply.cgi accepts a free name" [ "$r" = "Status: 200 OK" ]
 check "apply.cgi wrote one application" bash -c '[[ $(ls "$1" | wc -l) -eq 1 ]]' _ "$appdir"
+cgi_body() { # cgi_body <form body>: POST it, print the whole response
+    printf '%s' "$1" | BASHBBS_TEST=1 REQUEST_METHOD=POST CONTENT_LENGTH=${#1} \
+        BBS_APP_DIR=$appdir BBS_USERS=$root/users BBS_RESERVED=$root/reserved python3 "$here/web/apply.cgi"
+}
+r=$(cgi_body 'name=privk&key=-----BEGIN+OPENSSH+PRIVATE+KEY-----%0Ab3BlbnNzaC1rZXktdjEAAAAA%0A-----END+OPENSSH+PRIVATE+KEY-----')
+check "apply.cgi refuses a private key (400)" [ "$(head -n 1 <<<"$r")" = "Status: 400 Bad Request" ]
+check "apply.cgi names the private key in the error" bash -c '[[ $1 == *"That was your private key"* ]]' _ "$r"
+check "apply.cgi saved nothing for a private key" bash -c '[[ $(ls "$1" | wc -l) -eq 1 ]]' _ "$appdir"
+r=$(cgi_body 'name=%3Cb%3Ex&key=x')
+check "apply.cgi response escapes input and links the stylesheet" bash -c '[[ $1 != *"<b>x"* && $1 == *"/style.css"* ]]' _ "$r"
+r=$(cgi_body 'name=okname&key=ssh-ed25519+AAAAC3NzaC1lZDI1NTE5AAAAItest')
+check "apply.cgi success page shows the login command" bash -c '[[ $1 == *"ssh -p 6464 okname@bbs.piewpiew.se"* ]]' _ "$r"
 
 echo "alias_test: pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]
