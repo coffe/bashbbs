@@ -36,20 +36,38 @@ safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
 # safe(), which strips ESC.
 # Tests: BASHBBS_TEST=1 with no prefs file means COLOR=0 and no question. BASHBBS_COLOR=0|1
 # (tests only) forces the value; BASHBBS_COLOR=ask makes the first-login question appear.
-# C_NEW / C_OLD colour the rows of the thread list (new posts since the last login:
-# bright green; nothing new: normal white, not dark grey, so it stays readable).
+# Four roles, one meaning each (16-colour SGR; nothing else is ever emitted):
+#   C_HEAD 1;35 pink  identity: BBS name, screen titles, section names, rules
+#   C_KEY  1;36 mint  navigation: only the key token (1) N) [B] [Space] [y/N] >)
+#   C_ACC  1;33 gold  news: the * marker, [P] Mail (N), "N new"
+#   text   no code    body text and metadata stay in the terminal's own colour
+# Colour is added AFTER safe(), after wrapping and after width measuring, and every
+# coloured token ends with C_RST on the same line.
 COLOR=0 COLOR_ASK=0
 REPLYMAIL=1   # replymail=1|0 in the same file: mail me when someone replies to my post
-C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_NEW= C_OLD= C_RST=
+C_HEAD= C_KEY= C_ACC= C_RST=
 
 color_init() { # color_init: set the palette from COLOR
     if (( COLOR )); then
-        C_TITLE=$'\033[1;37m' C_BAR=$'\033[0;36m' C_KEY=$'\033[1;33m'
-        C_RULE=$'\033[0;34m' C_DIM=$'\033[0;37m' C_RST=$'\033[0m'
-        C_NEW=$'\033[1;32m' C_OLD=$'\033[0;37m'
+        C_HEAD=$'\033[1;35m' C_KEY=$'\033[1;36m' C_ACC=$'\033[1;33m' C_RST=$'\033[0m'
     else
-        C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_NEW= C_OLD= C_RST=
+        C_HEAD= C_KEY= C_ACC= C_RST=
     fi
+}
+
+# paint HEAD|KEY|ACC <text>: the text in a role colour, closed on the same line (no newline).
+paint() {
+    local c
+    case $1 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; *) c= ;; esac
+    printf '%s%s%s' "$c" "$2" "$C_RST"
+}
+# key <token> [label]: the key token in mint, then the label in the default colour.
+key() { paint KEY "$1"; [[ $# -gt 1 ]] && printf ' %s' "$2"; return 0; }
+# keyline <literal text>: prints the line with every "N)" / "Q)" token in mint.
+# Only for fixed strings written in this file, never for user text.
+keyline() {
+    if (( ! COLOR )); then printf '%s\n' "$1"; return; fi
+    printf '%s\n' "$1" | sed -E "s/(^|[[:space:]])([0-9A-Za-z]\\))/\\1${C_KEY}\\2${C_RST}/g"
 }
 
 prefs_load() {
@@ -81,7 +99,9 @@ prefs_save() {
 prefs_ask() {
     (( COLOR_ASK )) || return 0
     [[ -t 0 && -t 1 ]] || { COLOR=0; color_init; return 0; }
-    printf '\033[1;37mC\033[1;33mO\033[1;32mL\033[0;36mO\033[1;35mU\033[1;31mR\033[0m\n'
+    # A sample line in the four roles, so the choice is made with the colours in view.
+    printf '%s %s %s %s\n' "$(printf '\033[1;35m%s\033[0m' Heading)" "$(printf '\033[1;36m%s\033[0m' Key)" \
+        "$(printf '\033[1;33m%s\033[0m' New)" Text
     if read_key "Colour (ANSI) or plain ASCII? [A/n] "; then
         echo
         [[ $MKEY == [Nn] ]] && COLOR=0 || COLOR=1
@@ -165,15 +185,15 @@ art_cat() { # art_cat <file>: show an art file (filtered, colour reset after a .
     return 0
 }
 
-# The quick-key bar in colour: bar colour, with the key inside [ ] highlighted.
+# The quick-key bar in colour: the text inside each [ ] in mint, the rest default.
 paint_bar() { # paint_bar <text>
     local s=$1 out=""
     if (( ! COLOR )); then printf '%s' "$s"; return; fi
     while [[ $s =~ ^([^[]*)\[([^]]*)\](.*)$ ]]; do
-        out+="${C_BAR}${BASH_REMATCH[1]}[${C_KEY}${BASH_REMATCH[2]}${C_BAR}]"
+        out+="${BASH_REMATCH[1]}[${C_KEY}${BASH_REMATCH[2]}${C_RST}]"
         s=${BASH_REMATCH[3]}
     done
-    printf '%s%s%s%s' "$out" "$C_BAR" "$s" "$C_RST"
+    printf '%s%s' "$out" "$s"
 }
 prefs_load
 
@@ -730,7 +750,7 @@ ssh_keys_menu() {
         keys_list
         echo
         keys_status
-        echo "A) Add  R) Remove  N) Name  Q) Back"
+        keyline "A) Add  R) Remove  N) Name  Q) Back"
         menu_key "> " "AaRrNnQq" "A: add  R: remove  N: rename  Q: back
 !: legacy RSA 1536 key
 untested: no login seen with this key
@@ -767,8 +787,8 @@ top_bar() {
         p1=$(paint_bar "[B] Boards [M] Main${mail} [W] Wall")
         p2=$(paint_bar "[G] Goodbye${1:+  $1}")
     fi
-    # The count is painted with the "new" colour, then the bar colour comes back.
-    [[ -n $tag && -n $C_NEW ]] && p1=${p1/"$tag"/"${C_NEW}${tag}${C_BAR}"}
+    # The unread count is the accent colour.
+    [[ -n $tag && -n $C_ACC ]] && p1=${p1/"$tag"/"${C_ACC}${tag}${C_RST}"}
     printf '%s\n' "$p1"
     [[ -n $p2 ]] && printf '%s\n' "$p2"
     echo
@@ -790,7 +810,7 @@ nav_key() {
 # The top of every screen: the quick-key bar, the title, one blank line.
 screen_header() { # screen_header <title> [bar text]
     top_bar "[?] Help${2:+  $2}"
-    echo "${C_TITLE}== $1 ==${C_RST}"
+    paint HEAD "== $1 =="; echo
     echo
 }
 
@@ -800,7 +820,7 @@ screen_header() { # screen_header <title> [bar text]
 local_header() { # local_header <title> [bar text]
     paint_bar "[?] Help${2:+  $2}"; echo
     echo
-    echo "${C_TITLE}== $1 ==${C_RST}"
+    paint HEAD "== $1 =="; echo
     echo
 }
 
@@ -820,10 +840,10 @@ board_menu() {
         done
         local i=1
         for b in "${boards[@]}"; do
-            echo "$i) $b"
+            echo "$(key "$i)") $b"
             i=$((i + 1))
         done
-        echo "K) New private board   Q) Back"
+        keyline "K) New private board   Q) Back"
         menu_key "> " "KkQq$(digit_keys "${#boards[@]}")" \
 "Number: open a board
 K: new private board   Q: back
@@ -1070,29 +1090,35 @@ board_view() {
         wrapw=$(( $(term_width) - 5 ))
         mapfile -t rows < <(board_threads "$board" "$SEEN_PREV")
         roots=() counts=() news=()
-        local i=1 subject row suffix col line cnt isnew
+        local i=1 subject row suffix rest line cnt isnew
         for row in "${rows[@]}"; do
             IFS=$'\t' read -r f cnt _ isnew <<< "$row"
             roots+=("$f") counts+=("$cnt") news+=("$isnew")
             subject=$(post_hdr "$f" Subject)
             [[ -n $(post_hdr "$f" Deleted) ]] && subject="(deleted)"
-            suffix="($cnt)"; col=$C_OLD
-            (( isnew )) && { suffix+=" *"; col=$C_NEW; }
-            # Wrap on the plain text first, colour each finished line after.
+            suffix="($cnt)"
+            (( isnew )) && suffix+=" *"
+            # Wrap on the plain text first, colour each finished line after: the number
+            # in mint, the trailing * of a new thread in gold, the subject stays default.
             while IFS= read -r line; do
-                printf '%s%s%s\n' "$col" "$line" "$C_RST"
+                if (( COLOR )) && [[ $line =~ ^(\ *)([0-9]+\))(.*)$ ]]; then
+                    rest=${BASH_REMATCH[3]}
+                    (( isnew )) && [[ $rest == *' *' ]] && rest="${rest% \*} $(paint ACC '*')"
+                    line="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}")$rest"
+                fi
+                printf '%s\n' "$line"
             done < <(thread_row "$i" "$wrapw" "$suffix" "$subject")
             echo
             i=$((i + 1))
         done
         keys=Qq hint="Q: back"
         if is_readonly "$board"; then
-            echo "Q) Back"
+            keyline "Q) Back"
         elif manages "$board"; then
-            echo "N) New post   S) Members   Q) Back"
+            keyline "N) New post   S) Members   Q) Back"
             keys+=NnSs hint="N: new post   S: members   Q: back"
         else
-            echo "N) New post   Q) Back"
+            keyline "N) New post   Q) Back"
             keys+=Nn hint="N: new post   Q: back"
         fi
         # A read-only board has no N. Its owner can still reach S.
@@ -1157,10 +1183,11 @@ _thread_view() {
             for (( i = 0; i < n; i++ )); do [[ ${ids[i]} == "$pid" ]] && at=$((i + 1)); done
             [[ -n $at ]] && head+="  · reply to #$at"
         fi
+        (( ${#head} > width )) && head=$(printf '%s' "$head" | fold -s -w "$width")
         ep=$(basename "$f"); ep=${ep%%-*}
         if [[ $ep =~ ^[0-9]+$ ]] && { [[ -z $TV_MAX ]] || (( 10#$ep > TV_MAX )); }; then TV_MAX=$((10#$ep)); fi
         if [[ -n $TV_TH && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )); then
-            printf '%s%s%s\n' "$C_NEW" "$head" "$C_RST"
+            printf '%s' "$head"; (( COLOR && ${#head} + 5 <= width )) && printf '  %s' "$(paint ACC new)"; echo
         else
             echo "$head"
         fi
@@ -1198,8 +1225,12 @@ post_actions() { # post_actions <board> <file>
         fi
     fi
     # Two lines: the full line does not fit in 40 columns.
-    echo "[Space] Next  P) Prev"
-    echo "${cmds:+$cmds  }Q) Back"
+    # Both lines are built first and written at once (a test harness reacts to "Prev").
+    local l1="[Space] Next  P) Prev" l2="${cmds:+$cmds  }Q) Back"
+    if (( COLOR )); then
+        l1=$(keyline "$l1" | sed -E "s/\[Space\]/${C_KEY}[Space]${C_RST}/"); l2=$(keyline "$l2")
+    fi
+    printf '%s\n%s\n' "$l1" "$l2"
     # Inside an open post the jump keys are off.
     [[ $hint == *$'\n' ]] && hint+="Q: back" || hint+="  Q: back"
     menu_key "> " "$keys" "$hint" local || return 1
@@ -1226,7 +1257,7 @@ edit_post() { # edit_post <board> <file>
     [[ -n $new ]] && subject=$new
     while true; do
         drain_input   # before the prompt is drawn, never between it and the read
-        echo "K) Keep text   N) New text   Q) Cancel"
+        keyline "K) Keep text   N) New text   Q) Cancel"
         menu_key "> " "KkNnQq" "K: keep the text   N: write new text
 Q: cancel the edit" local || return
         [[ $MKEY == '?' ]] || break
@@ -1358,7 +1389,7 @@ members_menu() {
         echo "Members: $(getent group "bbsb-$board" | cut -d: -f4 | sed 's/bbs-//g; s/,/ /g')" \
             | python3 "$NEWS_LIB/wrap.py" "$cols"
         echo
-        echo "A) Add   R) Remove   Q) Back"
+        keyline "A) Add   R) Remove   Q) Back"
         menu_key "> " "AaRrQq" "A: add a member   R: remove one
 Q: back" local || return
         [[ $MKEY == '?' ]] || break
@@ -1387,9 +1418,14 @@ mail_menu() {
     while true; do
         redraw
         screen_header "Private messages" "[Q] Back"
-        echo "1) Inbox   2) Write"
-        echo "3) Sent    4) Trash   Q) Back"
-        echo "${C_KEY}L${C_RST}) Look 4 new mail"
+        {
+            # Unread mail: the word Inbox in the accent colour (the 1) key stays mint).
+            local l1; l1=$(keyline "1) Inbox   2) Write")
+            (( COLOR )) && (( $(mail_unread) > 0 )) && l1=${l1/Inbox/"${C_ACC}Inbox${C_RST}"}
+            printf '%s\n' "$l1"
+        }
+        keyline "3) Sent    4) Trash   Q) Back"
+        keyline "L) Look 4 new mail"
         [[ -n $note ]] && { echo; echo "$note"; }
         note=""
         menu_key "> " "1234QqLl" "1-4: Inbox, Write, Sent, Trash
@@ -1549,7 +1585,7 @@ mail_reply() { # mail_reply <file>
 
 # A folder list. Unread messages in new are marked with *.
 mail_view() { # mail_view <Inbox|Sent|Trash>
-    local folder=$1 dir f mark i width
+    local folder=$1 dir f mark i width row
     local -a files
     while true; do
         redraw
@@ -1563,7 +1599,7 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
         if (( ${#files[@]} == 0 )); then
             echo "No messages."
             echo
-            echo "R) Refresh   Q) Back"
+            keyline "R) Refresh   Q) Back"
             menu_key "> " "QqRr" "R: look for new mail
 Q: back" local || return
             [[ $MKEY == [Qq] ]] && return
@@ -1574,11 +1610,16 @@ Q: back" local || return
         for f in "${files[@]}"; do
             mark=" "
             [[ $f == "$dir"/new/* ]] && mark="*"
-            printf '%3d) %s %s\n' "$i" "$mark" "$(list_fit "$width" "$(post_hdr "$f" Subject)")"
+            row=$(printf '%3d) %s %s' "$i" "$mark" "$(list_fit "$width" "$(post_hdr "$f" Subject)" | safe)")
+            if (( COLOR )) && [[ $row =~ ^(\ *)([0-9]+\))\ (.)(.*)$ ]]; then
+                [[ ${BASH_REMATCH[3]} == '*' ]] && mark=$(paint ACC '*') || mark=${BASH_REMATCH[3]}
+                row="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}") ${mark}${BASH_REMATCH[4]}"
+            fi
+            printf '%s\n' "$row"
             i=$((i + 1))
         done
         echo
-        echo "Number: open   R) Refresh   Q) Back"
+        keyline "Number: open   R) Refresh   Q) Back"
         # Inside a mailbox the jump keys are off: Q goes back one level.
         menu_key "> " "QqRr$(digit_keys "${#files[@]}")" \
 "Number: open a message
@@ -1652,12 +1693,17 @@ main_menu() {
     while true; do
         redraw
         screen_header "BashBBS"
-        echo "1) Public boards"
-        echo "2) Wall"
-        echo "3) Users"
-        echo "4) My account"
-        echo "5) Private messages   ($(mail_unread) unread)"
-        echo "Q) Log out"
+        keyline "1) Public boards"
+        keyline "2) Wall"
+        keyline "3) Users"
+        keyline "4) My account"
+        {
+            local un; un=$(mail_unread)
+            printf '%s' "$(keyline "5) Private messages   ")"
+            if (( un > 0 )); then paint ACC "($un unread)"; else printf '(%s unread)' "$un"; fi
+            echo
+        }
+        keyline "Q) Log out"
         menu_key "> " "12345Qq" "1-5: pick a section
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }
@@ -1773,14 +1819,14 @@ goodbye() {
             return 0
         fi
     done
-    printf '%s' "$C_TITLE"
+    printf '%s' "$C_HEAD"
     cat <<'EOF'
     .-----------.
     |  BashBBS  |
     |  bye bye  |
     '-----------'
 EOF
-    printf '%s' "$C_DIM"
+    printf '%s' "$C_RST"
     cat <<'EOF'
         /\_/\
        ( o.o )

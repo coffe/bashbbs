@@ -57,11 +57,15 @@ news_need_python() {
 # Wrap stdin to width $1 (visual columns, UTF-8 aware).
 news_wrap() { python3 "$NEWS_LIB/wrap.py" "$1"; }
 
+# Packed key-hint lines, the key letters inside [ ] in mint. Takes plain lines on stdin,
+# so it runs after news_pack has measured them. Fixed strings only.
+news_keys() { local l; while IFS= read -r l; do paint_bar "$l"; echo; done; }
+
 # Print a rule of dashes, W wide.
 news_rule() {
     local s
     printf -v s '%*s' "$NEWS_W" ''
-    printf '%s\n' "${C_RULE:-}${s// /-}${C_RST:-}"
+    printf '%s\n' "${C_HEAD:-}${s// /-}${C_RST:-}"
 }
 
 # Pack key hints into lines of at most W characters (ASCII only).
@@ -376,7 +380,7 @@ news_board() {
         news_load_index
         clear
         {
-            echo "NEWS"
+            paint HEAD NEWS; echo
             news_rule
             echo
             i=1
@@ -385,17 +389,18 @@ news_board() {
                 for id in "${NEWS_ORDER[@]}"; do
                     [[ ${NEWS_CAT[$id]} == "$cat" ]] && n=$((n + 1))
                 done
-                printf '  %d  %-20s %3d\n' "$i" "$cat" "$n"
+                # Section names come from the config file: through safe, then framed.
+                printf '  %s  %s %3d\n' "$(paint KEY "$i")" "$(printf '%-20s' "$(printf '%s' "$cat" | safe)")" "$n"
                 i=$((i + 1))
             done
             echo
             if [[ -n $NEWS_NOTICE ]]; then
-                echo "$NEWS_NOTICE"
+                printf '%s\n' "$NEWS_NOTICE" | safe
                 echo
             fi
             news_rule
-            news_pack "[1-$((i - 1))] Open section" "[Q] Back"
-        } | safe
+            news_pack "[1-$((i - 1))] Open section" "[Q] Back" | news_keys
+        }
         news_getkey
         case $KEY in
             Q | EOF) return 0 ;;
@@ -499,7 +504,7 @@ news_draw_list() {
     fi
     clear
     {
-        echo "NEWS / $title"
+        paint HEAD "NEWS / $(printf '%s' "$title" | safe)"; echo
         news_rule
         echo
         if (( last <= first )); then
@@ -512,7 +517,7 @@ news_draw_list() {
             (( i == cur )) && mark='>'
             # Title: number and marker on the first line, hanging indent after.
             mapfile -t L <<< "${FL[k]:-}"
-            printf '%s %d  %s\n' "$mark" "$((i - first + 1))" "${L[0]:-}"
+            printf '%s %s  %s\n' "$([[ $mark == '>' ]] && paint KEY '>' || printf ' ')" "$(paint KEY "$((i - first + 1))")" "${L[0]:-}"
             for ((n = 1; n < ${#L[@]}; n++)); do printf '%*s%s\n' "$iw" '' "${L[n]}"; done
             # Lede: two lines at most; the second ends in "..." if cut.
             mapfile -t L <<< "${FL[k + 1]:-}"
@@ -532,8 +537,8 @@ news_draw_list() {
         printf 'Page %d of %d\n' "$pageno" "$pages"
         keys=("[1-$((last - first))] Open" "[N] Next page" "[P] Prev page" "[J/K] Move" "[Enter] Open" "[Q] Back")
         (( last > first )) || keys=("[Q] Back")
-        news_pack "${keys[@]}"
-    } | safe
+        news_pack "${keys[@]}" | news_keys
+    }
 }
 
 # Print the line with " ..." appended, indented by 5, shortened by whole words
@@ -630,8 +635,8 @@ news_read() {
             printf '%s\n' "${NEWS_BODY[@]:off:win}"
             news_rule
             echo "$status"
-            printf '%s\n' "${keys[@]}"
-        } | safe
+            printf '%s\n' "${keys[@]}" | news_keys
+        }
         news_getkey
         case $KEY in
             Q | EOF) return 0 ;;
@@ -664,7 +669,7 @@ news_show_link() {
     [[ $link =~ ^https?://[^[:space:]]+$ ]] || link=
     clear
     {
-        echo "Link"
+        paint HEAD Link; echo
         news_rule
         echo
         if [[ -n $link ]]; then
@@ -674,7 +679,7 @@ news_show_link() {
         fi
         echo
         news_rule
-        echo "[Any key] Back"
-    } | safe
+        paint_bar "[Any key] Back"; echo
+    }
     news_getkey
 }

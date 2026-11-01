@@ -85,13 +85,13 @@ for w in 40 80; do
     check "list $w: session ends" has "$out/l0-$w.txt" DONE
 done
 run_list "$out/lc.txt" 80 $((T0 + 45)) 1 --step 'Q) Back=>q'
-check "colour: new row is bright green incl. number and star" bash -c "grep -q \"$ESC\[1;32m  3) (deleted) .*(2) \*$ESC\[0m\" '$out/lc.txt'"
-check "colour: old row is 0;37 (not dark grey)" bash -c "grep -q \"$ESC\[0;37m  4) Sommarens synthar .*(3)$ESC\[0m\" '$out/lc.txt'"
+check "colour: new row has mint number and gold star" bash -c "grep -q \"  $ESC\[1;36m3)$ESC\[0m (deleted) .*(2) $ESC\[1;33m\*$ESC\[0m\" '$out/lc.txt'"
+check "colour: old row has mint number, no other colour" bash -c "grep -q \"  $ESC\[1;36m4)$ESC\[0m Sommarens synthar .*(3).\$\" '$out/lc.txt'"
 check "colour: no dark grey 1;30 anywhere in the list" not grep -q "$ESC\[1;30m" "$out/lc.txt"
 run_list "$out/lc4.txt" 40 $((T0 + 45)) 1 --step 'Q) Back=>q'
-check "colour 40: every coloured row line is closed with a reset" eq "$(grep "$ESC\[\(1;32\|0;37\)m" "$out/lc4.txt" | tr -d '\r' | grep -vc "$ESC\[0m\$")" 0
+check "colour 40: every coloured row line has a reset" eq "$(grep "$ESC\[1;3[63]m" "$out/lc4.txt" | tr -d '\r' | grep -vc "$ESC\[0m")" 0
 run_list "$out/ln.txt" 80 "" 1 --step 'Q) Back=>q'
-check "no login epoch: all rows old, none green" not grep -q "$ESC\[1;32m  [0-9])" "$out/ln.txt"
+check "no login epoch: all rows old, no gold star" not grep -q "$ESC\[1;33m\*" "$out/ln.txt"
 
 # 3. Reading a thread: starts at the first new post, Space/P, back to the list.
 run_list "$out/v1.txt" 80 $((T0 + 45)) 0 --step 'Q) Back=>3' --step 'Prev=>q' --step 'Q) Back=>q'

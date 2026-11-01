@@ -36,12 +36,12 @@ printf '\033[1;31m\xdb\xdb\xdb\033[0m ok\r\n\x1aSAUCE00Title            ' > "$an
 fn 1 top_bar > "$root/b1.out"; fn 0 top_bar > "$root/b0.out"
 check "(b) colour bar has ESC[" has "$root/b1.out" "$ESC\\["
 check "(b) colour bar text equals plain bar" eq "$(fn 1 top_bar | LC_ALL=C sed 's/\x1b\[[0-9;]*m//g')" "$(cat "$root/b0.out")"
-check "(b) title is coloured" bash -c '[[ $(cat "$1") == *"$2[1;37m== X =="* ]]' x <(fn 1 screen_header X) "$ESC"
+check "(b) title is coloured" bash -c '[[ $(cat "$1") == *"$2[1;35m== X =="* ]]' x <(fn 1 screen_header X) "$ESC"
 
 # (c) colour off: no ESC at all in the frame
 check "(c) plain bar has no ESC" bash -c '! grep -q "$2" "$1"' x "$root/b0.out" "$ESC"
 check "(c) plain headers have no ESC" bash -c '[[ $(cat "$1") != *"$2"* ]]' x <(fn 0 screen_header X; fn 0 local_header Y; fn 0 goodbye) "$ESC"
-check "(c) news_rule: colour only when on" bash -c '[[ $(cat "$1") != *"$3"* && $(cat "$2") == *"$3[0;34m"* ]]' x \
+check "(c) news_rule: colour only when on" bash -c '[[ $(cat "$1") != *"$3"* && $(cat "$2") == *"$3[1;35m"* ]]' x \
     <(env BBS_ROOT="$root" HOME="$home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-coltest BASHBBS_COLOR=0 bash -c 'source "$1"; source "$2"; NEWS_W=10; news_rule' x "$lib" "$here/lib/news.sh") \
     <(env BBS_ROOT="$root" HOME="$home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-coltest BASHBBS_COLOR=1 bash -c 'source "$1"; source "$2"; NEWS_W=10; news_rule' x "$lib" "$here/lib/news.sh") "$ESC"
 
@@ -111,7 +111,7 @@ check "(g) the menu showed Colour: on, then off" bash -c 'grep -q "Colour: on" "
 check "(g) no temp files left" eq "$(ls -A "$h5" | grep -c '^\.bashbbs-prefs\.')" 0
 
 # (h) key prompts: coloured with colour on, unchanged with colour off
-check "(h) prompts coloured" bash -c '[[ $(cat "$1") == *"$2[1;33mAny key$2[0;36m]"*"Main"* ]]' x <(fn 1 paint_bar "[Any key] Main") "$ESC"
+check "(h) prompts coloured" bash -c '[[ $(cat "$1") == *"$2[1;36mAny key$2[0m]"*"Main"* ]]' x <(fn 1 paint_bar "[Any key] Main") "$ESC"
 check "(h) prompts plain unchanged" eq "$(fn 0 paint_bar "[Space] Bye")" "[Space] Bye"
 check "(h) pause prompt: ESC on / none off" bash -c '[[ $(cat "$1") == *"$3"* && $(cat "$2") != *"$3"* ]]' x \
     <(fn 1 paint_bar "[Any key] ") <(fn 0 paint_bar "[Any key] ") "$ESC"
@@ -125,6 +125,27 @@ check "(i) intro_width <= 80" bash -c '(( $1 <= 80 ))' x "$(fn 1 intro_width "$r
 check "(j) ESC[5C counts 5 columns" eq "$(fn 0 art_raw "$root/cuf.ans" | LC_ALL=C sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | awk '{printf "%d,", length($0)}')" "77,2,"
 { printf 'x%.0s' $(seq 1 70); printf '\033[1;31m'; printf 'y%.0s' $(seq 1 15); } > "$root/sgr.ans"
 check "(j) SGR counts 0 columns" eq "$(fn 1 art_raw "$root/sgr.ans" | LC_ALL=C sed 's/\x1b\[[0-9;]*m//g' | awk '{printf "%d,", length($0)}')" "80,5,"
+
+# (k) mail menu: Inbox in gold only with unread mail and colour; the 1) key stays mint
+mkdir -p "$home/Maildir"/{new,cur,tmp}
+mm() { fn "$1" mail_menu </dev/null 2>/dev/null | tr -d '\r'; }
+mm 1 > "$root/k0.out"                                   # no unread
+printf 'From: b\nSubject: s\n\nx\n' > "$home/Maildir/new/1700000000.k.h"
+mm 1 > "$root/k1.out"; mm 0 > "$root/k2.out"
+check "(k) unread + colour: Inbox is 1;33, 1) is 1;36" bash -c 'grep -q "$2\[1;36m1)$2\[0m $2\[1;33mInbox$2\[0m   " "$1"' x "$root/k1.out" "$ESC"
+check "(k) no unread + colour: Inbox plain" bash -c '! grep -q "$2\[1;33mInbox" "$1" && grep -q "Inbox   " "$1"' x "$root/k0.out" "$ESC"
+check "(k) unread + COLOR=0: plain line" bash -c 'grep -qx "1) Inbox   2) Write" "$1"' x "$root/k2.out"
+mv "$home/Maildir/new/1700000000.k.h" "$root/"
+
+# (l) roles: only 1;35 1;36 1;33 0 are ever emitted by the frame and key helpers
+allsgr() { fn 1 eval 'screen_header X "[Q] Back"; local_header Y; goodbye; keyline "1) a   Q) b"; paint HEAD x; key "N)" New; paint ACC "*"' 2>/dev/null | LC_ALL=C grep -ao $'\033\\[[0-9;]*m' | sort -u | tr -d '\033' | tr '\n' ' '; }
+check "(l) only the four roles' SGR" eq "$(allsgr)" "[0m [1;33m [1;35m [1;36m "
+check "(l) COLOR=0: no ESC from helpers" bash -c '[[ $(cat "$1") != *"$2"* ]]' x <(fn 0 eval 'keyline "1) a"; paint HEAD x; key N\) y; top_bar; screen_header X' 2>/dev/null) "$ESC"
+# (m) user text never carries an ESC into the screen
+evil=$'a\033[31mb\033]0;x\007c'
+{ printf 'From: b\nSubject: %s\n\nbody\n' "$evil"; } > "$home/Maildir/cur/1700000001.e.h"
+check "(m) mail list subject: no ESC from the text" bash -c '[[ $(cat "$1") != *"$2[31m"* && $(cat "$1") != *"$2]0"* ]]' x <(fn 0 mail_view Inbox </dev/null 2>&1) "$ESC"
+check "(m) mail list subject, colour: no ESC[31m" bash -c '[[ $(cat "$1") != *"$2[31m"* && $(cat "$1") != *"$2]0"* ]]' x <(fn 1 mail_view Inbox </dev/null 2>&1) "$ESC"
 
 echo "color_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]
