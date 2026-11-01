@@ -258,13 +258,8 @@ rline_edit() {
     [[ $cols =~ ^[0-9]+$ ]] || cols=80
     s=$(printf '%s' "$__p" | ansi_strip); plen=${#s}
     avail=$(( cols - plen - 1 )); (( avail < 10 )) && avail=10
+    printf '%s' "$__p" >&2   # first draw: just the prompt, like read -p
     while :; do
-        # Draw: keep the cursor inside the visible window.
-        (( pos < off )) && off=$pos
-        (( pos > off + avail )) && off=$(( pos - avail ))
-        s=${buf:off:avail}
-        printf '\r%s%s\033[K' "$__p" "$s" >&2
-        (( off + ${#s} > pos )) && printf '\033[%dD' $(( off + ${#s} - pos )) >&2
         IFS= read -rsn1 -d '' c || { [[ -n $buf ]] && break; printf '\n' >&2; return 1; }
         case $c in
             $'\n'|$'\r') break ;;
@@ -296,6 +291,12 @@ rline_edit() {
                 (( ${#buf} < INPUT_MAX )) || continue
                 buf=${buf:0:pos}$c${buf:pos}; pos=$(( pos + 1 )) ;;
         esac
+        # Redraw: keep the cursor inside the visible window.
+        (( pos < off )) && off=$pos
+        (( pos > off + avail )) && off=$(( pos - avail ))
+        s=${buf:off:avail}
+        printf '\r%s%s\033[K' "$__p" "$s" >&2
+        (( off + ${#s} > pos )) && printf '\033[%dD' $(( off + ${#s} - pos )) >&2
     done
     printf '\n' >&2
     printf -v "$__o" '%s' "$buf"
