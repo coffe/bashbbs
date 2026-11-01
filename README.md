@@ -16,14 +16,22 @@ in a separate private repository. This repository has only the Pi side.
 | Path | Contents |
 |---|---|
 | `bin/bbs-shell` | Login shell for `bbs-*` accounts. Starts the menu. |
-| `bin/bbs-ingest` | Receives news batches from the producer (forced command). |
+| `bin/bbs-ingest` | Receives news batches from the producer (forced command of `bbs-news`). |
 | `bin/bbs-news-status` | Prints the news ledger status (forced command for the status channel). |
-| `sbin/bbs-provision` | Creates and removes BBS accounts. |
+| `bin/bbs-health` | Read-only health summary, one `key=value` line per fact (used by `bbs-admin status`). |
+| `sbin/bbs-admin` | The one sysop command allowed as root: fixed subcommands that call the tools below. |
+| `sbin/bbs-provision` | Creates BBS accounts. |
+| `sbin/bbs-alias` | Short login names (`ptrko` for `bbs-ptrko`) as aliases with the same uid. |
 | `sbin/bbs-publish` | Publishes queued posts, news and Wall lines. Runs every 60 s. |
 | `sbin/bbs-drop` | Processes the drop folder and rejected items. Runs every 300 s. |
 | `sbin/bbs-approve` | Sysop tool: accept or reject applications. |
-| `sbin/bbs-news-index` | Rebuilds the news index. |
-| `sbin/bbs-history-expire` | Expires old history files. Not scheduled by default. |
+| `sbin/bbs-svara` | Resolves a short application id and accepts or rejects it via `bbs-approve`. |
+| `sbin/bbs-keys` | Sysop CLI for the SSH keys of BBS accounts. |
+| `sbin/bbs-keys-apply` | Root handler for SSH key requests from the menu. Runs every 60 s. |
+| `sbin/bbs-keycheck` | Validates one SSH public key line read from stdin (pure filter). |
+| `sbin/bbs-maildir` | Creates the Maildir folders (Inbox, Sent, Trash) for one account. |
+| `sbin/bbs-news-index` | Maintains the news index (`repair` rebuilds it). |
+| `sbin/bbs-history-expire` | Expires old history files and admin backups. Runs daily. |
 | `lib/menu.sh` | The menu UI (English strings). |
 | `lib/news.sh` | News section helpers. |
 | `lib/wrap.py` | Text wrapping for the terminal (Python 3). |
@@ -31,7 +39,7 @@ in a separate private repository. This repository has only the Pi side.
 | `lib/goodbye-art.txt` | Logout banner. Not used by the current code. |
 | `web/index.html`, `web/apply.cgi` | Public web page and application form (served by lighttpd). |
 | `etc/` | Config fragments: fail2ban jail, sshd `Match` block, lighttpd site. |
-| `systemd/` | `bbs-publish` and `bbs-drop` service and timer units, lighttpd drop-in. |
+| `systemd/` | `bbs-publish`, `bbs-drop`, `bbs-history-expire` and `bbs-keys` service and timer units, lighttpd drop-in. |
 | `install.sh` | Installer, run as root. |
 | `tests/` | Shell and Python tests (see below). |
 
@@ -133,7 +141,7 @@ This code was written for one installation. These values are hardcoded:
 ## Third-party assets
 
 - The Topaz a1200 font (`web/style.css`, embedded as a data URI so the web page
-  shows the ASCII art in Topaz) comes from rewtnull/amigafonts, GPL-FE licence.
+  shows the ASCII art in Topaz) comes from rewtnull/amigafonts, under the GPL-FE licence (GPL with the font exception). Topaz itself is (c) AmigaInc; the TTF version is (c) dMG/t!s^dS!. The font is the only third-party binary in the repo and no separate licence file is shipped.
 
 ## Status
 
@@ -145,4 +153,4 @@ This code was written for one installation. These values are hardcoded:
 - Version 1.2 is released (Wall). Version 1.3 (private messages, English UI) is
   built on branch `bashbbs-1.3-pm` and is not rolled out.
 - There are no TODO or FIXME comments in the code.
-- `bbs-history-expire` exists but is not scheduled.
+- `bbs-history-expire` runs daily at 04:10 from `bbs-history-expire.timer`.
