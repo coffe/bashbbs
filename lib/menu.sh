@@ -1383,12 +1383,17 @@ Q: back" local || return
 # files in the own Maildir. The other side keeps its copy.
 
 mail_menu() {
+    local note="" n
     while true; do
         redraw
         screen_header "Private messages" "[Q] Back"
         echo "1) Inbox   2) Write"
         echo "3) Sent    4) Trash   Q) Back"
-        menu_key "> " "1234Qq" "1-4: Inbox, Write, Sent, Trash
+        echo "${C_KEY}L${C_RST}) Look 4 new mail"
+        [[ -n $note ]] && { echo; echo "$note"; }
+        note=""
+        menu_key "> " "1234QqLl" "1-4: Inbox, Write, Sent, Trash
+L: look 4 new mail
 Q: back   B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
@@ -1396,6 +1401,9 @@ Q: back   B M P W: jump   G: log out" || return
             2) mail_write ;;
             3) mail_view Sent ;;
             4) mail_view Trash ;;
+            [Ll]) n=$(mail_unread)
+                if (( n > 0 )); then note="$(count_text "$n" "new message" "new messages")"
+                else note="No new mail."; fi ;;
             [Qq]) return ;;
         esac
         [[ -n $nav_req ]] && return
