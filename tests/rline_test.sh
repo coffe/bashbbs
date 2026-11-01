@@ -21,14 +21,16 @@ mkdir -p "$root/home"
 lib=$here/lib/menu.sh
 drv=$root/drive.py
 cat > "$drv" <<'PY'
-import os, pty, time, select, sys, signal
+import os, pty, time, select, sys, signal, re, fcntl, termios, struct
 lib, d = sys.argv[1:3]
 keys = [k.encode("utf-8").decode("unicode_escape").encode("latin-1") for k in sys.argv[3:]]
-env = dict(os.environ, BBS_ROOT=d, HOME=d + "/home", BASHBBS_TEST="1", BASHBBS_TEST_ID="bbs-rltest")
+env = dict(os.environ, RL_PROMPT=os.environ.get("RL_PROMPT", "> "), BBS_ROOT=d, HOME=d + "/home", BASHBBS_TEST="1", BASHBBS_TEST_ID="bbs-rltest")
 pid, m = pty.fork()
+cols = int(os.environ.get("RL_COLS", "80")); prompt = os.environ.get("RL_PROMPT", "> ")
 if pid == 0:
+    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
     os.execvpe("bash", ["bash", "--norc", "-c",
-        'source "$1"; rline x "> "; echo "rc=$?"; printf "GOT[%s]\\n" "$x"', "x", lib], env)
+        'source "$1"; rline x "$RL_PROMPT"; echo "rc=$?"; printf "GOT[%s]\\n" "$x"', "x", lib], env)
 out = b""
 def rd(t):
     global out
@@ -45,7 +47,14 @@ try: os.kill(pid, signal.SIGKILL)
 except OSError: pass
 os.waitpid(pid, 0)
 t = out.decode(errors="replace")
-print(" ".join(l.strip() for l in t.splitlines() if l.startswith(("rc=", "GOT["))))
+res = [l.strip() for l in t.splitlines() if l.startswith(("rc=", "GOT["))]
+if os.environ.get("RL_COLS"):
+    # what stays on screen: the text after the last \r on each line, without colour codes
+    rows = [l.rstrip("\r").split("\r")[-1] for l in re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", t).split("\n")]
+    res.append("own-line" if prompt + "\r\n" in t else "same-line")
+    rows = [r for r in rows if not r.startswith(("rc=", "GOT["))]   # the driver's own output
+    res.append("fits" if max(len(r) for r in rows) <= cols else "too-wide")
+print(" ".join(res))
 PY
 drive() { python3 "$drv" "$lib" "$root" "$@"; }
 L='\x1b[D'
@@ -68,6 +77,11 @@ check "Esc Ctrl-E does not expand shell code" eq \
     "$(drive "\$(touch $root/pwn)" '\x1b\x05' '\r')" "rc=0 GOT[\$(touch $root/pwn)]"
 check "Ctrl-X Ctrl-E opens no editor" eq "$(drive hej '\x18\x05' '\r')" "rc=0 GOT[hej]"
 check "no file created by shell keys" eq "$(ls "$root" | grep -c pwn)" "0"
+long="Name (a-z, 0-9, - and _; 2-24 chars): "
+check "40 columns, long prompt: input on its own line, no row too wide" eq \
+    "$(RL_COLS=40 RL_PROMPT=$long drive nyttbrade_med_langt_namn '\r')" "rc=0 GOT[nyttbrade_med_langt_namn] own-line fits"
+check "40 columns, short prompt: input on the same line, scrolls" eq \
+    "$(RL_COLS=40 RL_PROMPT='Subject: ' drive "$(printf 'x%.0s' {1..50})" '\r')" "rc=0 GOT[$(printf 'x%.0s' {1..50})] same-line fits"
 
 # Piped (non-tty) input: escape codes and control characters are removed.
 piped=$(printf 'ab\033[Dc\033OA\x01d\te\n' | env BBS_ROOT="$root" HOME="$root/home" BASHBBS_TEST=1 \

@@ -69,7 +69,9 @@ def cellw(s):
 
 
 def lines_of(scr):
-    return ANSI.sub("", scr).replace("\r", "").split("\n")
+    # \r returns to column 0: what follows the last \r on a line is what stays on screen
+    # (the line editor redraws its prompt that way on every key).
+    return [l.rstrip("\r").split("\r")[-1] for l in ANSI.sub("", scr).split("\n")]
 
 
 def last_screen(t):
@@ -790,7 +792,7 @@ def s_text(w):
         t = s.k("\n", GEN())
         chk("8 post: empty subject cancels, nothing queued (as in 1.3)", len(files(root, "*.post")) == n0 and "Write text" not in t)
         # Reply carries the parent
-        s.k("1", POST()); s.send("r"); s.expect(r"Subject \[Enter keeps .*\]: $")
+        s.k("1", POST()); s.send("r"); s.expect(r"Subject \[Enter keeps .*\]: (\r\n)?$")
         s.send("Svar\n"); s.expect(r"Quote\? \[Y/n\] "); s.send("n"); s.expect(r"single dot \(\.\)\.\r\n"); s.send("ja\n.\n"); s.expect(PAUSE)
         chk("11 reply: queued with Parent: m1", any("Parent: m1\n" in rd(x) and "Subject: Svar" in rd(x) for x in files(root, "*.post")))
         s.k("x", GEN()); s.k("q", BOARDS); s.k("q", MAIN)
@@ -805,7 +807,7 @@ def s_text(w):
         chk("8 wall: empty line cancels, nothing saved (as in 1.3)", len(files(root, "*.wall")) == n0 and "Sent." not in t)
         s.k("q", MAIN)
         # mail
-        s.k("5", MAILM); s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): $")
+        s.k("5", MAILM); s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): (\r\n)?$")
         s.send("bob\n"); s.expect(r"Subject \(/cancel stops\): $"); s.send("Hej åäö 日本\n")
         s.expect(r"single dot \(\.\)\.\r\n"); s.send("\n".join(BODY) + "\n.\n")
         s.expect(r"Send\? \[y/N\] $"); s.send("y"); s.expect(PAUSE)
@@ -816,24 +818,24 @@ def s_text(w):
         chk("11 mail write: Subject header intact", len(dm) == 1 and "Subject: Hej åäö 日本\n" in rd(dm[0]))
         s.k("x", MAILM)
         # empty lines in mail, as in 1.3
-        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): $")
+        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): (\r\n)?$")
         s.k("\n", PAUSE)       # 1.3: empty To = Unknown user + [Any key]
         t = s.k("x", MAILM)
         chk("8 mail: empty To is 'Unknown user' + pause, as in 1.3 (not a cancel)", len(delivered(root)) == 1)
-        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): $")
+        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): (\r\n)?$")
         s.k("/cancel\n", MAILM)
         chk("8 mail: /cancel at To returns at once", len(delivered(root)) == 1)
-        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): $"); s.send("bob\n"); s.expect(r"Subject \(/cancel stops\): $")
+        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): (\r\n)?$"); s.send("bob\n"); s.expect(r"Subject \(/cancel stops\): $")
         s.send("x\n"); s.expect(r"single dot \(\.\)\.\r\n"); s.send("text\n/cancel\n"); s.expect(PAUSE)
         chk("8 mail: /cancel in the body sends nothing", len(delivered(root)) == 1)
         s.k("x", MAILM)
-        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): $"); s.send("bob\n"); s.expect(r"Subject \(/cancel stops\): $")
+        s.send("2"); s.expect(r"To, e\.g\. kitty \(/cancel stops\): (\r\n)?$"); s.send("bob\n"); s.expect(r"Subject \(/cancel stops\): $")
         s.send("\n"); s.expect(r"single dot \(\.\)\.\r\n"); s.send("body\n.\n"); s.expect(r"Send\? \[y/N\] $"); s.send("y"); s.expect(PAUSE)
         chk("8 mail: empty subject becomes (no subject), as in 1.3", any("Subject: (no subject)" in rd(x) for x in delivered(root)))
         s.k("x", MAILM)
         # reply from the inbox
         s.k("1", title_pat("Inbox", r"Number: open")); s.k("1", title_pat("Inbox", r"R\) Reply"))
-        s.send("r"); t = s.expect(r"Subject \[(Re: .*?)\] \(/cancel stops\): $")
+        s.send("r"); t = s.expect(r"Subject \[(Re: .*?)\] \(/cancel stops\): (\r\n)?$")
         chk("11 mail reply: To is the sender and Subject gets Re:", "Re: Ny" in t)
         s.send("\n"); s.expect(r"single dot \(\.\)\.\r\n"); s.send("svar\n.\n"); s.expect(r"Send\? \[y/N\] $"); s.send("y"); s.expect(PAUSE)
         chk("11 mail reply: delivered with In-Reply-To", any("In-Reply-To: <i1@" in rd(x) for x in delivered(root)))
@@ -952,12 +954,12 @@ def s_commands(w):
         s.k("x", GEN())
         # edit, keep text
         s.k("1", POST())
-        s.send("e"); s.expect(r"New subject \(\[Enter\] keeps\): $"); s.send("\n")
+        s.send("e"); s.expect(r"New subject \(\[Enter\] keeps\): $"); s.send("\n"); s.expect(r"K\) Keep text.*" + PROMPT)
         s.k("k", PAUSE)
         chk("11 edit: keep text queues a second request", len(files(root, "*.req")) == 2)
         s.k("x", GEN())
         s.k("1", POST())
-        s.send("e"); s.expect(r"New subject \(\[Enter\] keeps\): $"); s.send("\n")
+        s.send("e"); s.expect(r"New subject \(\[Enter\] keeps\): $"); s.send("\n"); s.expect(r"K\) Keep text.*" + PROMPT)
         s.k("q", GEN())
         chk("11 edit: Q cancels the edit (nothing queued)", len(files(root, "*.req")) == 2)
         s.k("q", BOARDS)
@@ -970,7 +972,7 @@ def s_commands(w):
         chk("11 members: remove queued (capital R)", any("Action: remove" in rd(x) for x in files(root, "*.req")))
         s.k("x", title_pat("priv", r"S\) Members"))
         # new private board
-        s.k("q", BOARDS); s.send("k"); s.expect(r"Name \(a-z.*\): $"); s.send("nyttbrade\n"); s.expect(PAUSE)
+        s.k("q", BOARDS); s.send("k"); s.expect(r"Name \(a-z.*\): (\r\n)?$"); s.send("nyttbrade\n"); s.expect(PAUSE)
         chk("11 new private board: create-board queued", any("Action: create-board" in rd(x) and "Board: nyttbrade" in rd(x) for x in files(root, "*.req")))
         s.k("x", BOARDS)
         t = s.k("2", r"== hobby ==.*" + PROMPT)

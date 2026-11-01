@@ -257,7 +257,11 @@ rline_edit() {
     read -r rows cols < <(stty size 2>/dev/null) || true
     [[ $cols =~ ^[0-9]+$ ]] || cols=80
     s=$(printf '%s' "$__p" | ansi_strip); plen=${#s}
-    avail=$(( cols - plen - 1 )); (( avail < 10 )) && avail=10
+    avail=$(( cols - plen - 1 ))
+    if (( avail < 10 )); then   # a long prompt on a narrow screen: type on the line below
+        printf '%s\n' "$__p" >&2; __p=""; avail=$(( cols - 1 ))
+        (( avail < 10 )) && avail=10
+    fi
     printf '%s' "$__p" >&2   # first draw: just the prompt, like read -p
     while :; do
         IFS= read -rsn1 -d '' c || { [[ -n $buf ]] && break; printf '\n' >&2; return 1; }
@@ -1435,7 +1439,7 @@ queue_request() {
 
 new_private_board() {
     local name
-    rline name "Name (a-z, 0-9, - and _; 2-24 chars): " || return
+    rline name "Name (a-z 0-9 - _, 2-24 chars): " || return
     [[ $name =~ ^[a-z0-9][a-z0-9_-]{1,23}$ ]] || { echo "Bad name."; pause; return; }
     printf 'Action: create-board\nBoard: %s\n' "$name" | queue_request
     echo "Sent. Applies in a minute. Log in again."
