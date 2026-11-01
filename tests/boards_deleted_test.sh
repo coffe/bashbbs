@@ -106,7 +106,8 @@ check "a stub still shows [deleted] and who/when" bash -c "
     show_post '$root/boards/general/$((T0 + 10))-s1.msg' 40 | grep -q '^deleted '"
 check "admin backup left alone" test -f "$root/state/admin-backup/keep.txt"
 
-# 5. Real terminal widths. Entries are numbered 1..10 over the visible posts only.
+# 5. Real terminal widths. The list shows threads, newest activity first: 1 keep6, 2 s7 (deleted root),
+#    3 a4, 4 a3, 5 s2 (deleted root). Entries are numbered over the visible threads only.
 for w in 40 60 80; do
     first_screen() { tr -d '\r' < "$out/p1-$w.txt" | sed '/N) New/q'; }
     run() { # run <out> <key to open>
@@ -115,12 +116,12 @@ for w in 40 60 80; do
             env BBS_ROOT="$root" HOME="$root/home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb \
             bash -c "source $here/lib/menu.sh; board_view general; echo DONE" 2>>"$log"
     }
-    check "pty $w: open entry 1 (a stub), back, quit" run "$out/p1-$w.txt" '1\n'
-    check "pty $w: open entry 2 (a reply), back, quit" run "$out/p2-$w.txt" 2
+    check "pty $w: open entry 2 (a stub), back, quit" run "$out/p1-$w.txt" '2\n'
+    check "pty $w: open entry 3 (an active post), back, quit" run "$out/p2-$w.txt" 3
     check "pty $w: no row wider than $w" fits "$out/p1-$w.txt" "$w"
-    check "pty $w: list has 10 entries" eq "$(first_screen | grep -c '^ *[0-9]*) ')" 10
-    check "pty $w: last entry is number 10, the kept post" bash -c "tr -d '\r' < '$out/p1-$w.txt' | grep -q '^ *10) Post keep6'"
-    check "pty $w: 4 context stubs, no others" eq "$(first_screen | grep -c '\[deleted\]')" 4
+    check "pty $w: list has 5 thread rows" eq "$(first_screen | grep -c '^ *[0-9]*) ')" 5
+    check "pty $w: first row is the newest thread, the kept post" bash -c "tr -d '\r' < '$out/p1-$w.txt' | grep -q '^ *1) Post keep6'"
+    check "pty $w: 2 deleted roots, no others" eq "$(first_screen | grep -c '(deleted)')" 2
     check "pty $w: hidden posts do not appear" not grep -Eq 'Post (s1|x3|z4|w4|s5|c5|cc5|p8|q8|dg)\b' "$out/p1-$w.txt"
     check "pty $w: a stub offers no Reply" not grep -q 'R) Reply' "$out/p1-$w.txt"
     check "pty $w: an active reply offers Reply" grep -q 'R) Reply' "$out/p2-$w.txt"

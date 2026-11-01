@@ -201,7 +201,7 @@ def put(path, text):
 
 
 def post(root, board, n, mid, author, subject, body):
-    put("%s/boards/%s/%d-%s.msg" % (root, board, 1500000000 + n, mid),
+    put("%s/boards/%s/%d-%s.msg" % (root, board, 1500000010 - n, mid),
         "Board: %s\nMsgid: %s\nSubject: %s\nAuthor: %s\nDate: 2026-10-0%dT10:00:00Z\n\n%s\n"
         % (board, mid, subject, author, n, body))
 
@@ -511,7 +511,7 @@ def s_jump(w):
     s, root, home = sess(w)
     try:
         s.main(); s.k("1", BOARDS); s.k("1", GEN()); s.k("1", POST())
-        inert(s, b"bmpwBMPW", b"q", GEN(), "4 open post ignores B M P W")
+        inert(s, b"bmwBMW", b"q", GEN(), "4 open post ignores B M W (P is Previous there)")
         s.k("q", BOARDS); s.k("q", MAIN)
         s.k("5", MAILM)
         s.k("1", title_pat("Inbox", r"Number: open"))
@@ -790,8 +790,8 @@ def s_text(w):
         t = s.k("\n", GEN())
         chk("8 post: empty subject cancels, nothing queued (as in 1.3)", len(files(root, "*.post")) == n0 and "Write text" not in t)
         # Reply carries the parent
-        s.k("1", POST()); s.send("r"); s.expect(r"Subject: $")
-        s.send("Svar\n"); s.expect(r"single dot \(\.\)\.\r\n"); s.send("ja\n.\n"); s.expect(PAUSE)
+        s.k("1", POST()); s.send("r"); s.expect(r"Subject \[Enter keeps .*\]: $")
+        s.send("Svar\n"); s.expect(r"Quote\? \[Y/n\] "); s.send("n"); s.expect(r"single dot \(\.\)\.\r\n"); s.send("ja\n.\n"); s.expect(PAUSE)
         chk("11 reply: queued with Parent: m1", any("Parent: m1\n" in rd(x) and "Subject: Svar" in rd(x) for x in files(root, "*.post")))
         s.k("x", GEN()); s.k("q", BOARDS); s.k("q", MAIN)
         # wall

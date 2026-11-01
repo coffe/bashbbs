@@ -20,6 +20,11 @@ me=${login#bbs-}
 sendmail=/usr/sbin/sendmail
 [[ -n ${BASHBBS_TEST:-} && -n ${BBS_SENDMAIL:-} ]] && sendmail=$BBS_SENDMAIL
 
+# Epoch of the previous login, set by welcome_screen; empty means nothing counts as new.
+# Tests set it with BASHBBS_SEEN_PREV.
+SEEN_PREV=""
+[[ -n ${BASHBBS_TEST:-} ]] && SEEN_PREV=${BASHBBS_SEEN_PREV:-}
+
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
 
@@ -31,21 +36,27 @@ safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
 # safe(), which strips ESC.
 # Tests: BASHBBS_TEST=1 with no prefs file means COLOR=0 and no question. BASHBBS_COLOR=0|1
 # (tests only) forces the value; BASHBBS_COLOR=ask makes the first-login question appear.
+# C_NEW / C_OLD colour the rows of the thread list (new posts since the last login:
+# bright green; nothing new: normal white, not dark grey, so it stays readable).
 COLOR=0 COLOR_ASK=0
-C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_RST=
+REPLYMAIL=1   # replymail=1|0 in the same file: mail me when someone replies to my post
+C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_NEW= C_OLD= C_RST=
 
 color_init() { # color_init: set the palette from COLOR
     if (( COLOR )); then
         C_TITLE=$'\033[1;37m' C_BAR=$'\033[0;36m' C_KEY=$'\033[1;33m'
         C_RULE=$'\033[0;34m' C_DIM=$'\033[0;37m' C_RST=$'\033[0m'
+        C_NEW=$'\033[1;32m' C_OLD=$'\033[0;37m'
     else
-        C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_RST=
+        C_TITLE= C_BAR= C_KEY= C_RULE= C_DIM= C_NEW= C_OLD= C_RST=
     fi
 }
 
 prefs_load() {
     local v="" f=$HOME/.bashbbs-prefs
     COLOR_ASK=0
+    REPLYMAIL=$(sed -n 's/^replymail=\([01]\)$/\1/p' "$f" 2>/dev/null | head -n 1)
+    [[ $REPLYMAIL == 0 ]] || REPLYMAIL=1
     if [[ -n ${BASHBBS_TEST:-} && ${BASHBBS_COLOR:-} == [01] ]]; then
         COLOR=$BASHBBS_COLOR
     else
@@ -62,7 +73,7 @@ prefs_load() {
 prefs_save() {
     local tmp
     tmp=$(mktemp "$HOME/.bashbbs-prefs.XXXXXX") || return 0
-    printf 'color=%s\n' "$COLOR" > "$tmp" && mv -f "$tmp" "$HOME/.bashbbs-prefs" || rm -f "$tmp"
+    printf 'color=%s\nreplymail=%s\n' "$COLOR" "$REPLYMAIL" > "$tmp" && mv -f "$tmp" "$HOME/.bashbbs-prefs" || rm -f "$tmp"
     return 0
 }
 
@@ -379,10 +390,15 @@ my_account() {
     echo
     echo "[K] SSH keys"
     echo "[C] Colour: $( ((COLOR)) && echo on || echo off )"
+    echo "[N] Reply mail: $( ((REPLYMAIL)) && echo on || echo off )"
     read_key "$(paint_bar "[Any key] ")" || true
     echo
     if [[ $MKEY == [Cc] ]]; then
         COLOR=$(( 1 - COLOR )); color_init; prefs_save
+        continue
+    fi
+    if [[ $MKEY == [Nn] ]]; then
+        REPLYMAIL=$(( 1 - REPLYMAIL )); prefs_save
         continue
     fi
     [[ $MKEY == [Kk] ]] && ssh_keys_menu
@@ -933,9 +949,65 @@ visible_posts() { # visible_posts <board>
         }'
 }
 
+# Threads of a board, newest activity first. One line per thread:
+#   root-file<TAB>posts<TAB>last-epoch<TAB>new (1 if a post is newer than <since>, else 0)
+# The root is found by following Parent upwards until a post has none or its parent is not
+# listed. Only posts visible_posts lets through take part; "last" and "new" look at active
+# posts only (the epoch is the file name prefix). With <root-file> the output is instead
+# the files of that thread, in file order. Only headers are read; nothing is written.
+board_threads() { # board_threads <board> [since] [root-file]
+    visible_posts "$1" | awk -v since="${2:-}" -v want="${3:-}" '
+        function hdr(line) { sub(/\r$/, "", line); return substr(line, index(line, ":") + 2) }
+        { file[++n] = $0; id[n] = ""; par[n] = ""; del[n] = 0
+          while ((getline line < $0) > 0 && line != "" && line != "\r") {
+              if (line ~ /^Msgid:/) id[n] = hdr(line)
+              else if (line ~ /^Parent:/) par[n] = hdr(line)
+              else if (line ~ /^Deleted:/) del[n] = 1
+          }
+          close($0)
+          m = split($0, seg, "/"); ep[n] = seg[m]; sub(/-.*/, "", ep[n])
+          if (id[n] != "") at[id[n]] = n }
+        END {
+            for (i = 1; i <= n; i++) {
+                j = i
+                for (step = 0; step < 1000 && par[j] != "" && (par[j] in at) && at[par[j]] != j; step++) j = at[par[j]]
+                root[i] = j
+                cnt[j]++
+                if (!del[i]) {
+                    if (ep[i] + 0 > last[j] + 0) last[j] = ep[i]
+                    if (since != "" && ep[i] + 0 > since + 0) isnew[j] = 1
+                }
+            }
+            for (i = 1; i <= n; i++) {
+                if (want != "") { if (file[root[i]] == want) print file[i]; continue }
+                if (root[i] == i) printf "%s\t%d\t%s\t%d\n", file[i], cnt[i], last[i] + 0, isnew[i] + 0
+            }
+        }' | { if [[ -n ${3:-} ]]; then cat; else sort -t$'\t' -k3,3nr -k1,1r; fi; }
+}
+
+# One thread-list row as plain text lines: "  3) subject wrapped         (4) *".
+# The count and the star sit at the end of the first line; the subject wraps to the room
+# left, later lines hang under it. Columns are counted by wrap.py, so å ä ö never split.
+thread_row() { # thread_row <number> <width> <suffix> <subject>
+    PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=UTF-8 python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from wrap import wrap, vwidth
+num, width, suffix, subject = int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
+room = max(width - vwidth(suffix) - 1, 10)
+lines = wrap(subject, room) or [""]
+first = lines[0] + " " * max(width - vwidth(suffix) - vwidth(lines[0]), 1)
+print("%3d) %s%s" % (num, first, suffix))
+for l in lines[1:]:
+    print("     " + l)
+' "$NEWS_LIB" "$@"
+}
+
+# The thread list of a board. A number opens the thread. Rows with posts newer than the
+# last login are green, the others light grey (no colour: plain text, rows end in "*").
 board_view() {
     local board=$1 f rc keys hint wrapw
-    local -a files=()
+    local -a rows=() roots=() counts=() news=()
     # A news board with a section marker shows sections, not a thread list.
     if [[ $board == news && -f $BBS_ROOT/meta/news.sections ]]; then
         news_board
@@ -947,14 +1019,20 @@ board_view() {
         # Measured here, not inside the pipe below: there stdin is not the terminal and
         # term_width would fall back to 76 columns.
         wrapw=$(( $(term_width) - 5 ))
-        mapfile -t files < <(visible_posts "$board")
-        local i=1 subject
-        for f in "${files[@]}"; do
-            # Word wrap with a hanging indent, so a title fits the terminal. wrap.py counts
-            # columns, not bytes, so å ä ö and wide characters never split.
-            subject=$(sed -n 's/^Subject: //p' "$f" | head -n 1 | safe)
-            printf '%s' "$subject" | python3 "$NEWS_LIB/wrap.py" "$wrapw" \
-                | awk -v n="$i" 'NR == 1 { printf "%3d) %s\n", n, $0; next } { print "     " $0 }'
+        mapfile -t rows < <(board_threads "$board" "$SEEN_PREV")
+        roots=() counts=() news=()
+        local i=1 subject row suffix col line cnt isnew
+        for row in "${rows[@]}"; do
+            IFS=$'\t' read -r f cnt _ isnew <<< "$row"
+            roots+=("$f") counts+=("$cnt") news+=("$isnew")
+            subject=$(post_hdr "$f" Subject)
+            [[ -n $(post_hdr "$f" Deleted) ]] && subject="(deleted)"
+            suffix="($cnt)"; col=$C_OLD
+            (( isnew )) && { suffix+=" *"; col=$C_NEW; }
+            # Wrap on the plain text first, colour each finished line after.
+            while IFS= read -r line; do
+                printf '%s%s%s\n' "$col" "$line" "$C_RST"
+            done < <(thread_row "$i" "$wrapw" "$suffix" "$subject")
             echo
             i=$((i + 1))
         done
@@ -970,8 +1048,8 @@ board_view() {
         fi
         # A read-only board has no N. Its owner can still reach S.
         is_readonly "$board" && manages "$board" && keys+=Ss
-        menu_key "> " "$keys$(digit_keys "${#files[@]}")" \
-"Number: read a post
+        menu_key "> " "$keys$(digit_keys "${#roots[@]}")" \
+"Number: read a thread (* = new)
 $hint
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -979,19 +1057,60 @@ B M P W: jump   G: log out" || return
             [Qq]) return ;;
             [Nn]) is_readonly "$board" || compose "$board" ""; continue ;;
             [Ss]) manages "$board" && members_menu "$board"; continue ;;
-            [1-9]) read_num "${#files[@]}" || continue ;;
+            [1-9]) read_num "${#roots[@]}" || continue ;;
             *) continue ;;
         esac
-        f=${files[NUM - 1]}
-        while true; do
-            redraw
-            local_header "$board" "[Q] Back"
-            show_post "$f" "$(term_width)"
-            echo
-            post_actions "$board" "$f"; rc=$?
-            (( rc == 2 )) || break
-        done
+        thread_view "$board" "${roots[NUM - 1]}"; rc=$?
         (( rc == 1 )) && return
+    done
+}
+
+# Read one thread, one post per screen, in file order. Starts at the first post newer than
+# the last login, else at #1. Space goes on (after the last post: back to the list),
+# P back. Returns 0 for the list, 1 at end of input.
+thread_view() { # thread_view <board> <root-file>
+    local board=$1 root=$2 f i k=0 n rc id p pid at date author width head ep
+    local -a files=() ids=()
+    mapfile -t files < <(board_threads "$board" "$SEEN_PREV" "$root")
+    n=${#files[@]}
+    (( n )) || return 0
+    for f in "${files[@]}"; do ids+=("$(post_hdr "$f" Msgid)"); done
+    # The first new, active post; the file name starts with the publish epoch.
+    if [[ -n $SEEN_PREV ]]; then
+        for (( i = 0; i < n; i++ )); do
+            ep=$(basename "${files[i]}"); ep=${ep%%-*}
+            [[ -z $(post_hdr "${files[i]}" Deleted) && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > SEEN_PREV )) && { k=$i; break; }
+        done
+    fi
+    while true; do
+        f=${files[k]}
+        redraw
+        local_header "$board" "[Q] Back"
+        width=$(term_width)
+        author=$(post_hdr "$f" Author); date=$(local_time "$(post_hdr "$f" Date)")
+        head="#$((k + 1))/$n  $author  $date"
+        pid=$(post_hdr "$f" Parent); at=""
+        if [[ -n $pid ]]; then
+            for (( i = 0; i < n; i++ )); do [[ ${ids[i]} == "$pid" ]] && at=$((i + 1)); done
+            [[ -n $at ]] && head+="  · reply to #$at"
+        fi
+        ep=$(basename "$f"); ep=${ep%%-*}
+        if [[ -n $SEEN_PREV && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > SEEN_PREV )); then
+            printf '%s%s%s\n' "$C_NEW" "$head" "$C_RST"
+        else
+            echo "$head"
+        fi
+        echo
+        show_post "$f" "$width"
+        echo
+        post_actions "$board" "$f"; rc=$?
+        case $rc in
+            1) return 1 ;;
+            2) ;;
+            3) (( k + 1 < n )) && k=$((k + 1)) || return 0 ;;
+            4) (( k > 0 )) && k=$((k - 1)) ;;
+            *) return 0 ;;
+        esac
     done
 }
 
@@ -1000,24 +1119,31 @@ post_hdr() { sed '/^$/q' "$1" | sed -n "s/^$2: *//p" | head -n 1 | safe; }
 
 # Commands under an open post. Deleted posts and read-only boards have none.
 # Edit is for the author. Delete is for the author, the board owner and sysops.
-# Returns 0 for back to the list, 1 at end of input, 2 to redraw the post.
+# Space (next) and P (previous) move inside the thread.
+# Returns 0 for back to the list, 1 at end of input, 2 to redraw the post, 3 next, 4 previous.
 post_actions() { # post_actions <board> <file>
-    local board=$1 f=$2 cmds="" keys=Qq hint="Q: back"
+    local board=$1 f=$2 cmds="" keys="Qq Pp" hint="Space: next  P: previous
+"
     local author
     author=$(post_hdr "$f" Author)
     if [[ -z $(post_hdr "$f" Deleted) ]] && ! is_readonly "$board"; then
-        cmds="R) Reply"; keys+=Rr hint="R: reply"
+        cmds+="R) Reply"; keys+=Rr hint+="R: reply"
         [[ $author == "$me" ]] && { cmds+="  E) Edit"; keys+=Ee; hint+="  E: edit"; }
         if [[ $author == "$me" ]] || is_sysop || manages "$board"; then
             cmds+="  D) Delete"; keys+=Dd; hint+="  D: delete"
         fi
     fi
+    # Two lines: the full line does not fit in 40 columns.
+    echo "[Space] Next  P) Prev"
     echo "${cmds:+$cmds  }Q) Back"
     # Inside an open post the jump keys are off.
-    menu_key "> " "$keys" "$hint  Q: back" local || return 1
+    [[ $hint == *$'\n' ]] && hint+="Q: back" || hint+="  Q: back"
+    menu_key "> " "$keys" "$hint" local || return 1
     case $MKEY in
         '?') return 2 ;;
-        [Rr]) compose "$board" "$(post_hdr "$f" Msgid)" ;;
+        ' ') return 3 ;;
+        [Pp]) return 4 ;;
+        [Rr]) reply_to "$board" "$f" ;;
         [Ee]) edit_post "$board" "$f" ;;
         [Dd]) delete_post "$board" "$f" ;;
     esac
@@ -1081,13 +1207,39 @@ read_body() {
     done
 }
 
+# Reply to post <file>: Parent is that post's Msgid, the subject starts as "Re: <subject>"
+# (Re: only once, at most 100 characters) and Enter keeps it. Then the quote question.
+reply_to() { # reply_to <board> <file>
+    local subject
+    subject=$(post_hdr "$2" Subject)
+    [[ $subject =~ ^[Rr][Ee]:[[:space:]] ]] || subject="Re: $subject"
+    compose "$1" "$(post_hdr "$2" Msgid)" "$(printf '%s' "$subject" | head -c 100)" "$2"
+}
+
+# At most 6 lines of a post's text, each with "> " before. Lines that already start with
+# ">" (an older quote) and blank lines are skipped, so quotes do not pile up.
+quote_lines() { # quote_lines <file>
+    sed '1,/^$/d' "$1" | safe | grep -v -e '^>' -e '^[[:space:]]*$' | head -n 6 | sed 's/^/> /'
+}
+
 # Write one post into the queue. The publisher checks it and copies it
 # into boards/. Users cannot write into boards/ themselves.
-compose() {
-    local board=$1 parent=$2 subject tmp
-    rline subject "Subject: " || return
+# A reply passes a default subject and the post to quote; Enter keeps the subject.
+compose() { # compose <board> <parent> [default subject] [post to quote]
+    local board=$1 parent=$2 defsub=${3:-} quote=${4:-} subject tmp ql=""
+    if [[ -n $defsub ]]; then
+        rline subject "Subject [Enter keeps \"$(list_fit "$(( $(list_width) - 32 ))" "$defsub")\"]: " || return
+    else
+        rline subject "Subject: " || return
+    fi
     subject=$(printf '%s' "$subject" | safe | head -c 100)
+    [[ -n $subject ]] || subject=$defsub
     [[ -n $subject ]] || return
+    if [[ -n $quote ]]; then
+        read_key "Quote? [Y/n] " || return
+        echo
+        [[ $MKEY == [Nn] ]] || ql=$(quote_lines "$quote")
+    fi
     echo "Write text. End with a single dot (.)."
     tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX") || return
     {
@@ -1095,6 +1247,7 @@ compose() {
         printf 'Subject: %s\n' "$subject"
         [[ -n $parent ]] && printf 'Parent: %s\n' "$parent"
         printf '\n'
+        [[ -n $ql ]] && printf '%s\n\n' "$ql"
         read_body
     } > "$tmp"
     mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
@@ -1757,6 +1910,7 @@ welcome_screen() {
     local seen=$HOME/.bashbbs-seen prev=""
     prev=$(sed -n 's/^login=//p' "$seen" 2>/dev/null | head -n 1)
     [[ $prev =~ ^[0-9]+$ ]] || prev=""
+    SEEN_PREV=$prev   # the thread list marks posts newer than this
     printf 'login=%s\n' "$(date +%s)" > "$seen" 2>/dev/null || true
     while true; do
         redraw

@@ -89,10 +89,10 @@ EOF
 h2=$root/home2; mkdir -p "$h2"
 python3 "$here/tests/pty_drive.py" --cols 80 --out "$root/a.out" --timeout 15 --step '[A/n] =>n' -- bash "$root/ask_drv.sh" "$root" "$h2" "$lib" >>"$log" 2>&1
 check "(a) question shown, n gives RESULT=0" has "$root/a.out" "RESULT=0"
-check "(a) n is saved as color=0" eq "$(cat "$h2/.bashbbs-prefs" 2>/dev/null)" "color=0"
+check "(a) n is saved as color=0" eq "$(cat "$h2/.bashbbs-prefs" 2>/dev/null)" "$(printf 'color=0\nreplymail=1')"
 h3=$root/home3; mkdir -p "$h3"
 python3 "$here/tests/pty_drive.py" --cols 80 --out "$root/a2.out" --timeout 15 --step '[A/n] =>\n' -- bash "$root/ask_drv.sh" "$root" "$h3" "$lib" >>"$log" 2>&1
-check "(a) Enter means colour, saved as color=1" eq "$(cat "$h3/.bashbbs-prefs" 2>/dev/null)" "color=1"
+check "(a) Enter means colour, saved as color=1" eq "$(cat "$h3/.bashbbs-prefs" 2>/dev/null)" "$(printf 'color=1\nreplymail=1')"
 python3 "$here/tests/pty_drive.py" --cols 80 --out "$root/a3.out" --timeout 15 -- bash "$root/ask_drv.sh" "$root" "$h3" "$lib" >>"$log" 2>&1
 check "(a) not asked again once saved" bash -c '! grep -q "A/n" "$1" && grep -q RESULT=1 "$1"' x "$root/a3.out"
 check "(a) test mode with no prefs does not ask" eq "$(env BBS_ROOT="$root" HOME="$root/home4" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-coltest bash -c 'mkdir -p "$HOME"; source "$1"; echo "$COLOR$COLOR_ASK"' x "$lib")" "00"
@@ -106,7 +106,7 @@ my_account; echo "RESULT=$COLOR"
 EOF
 python3 "$here/tests/pty_drive.py" --cols 80 --out "$root/g.out" --timeout 15 \
     --step 'Any key=>c' --step 'Any key=>q' -- bash "$root/acct_drv.sh" "$root" "$h5" "$lib" >>"$log" 2>&1
-check "(g) C turns colour off and saves it" bash -c 'grep -q "RESULT=0" "$1" && [[ $(cat "$2") == color=0 ]]' x "$root/g.out" "$h5/.bashbbs-prefs"
+check "(g) C turns colour off and saves it" bash -c 'grep -q "RESULT=0" "$1" && grep -qx "color=0" "$2" && grep -qx "replymail=1" "$2"' x "$root/g.out" "$h5/.bashbbs-prefs"
 check "(g) the menu showed Colour: on, then off" bash -c 'grep -q "Colour: on" "$1" && grep -q "Colour: off" "$1"' x "$root/g.out"
 check "(g) no temp files left" eq "$(ls -A "$h5" | grep -c '^\.bashbbs-prefs\.')" 0
 

@@ -226,8 +226,8 @@ check "message: the open message shows no jump bar" eq "$(grep -c '\[B\] Boards'
 check "local header has no jump keys" not grep -q 'Boards' <(run_as carol local_header Test '[Q] Back')
 mkdir -p "$root/boards/general"; printf 'Author: bbs-bob\nSubject: Hej\nMsgid: <x@y>\n\nText\n' > "$root/boards/general/1-a.msg"
 pa() { post_actions general "$root/boards/general/1-a.msg"; echo "RC=$? NAV=[$nav_req]"; }
-o=$root/jump3.txt; printf 'bmpwgq' | run_as carol pa > "$o" 2>>"$log"
-check "open post: jump keys ignored, no logout question, Q returns 0" grep -q 'RC=0 NAV=\[\]$' "$o"
+o=$root/jump3.txt; printf 'bmwgq' | run_as carol pa > "$o" 2>>"$log"
+check "open post: jump keys ignored (P is Previous), no logout question, Q returns 0" grep -q 'RC=0 NAV=\[\]$' "$o"
 check "open post: no logout question" not grep -q 'Log out' "$o"
 # Main menu: Q and G both ask; only y logs out.
 mmn() { main_menu; echo "NAV=[$nav_req]"; }

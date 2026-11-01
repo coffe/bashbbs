@@ -59,6 +59,10 @@ WALL_LOCK=$STATE/wall.lock
 
 host=$(cat /etc/hostname)
 
+# Postfix sendmail. BBS_SENDMAIL may point at a stub, but only in tests.
+sendmail=/usr/sbin/sendmail
+[[ -n ${BASHBBS_TEST:-} && -n ${BBS_SENDMAIL:-} ]] && sendmail=$BBS_SENDMAIL
+
 # First "Key: value" header of a queue file.
 field() { sed -n "s/^$2: //p" "$1" | head -n 1; }
 
@@ -411,6 +415,52 @@ handle_post() { # handle_post <file> <owner account>
         chmod 0644 "$tmp" || return 1
     fi
     mv -f "$tmp" "$out" || return 1
+    # The post is published; a failed mail never undoes it.
+    [[ -z $parent ]] || reply_notify "$board" "$parent" "$owner" "$out" || true
+    return 0
+}
+
+# Mail the author of the parent post that somebody replied. Sent here, after publishing,
+# so a rejected post sends nothing and the recipient is read from the parent file on
+# disk (the Author header), never from the request. No mail when: the parent is missing
+# or deleted, the author replies to themselves, bbs-<author> is no account, the author
+# is no longer in a private board's group, or ~bbs-<author>/.bashbbs-prefs has
+# replymail=0. The file is read strictly (a regular file, one exact line pattern).
+reply_notify() { # reply_notify <board> <parent msgid> <replier account> <new post file>
+    local board=$1 parent=$2 replier=$3 post=$4 pf author acct home prefs subj dom tmp
+    pf=$(post_file "$board" "$parent") || return 0
+    [[ -z $(hdr_get "$pf" Deleted) ]] || return 0
+    author=$(hdr_get "$pf" Author)
+    [[ $author =~ ^[a-z][a-z0-9]{2,8}$ ]] || return 0
+    acct=bbs-$author
+    [[ $acct != "$replier" ]] || return 0
+    id "$acct" >/dev/null 2>&1 || return 0   # no such account: no mail
+    if is_private "$board"; then in_group "$acct" "bbsb-$board" || return 0; fi
+    home=$(getent passwd "$acct" | cut -d: -f6)
+    prefs=$home/.bashbbs-prefs
+    if [[ -n $home && -f $prefs && ! -L $prefs ]]; then
+        # The user can swap the file between the test and the read (a FIFO would hang
+        # the publisher), so the read is time-limited.
+        [[ $(timeout 2 head -c 4096 -- "$prefs" | sed -n 's/^replymail=\([01]\)$/\1/p' | head -n 1) == 0 ]] && return 0
+    fi
+    subj=$(hdr_get "$pf" Subject | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g')
+    dom=${BBS_MAIL_DOMAIN:-bbs.localdomain}
+    tmp=$(mktemp) || return 0
+    {
+        printf 'Message-ID: <%s@%s>\n' "$(cat /proc/sys/kernel/random/uuid)" "$dom"
+        printf 'Date: %s\n' "$(date -R)"
+        printf 'From: %s@%s\n' "${replier#bbs-}" "$dom"
+        printf 'To: %s@%s\n' "$author" "$dom"
+        printf 'Subject: Reply on %s: %s\n' "$board" "$subj"
+        printf 'MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\n'
+        printf '%s replied to your post "%s" on %s:\n\n' "${replier#bbs-}" "$subj" "$board"
+        sed '1,/^$/d' "$post" | head -n 10
+        printf '\nRead it: B) Boards \xe2\x86\x92 %s\n' "$board"
+    } > "$tmp"
+    # The recipient is on the command line, not taken from a header; -f is the replier.
+    /usr/bin/env -i "$sendmail" -i -f "$replier" "$acct" < "$tmp" || true
+    rm -f "$tmp"
+    return 0
 }
 
 # Value of a header, read from the header block only (up to the first blank line).
