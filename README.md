@@ -91,8 +91,9 @@ Before you run it, read these gotchas:
   `bbs-news` need `/bin/bash` as login shell: sshd runs the ForceCommand through the login
   shell with `-c`, so `nologin` or `/bin/false` breaks it. The `Match User newsstatus`
   block in `etc/sshd-bashbbs.conf` already forbids a terminal, forwarding and rc files.
-- **Only the core parts are installed.** News timers and the status channel are
-  not part of `install.sh` yet.
+- **News needs no timers of its own.** `bbs-publish.timer` and `bbs-drop.timer` handle
+  ingest, retention and the index. `install.sh` installs `bbs-ingest`, `bbs-news-status`,
+  `bbs-news-index` and `bbs-health`; only the two accounts and their keys are manual.
 
 ## Tests
 
