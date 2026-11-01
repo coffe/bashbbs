@@ -40,25 +40,26 @@ safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
 #   C_HEAD 1;35 pink  identity: BBS name, screen titles, section names, rules
 #   C_KEY  1;36 mint  navigation: only the key token (1) N) [B] [Space] [y/N] >)
 #   C_ACC  1;33 gold  news: the * marker, [P] Mail (N), "N new"
+#   C_SUBJ 0;33 orange the subject line of an open post or mail
 #   text   no code    body text and metadata stay in the terminal's own colour
 # Colour is added AFTER safe(), after wrapping and after width measuring, and every
 # coloured token ends with C_RST on the same line.
 COLOR=0 COLOR_ASK=0
 REPLYMAIL=1   # replymail=1|0 in the same file: mail me when someone replies to my post
-C_HEAD= C_KEY= C_ACC= C_RST=
+C_HEAD= C_KEY= C_ACC= C_SUBJ= C_RST=
 
 color_init() { # color_init: set the palette from COLOR
     if (( COLOR )); then
-        C_HEAD=$'\033[1;35m' C_KEY=$'\033[1;36m' C_ACC=$'\033[1;33m' C_RST=$'\033[0m'
+        C_HEAD=$'\033[1;35m' C_KEY=$'\033[1;36m' C_ACC=$'\033[1;33m' C_SUBJ=$'\033[0;33m' C_RST=$'\033[0m'
     else
-        C_HEAD= C_KEY= C_ACC= C_RST=
+        C_HEAD= C_KEY= C_ACC= C_SUBJ= C_RST=
     fi
 }
 
-# paint HEAD|KEY|ACC <text>: the text in a role colour, closed on the same line (no newline).
+# paint HEAD|KEY|ACC|SUBJ <text>: the text in a role colour, closed on the same line (no newline).
 paint() {
     local c
-    case $1 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; *) c= ;; esac
+    case $1 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; SUBJ) c=$C_SUBJ ;; *) c= ;; esac
     printf '%s%s%s' "$c" "$2" "$C_RST"
 }
 # key <token> [label]: the key token in mint, then the label in the default colour.
@@ -1001,10 +1002,13 @@ show_post() {
         echo "deleted $(local_time "$deleted")"
         return
     fi
-    printf '%s\n' "$subject" | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
+    # Wrapped first, then each line coloured and closed (the text is already safe()).
+    printf '%s\n' "$subject" | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width" |
+        while IFS= read -r line; do paint SUBJ "$line"; echo; done
     echo "by $author, $(local_time "$date")"
     [[ -n $edited ]] && echo "edited $(local_time "$edited")"
     printf '%*s\n' "$width" '' | tr ' ' '-'
+    echo
     sed '1,/^$/d' "$file" | safe | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
 }
 

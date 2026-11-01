@@ -147,5 +147,14 @@ evil=$'a\033[31mb\033]0;x\007c'
 check "(m) mail list subject: no ESC from the text" bash -c '[[ $(cat "$1") != *"$2[31m"* && $(cat "$1") != *"$2]0"* ]]' x <(fn 0 mail_view Inbox </dev/null 2>&1) "$ESC"
 check "(m) mail list subject, colour: no ESC[31m" bash -c '[[ $(cat "$1") != *"$2[31m"* && $(cat "$1") != *"$2]0"* ]]' x <(fn 1 mail_view Inbox </dev/null 2>&1) "$ESC"
 
+# (n) An open post or mail: the subject in orange (0;33), each line closed; a blank line
+# under the rule; no colour without COLOR; an ESC in the subject never reaches the screen.
+printf 'Subject: Hej %s[31mrod\nAuthor: bbs-kitty\nDate: 2026-11-01T18:54:00Z\n\nbody line\n' "$ESC" > "$root/post.msg"
+sp1=$(fn 1 show_post "$root/post.msg" 40 2>&1); sp0=$(fn 0 show_post "$root/post.msg" 40 2>&1)
+check "(n) post subject in orange, closed on the line" bash -c '[[ $(head -n1 <<<"$1") == "$2[0;33mHej "*"$2[0m" ]]' x "$sp1" "$ESC"
+check "(n) post subject: no ESC[31m from the text" bash -c '[[ $1 != *"$2[31m"* ]]' x "$sp1" "$ESC"
+check "(n) no colour codes without COLOR" bash -c '[[ $1 != *"$2["* ]]' x "$sp0" "$ESC"
+check "(n) blank line between the rule and the body" bash -c 'grep -A1 "^----" <<<"$1" | sed -n 2p | grep -q "^$" && grep -A2 "^----" <<<"$1" | grep -q "^body line$"' x "$sp0"
+
 echo "color_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]
