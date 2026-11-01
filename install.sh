@@ -127,6 +127,7 @@ install -d -m 0700 -o root -g root /srv/bashbbs/applications/rejected
 # Config is a separate file, so the stock /etc/lighttpd/lighttpd.conf is left alone.
 install -d -m 0755 /var/www/bbs
 install -m 0644 "$src/web/index.html" /var/www/bbs/index.html
+install -m 0644 "$src/web/style.css" /var/www/bbs/style.css
 install -m 0755 "$src/web/apply.cgi" /var/www/bbs/apply.cgi
 if command -v lighttpd >/dev/null; then
     install -d -m 0755 /var/log/lighttpd
