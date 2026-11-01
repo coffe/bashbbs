@@ -129,6 +129,11 @@ This code was written for one installation. These values are hardcoded:
 - `web/index.html` lines 47 and 75: the sysop's name in the footer.
 - Some tests default their scratch directory to a session-specific path.
 
+## Third-party assets
+
+- The Topaz a1200 font (`web/style.css`, embedded as a data URI so the web page
+  shows the ASCII art in Topaz) comes from rewtnull/amigafonts, GPL-FE licence.
+
 ## Status
 
 - **A fresh Raspberry Pi OS Trixie install (Pi Zero W, armv6l) is tested.** The installer
