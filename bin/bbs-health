@@ -1,0 +1,63 @@
+#!/bin/bash
+# Read-only health summary for jelly's !bbs command in the Status room. Prints one
+# key=value line per fact and nothing else. A fact that cannot be read prints "okant".
+# Reads systemd state, passwd names, file times, last(1) and the fail2ban log. Writes
+# nothing and never calls sudo. Forced command for the bbsstatus account (see
+# etc/sshd-bashbbs.conf). Not installed on Zero until Kristofer gives GO.
+set -uo pipefail
+export LC_ALL=C
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+F2B_LOG=${F2B_LOG:-/var/log/fail2ban.log}
+SINCE_DAY=$(date -d '-1 day' '+%Y-%m-%d %H:%M:%S')
+
+svc() { systemctl is-active "$1" 2>/dev/null || true; }
+
+# antal <dir>: files modified in the last day, or okant if the dir cannot be read.
+antal() {
+    if [[ -d $1 && -r $1 ]]; then
+        find "$1" -type f -mtime -1 2>/dev/null | wc -l
+    else
+        echo okant
+    fi
+}
+
+echo "sshd=$(svc ssh)"
+echo "lighttpd=$(svc lighttpd)"
+echo "timer_publish=$(svc bbs-publish.timer)"
+echo "timer_drop=$(svc bbs-drop.timer)"
+echo "timer_keys=$(svc bbs-keys.timer)"
+echo "konton=$(getent passwd | cut -d: -f1 | grep -c '^bbs-')"
+
+if inlogg=$(last -s "$SINCE_DAY" 2>/dev/null); then
+    echo "inloggningar=$(awk '$1 != "wtmp" && $1 != "reboot" && NF' <<< "$inlogg" | wc -l)"
+else
+    echo "inloggningar=okant"
+fi
+
+echo "inlagg=$(antal "$BBS_ROOT/boards")"
+echo "halsningar=$(antal "$BBS_ROOT/wall")"
+
+coffe_home=$(getent passwd bbs-coffe | cut -d: -f6)
+if [[ -n $coffe_home && -d $coffe_home/Maildir/new && -r $coffe_home/Maildir/new ]]; then
+    echo "brev=$(find "$coffe_home/Maildir/new" -type f 2>/dev/null | wc -l)"
+else
+    echo "brev=okant"
+fi
+
+inc=$BBS_ROOT/applications/incoming
+if [[ -d $inc && -r $inc ]]; then
+    echo "ansokningar=$(find "$inc" -maxdepth 1 -name '*.app' 2>/dev/null | wc -l)"
+    # Applicant names, oldest first. apply.cgi already allows only [a-z][a-z0-9]{2,8}; checked again.
+    echo "ansokare=$(find "$inc" -maxdepth 1 -name '*.app' -type f 2>/dev/null | sort | head -n 20 \
+        | xargs -r sed -n 's/^name=//p' 2>/dev/null | grep -E '^[a-z][a-z0-9]{2,8}$' | tr '\n' ' ' | sed 's/ $//')"
+else
+    echo "ansokningar=okant"
+fi
+
+# fail2ban lines start with "YYYY-MM-DD HH:MM:SS,mmm", so a string compare against SINCE_DAY works.
+if [[ -r $F2B_LOG ]]; then
+    echo "bann=$(awk -v since="$SINCE_DAY" '(($1 " " $2) >= since) && / Ban /' "$F2B_LOG" | wc -l)"
+else
+    echo "bann=okant"
+fi

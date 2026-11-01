@@ -20,8 +20,182 @@ me=${login#bbs-}
 sendmail=/usr/sbin/sendmail
 [[ -n ${BASHBBS_TEST:-} && -n ${BBS_SENDMAIL:-} ]] && sendmail=$BBS_SENDMAIL
 
+# Epoch of the previous login, set by welcome_screen; empty means nothing counts as new.
+# Tests set it with BASHBBS_SEEN_PREV.
+SEEN_PREV=""
+[[ -n ${BASHBBS_TEST:-} ]] && SEEN_PREV=${BASHBBS_SEEN_PREV:-}
+
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
+
+# ---- Colour -----------------------------------------------------------------
+# COLOR=1|0 is the user's choice, kept in ~/.bashbbs-prefs as color=1|0 (asked once at
+# the first login, changed in My account). The palette variables are empty strings when
+# COLOR=0, so the code that draws a screen needs no branches. The colour goes only on
+# the frame of a screen (bar, title, rules) and on art files; user text stays through
+# safe(), which strips ESC.
+# Tests: BASHBBS_TEST=1 with no prefs file means COLOR=0 and no question. BASHBBS_COLOR=0|1
+# (tests only) forces the value; BASHBBS_COLOR=ask makes the first-login question appear.
+# Four roles, one meaning each (16-colour SGR; nothing else is ever emitted):
+#   C_HEAD 1;35 pink  identity: BBS name, screen titles, section names, rules
+#   C_KEY  1;36 mint  navigation: only the key token (1) N) [B] [Space] [y/N] >)
+#   C_ACC  1;33 gold  news: the * marker, [P] Mail (N), "N new"
+#   text   no code    body text and metadata stay in the terminal's own colour
+# Colour is added AFTER safe(), after wrapping and after width measuring, and every
+# coloured token ends with C_RST on the same line.
+COLOR=0 COLOR_ASK=0
+REPLYMAIL=1   # replymail=1|0 in the same file: mail me when someone replies to my post
+C_HEAD= C_KEY= C_ACC= C_RST=
+
+color_init() { # color_init: set the palette from COLOR
+    if (( COLOR )); then
+        C_HEAD=$'\033[1;35m' C_KEY=$'\033[1;36m' C_ACC=$'\033[1;33m' C_RST=$'\033[0m'
+    else
+        C_HEAD= C_KEY= C_ACC= C_RST=
+    fi
+}
+
+# paint HEAD|KEY|ACC <text>: the text in a role colour, closed on the same line (no newline).
+paint() {
+    local c
+    case $1 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; *) c= ;; esac
+    printf '%s%s%s' "$c" "$2" "$C_RST"
+}
+# key <token> [label]: the key token in mint, then the label in the default colour.
+key() { paint KEY "$1"; [[ $# -gt 1 ]] && printf ' %s' "$2"; return 0; }
+# keyline <literal text>: prints the line with every "N)" / "Q)" token in mint.
+# Only for fixed strings written in this file, never for user text.
+keyline() {
+    if (( ! COLOR )); then printf '%s\n' "$1"; return; fi
+    printf '%s\n' "$1" | sed -E "s/(^|[[:space:]])([0-9A-Za-z]\\))/\\1${C_KEY}\\2${C_RST}/g"
+}
+
+prefs_load() {
+    local v="" f=$HOME/.bashbbs-prefs
+    COLOR_ASK=0
+    REPLYMAIL=$(sed -n 's/^replymail=\([01]\)$/\1/p' "$f" 2>/dev/null | head -n 1)
+    [[ $REPLYMAIL == 0 ]] || REPLYMAIL=1
+    if [[ -n ${BASHBBS_TEST:-} && ${BASHBBS_COLOR:-} == [01] ]]; then
+        COLOR=$BASHBBS_COLOR
+    else
+        v=$(sed -n 's/^color=//p' "$f" 2>/dev/null | head -n 1)
+        if [[ $v == [01] ]]; then COLOR=$v
+        elif [[ -n ${BASHBBS_TEST:-} && ${BASHBBS_COLOR:-} != ask ]]; then COLOR=0
+        else COLOR=1 COLOR_ASK=1
+        fi
+    fi
+    color_init
+}
+
+# Same pattern as ad_remember: temp file, then rename.
+prefs_save() {
+    local tmp
+    tmp=$(mktemp "$HOME/.bashbbs-prefs.XXXXXX") || return 0
+    printf 'color=%s\nreplymail=%s\n' "$COLOR" "$REPLYMAIL" > "$tmp" && mv -f "$tmp" "$HOME/.bashbbs-prefs" || rm -f "$tmp"
+    return 0
+}
+
+# Once, before the first screen: colour or plain. Not asked again once it is saved.
+prefs_ask() {
+    (( COLOR_ASK )) || return 0
+    [[ -t 0 && -t 1 ]] || { COLOR=0; color_init; return 0; }
+    # A sample line in the four roles, so the choice is made with the colours in view.
+    printf '%s %s %s %s\n' "$(printf '\033[1;35m%s\033[0m' Heading)" "$(printf '\033[1;36m%s\033[0m' Key)" \
+        "$(printf '\033[1;33m%s\033[0m' New)" Text
+    if read_key "Colour (ANSI) or plain ASCII? [A/n] "; then
+        echo
+        [[ $MKEY == [Nn] ]] && COLOR=0 || COLOR=1
+        color_init
+        prefs_save
+    else
+        COLOR=0; color_init
+    fi
+    COLOR_ASK=0
+    return 0
+}
+
+# Art filter. Everything after ESC that is not a well-formed CSI sequence is removed, and
+# OSC (ESC ] ... BEL or ESC \) always. With COLOR=0 (or ansi_strip) CSI goes too.
+_ansi_filter() { # _ansi_filter <keep-csi 0|1>
+    if [[ $1 == 1 ]]; then
+        LC_ALL=C sed -e 's/\x01//g' \
+            -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)\{0,1\}//g' \
+            -e 's/\x1b\(\[[0-9;?]*[ -/]*[@-~]\)/\x01\1/g' \
+            -e 's/\x1b[ -/]*[0-~]\{0,1\}//g' \
+            -e 's/\x01/\x1b/g'
+    else
+        LC_ALL=C sed -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)\{0,1\}//g' \
+            -e 's/\x1b\[[0-9;?]*[ -/]*[@-~]//g' \
+            -e 's/\x1b[ -/]*[0-~]\{0,1\}//g'
+    fi
+}
+ansi_out() { _ansi_filter "$COLOR"; }
+ansi_strip() { _ansi_filter 0; }
+
+# The text of an art file as UTF-8, CR dropped, ESC sequences untouched. A .ans file is
+# CP437: the SAUCE record (from the first Ctrl-Z) is cut off, then iconv.
+# Scene .ans files often have no newlines and rely on the terminal wrapping at 80 columns.
+# Width from SAUCE (TInfo1, DataType 1 / FileType 1) when it is 1-255, else 80.
+_ans_width() { # _ans_width <file>
+    local w
+    w=$(LC_ALL=C tail -c 128 "$1" 2>/dev/null | LC_ALL=C od -An -tu1 -v | tr -s ' \n' ' ' | awk '
+        { for (i = 1; i <= NF; i++) b[i-1] = $i }
+        END { if (NF == 128 && b[0]==83 && b[1]==65 && b[2]==85 && b[3]==67 && b[4]==69 && b[94]==1 && b[95]==1) print b[96] + 256 * b[97]; }')
+    [[ $w =~ ^[0-9]+$ ]] && (( w >= 1 && w <= 255 )) && echo "$w" || echo 80
+}
+# Insert a newline where the visible column would pass <width>. Runs on CP437 bytes.
+_ans_wrap() { # _ans_wrap <width>
+    LC_ALL=C awk -v W="${1:-80}" '{ col = 0; n = length($0); i = 1; out = ""
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c == "\033" && substr($0, i + 1, 1) == "[") {
+            j = i + 2
+            while (j <= n && substr($0, j, 1) ~ /[0-?]/) j++
+            while (j <= n && substr($0, j, 1) ~ /[ -\/]/) j++
+            if (j <= n && substr($0, j, 1) ~ /[@-~]/) {
+                seq = substr($0, i, j - i + 1)
+                if (substr($0, j, 1) == "C") {
+                    p = substr($0, i + 2, j - i - 2); k = (p ~ /^[0-9]+$/) ? p + 0 : 1
+                    if (k == 0) k = 1
+                    if (col + k > W) { out = out "\n"; col = 0 }
+                    col += k
+                }
+                out = out seq; i = j + 1; continue
+            }
+            out = out c; i++; continue
+        }
+        if (c == "\r") { i++; continue }
+        if (col >= W) { out = out "\n"; col = 0 }
+        out = out c; col++; i++
+      }
+      print out }'
+}
+
+art_raw() { # art_raw <file>
+    if [[ $1 == *.ans ]]; then
+        LC_ALL=C sed -n '/\x1a/{s/\x1a.*//;p;q};p' "$1" | _ans_wrap "$(_ans_width "$1")" | iconv -f CP437 -t UTF-8 2>/dev/null | tr -d '\r'
+    else
+        tr -d '\r' < "$1"
+    fi
+}
+
+art_cat() { # art_cat <file>: show an art file (filtered, colour reset after a .ans)
+    art_raw "$1" | ansi_out
+    [[ $1 == *.ans ]] && (( COLOR )) && printf '\033[0m'
+    return 0
+}
+
+# The quick-key bar in colour: the text inside each [ ] in mint, the rest default.
+paint_bar() { # paint_bar <text>
+    local s=$1 out=""
+    if (( ! COLOR )); then printf '%s' "$s"; return; fi
+    while [[ $s =~ ^([^[]*)\[([^]]*)\](.*)$ ]]; do
+        out+="${BASH_REMATCH[1]}[${C_KEY}${BASH_REMATCH[2]}${C_RST}]"
+        s=${BASH_REMATCH[3]}
+    done
+    printf '%s%s' "$out" "$s"
+}
+prefs_load
 
 # ---- Keys -------------------------------------------------------------------
 # A menu choice is one key, no Enter. MKEY holds the key; it is empty for Enter
@@ -129,7 +303,7 @@ read_confirm() { # read_confirm <prompt>
 }
 
 # A screen that only waits: any key goes on.
-pause() { read_key "[Any key] " || true; echo; }
+pause() { read_key "$(paint_bar "[Any key] ")" || true; echo; }
 
 # Up to nine digit keys for a list of <n> entries: "123" for three.
 digit_keys() { # digit_keys <n>
@@ -162,7 +336,7 @@ show_help() { # show_help <text, lines separated by newlines>
     redraw
     local_header "Help"
     printf '%s\n' "$1"
-    echo "[Any key] Back"
+    paint_bar "[Any key] Back"; echo
     read_key_raw || true   # redraw drained before the help was drawn
     MKEY='?'
 }
@@ -221,7 +395,8 @@ list_users() {
 my_account() {
     local uuid keys
     uuid=$(sed -n 's/^uuid=//p' "$BBS_ROOT/users/$me/profile" 2>/dev/null | safe)
-    keys=$(grep -c . "$BBS_ROOT/keys/$USER" 2>/dev/null || echo 0)
+    keys=$(grep -c . "$BBS_ROOT/keys/$login" 2>/dev/null || echo 0)
+    while true; do
     redraw
     local_header "My account"
     echo "Name:  $me"
@@ -234,10 +409,21 @@ my_account() {
     echo "Keys:  $keys registered"
     echo
     echo "[K] SSH keys"
-    read_key "[Any key] " || true
+    echo "[C] Colour: $( ((COLOR)) && echo on || echo off )"
+    echo "[N] Reply mail: $( ((REPLYMAIL)) && echo on || echo off )"
+    read_key "$(paint_bar "[Any key] ")" || true
     echo
+    if [[ $MKEY == [Cc] ]]; then
+        COLOR=$(( 1 - COLOR )); color_init; prefs_save
+        continue
+    fi
+    if [[ $MKEY == [Nn] ]]; then
+        REPLYMAIL=$(( 1 - REPLYMAIL )); prefs_save
+        continue
+    fi
     [[ $MKEY == [Kk] ]] && ssh_keys_menu
     return 0
+    done
 }
 
 # ---- SSH keys ---------------------------------------------------------------
@@ -564,7 +750,7 @@ ssh_keys_menu() {
         keys_list
         echo
         keys_status
-        echo "A) Add  R) Remove  N) Name  Q) Back"
+        keyline "A) Add  R) Remove  N) Name  Q) Back"
         menu_key "> " "AaRrNnQq" "A: add  R: remove  N: rename  Q: back
 !: legacy RSA 1536 key
 untested: no login seen with this key
@@ -587,16 +773,24 @@ nav_req=
 # The [P] Mail label only fits from 50 columns. The key works at every width.
 # When the bar is wider than the terminal, Goodbye goes to a second line.
 top_bar() {
-    local mail="" cols line
+    local mail="" cols line tag="" n=0 f p1 p2=""
     cols=$(term_width)
-    (( cols >= 50 )) && mail=" [P] Mail"
+    # Unread mail on every screen, recomputed on each redraw (glob, no subshell per file).
+    for f in "$HOME"/Maildir/new/*; do [[ -f $f ]] && n=$((n + 1)); done
+    (( n > 0 )) && tag="Mail ($n)"
+    (( cols >= 50 )) && mail=" [P] ${tag:-Mail}"
     line="[B] Boards [M] Main${mail} [W] Wall [G] Goodbye${1:+  $1}"
+    # The width is that of the plain text; the colour is added only when printing.
     if (( ${#line} <= cols )); then
-        echo "$line"
+        p1=$(paint_bar "$line")
     else
-        echo "[B] Boards [M] Main${mail} [W] Wall"
-        echo "[G] Goodbye${1:+  $1}"
+        p1=$(paint_bar "[B] Boards [M] Main${mail} [W] Wall")
+        p2=$(paint_bar "[G] Goodbye${1:+  $1}")
     fi
+    # The unread count is the accent colour.
+    [[ -n $tag && -n $C_ACC ]] && p1=${p1/"$tag"/"${C_ACC}${tag}${C_RST}"}
+    printf '%s\n' "$p1"
+    [[ -n $p2 ]] && printf '%s\n' "$p2"
     echo
 }
 
@@ -616,7 +810,7 @@ nav_key() {
 # The top of every screen: the quick-key bar, the title, one blank line.
 screen_header() { # screen_header <title> [bar text]
     top_bar "[?] Help${2:+  $2}"
-    echo "== $1 =="
+    paint HEAD "== $1 =="; echo
     echo
 }
 
@@ -624,9 +818,9 @@ screen_header() { # screen_header <title> [bar text]
 # short form): no jump keys are shown, because none work there. Same layout as
 # screen_header.
 local_header() { # local_header <title> [bar text]
-    echo "[?] Help${2:+  $2}"
+    paint_bar "[?] Help${2:+  $2}"; echo
     echo
-    echo "== $1 =="
+    paint HEAD "== $1 =="; echo
     echo
 }
 
@@ -646,10 +840,10 @@ board_menu() {
         done
         local i=1
         for b in "${boards[@]}"; do
-            echo "$i) $b"
+            echo "$(key "$i)") $b"
             i=$((i + 1))
         done
-        echo "K) New private board   Q) Back"
+        keyline "K) New private board   Q) Back"
         menu_key "> " "KkQq$(digit_keys "${#boards[@]}")" \
 "Number: open a board
 K: new private board   Q: back
@@ -782,9 +976,107 @@ visible_posts() { # visible_posts <board>
         }'
 }
 
+# Threads of a board, newest activity first. One line per thread:
+#   root-file<TAB>posts<TAB>last-epoch<TAB>new (1 if a post is newer than <since>, else 0)
+# The root is found by following Parent upwards until a post has none or its parent is not
+# listed. Only posts visible_posts lets through take part; "last" and "new" look at active
+# posts only (the epoch is the file name prefix). With <root-file> the output is instead
+# the files of that thread, in file order. Only headers are read; nothing is written.
+board_threads() { # board_threads <board> [since] [root-file]
+    visible_posts "$1" | awk -v since="${2:-}" -v want="${3:-}" -v board="$1" -v me="${me:-}" -v marks="$READ_FILE" '
+        function hdr(line) { sub(/\r$/, "", line); return substr(line, index(line, ":") + 2) }
+        BEGIN {
+            # ~/.bashbbs-read: "<board> <root-msgid> <epoch>"; bad lines are ignored.
+            while (marks != "" && (getline ml < marks) > 0) {
+                if (split(ml, mf, " ") != 3 || mf[1] != board) continue
+                if (mf[1] !~ /^[a-z0-9][a-z0-9_-]*$/ || mf[2] !~ /^[A-Za-z0-9._@:-]+$/ || mf[3] !~ /^[0-9]+$/) continue
+                if (mf[3] + 0 > mark[mf[2]] + 0) mark[mf[2]] = mf[3]
+            }
+            if (marks != "") close(marks)
+        }
+        { file[++n] = $0; id[n] = ""; par[n] = ""; del[n] = 0; au[n] = ""
+          while ((getline line < $0) > 0 && line != "" && line != "\r") {
+              if (line ~ /^Msgid:/) id[n] = hdr(line)
+              else if (line ~ /^Author:/) au[n] = hdr(line)
+              else if (line ~ /^Parent:/) par[n] = hdr(line)
+              else if (line ~ /^Deleted:/) del[n] = 1
+          }
+          close($0)
+          m = split($0, seg, "/"); ep[n] = seg[m]; sub(/-.*/, "", ep[n])
+          if (id[n] != "") at[id[n]] = n }
+        END {
+            for (i = 1; i <= n; i++) {
+                j = i
+                for (step = 0; step < 1000 && par[j] != "" && (par[j] in at) && at[par[j]] != j; step++) j = at[par[j]]
+                root[i] = j
+                cnt[j]++
+                if (!del[i]) {
+                    if (ep[i] + 0 > last[j] + 0) last[j] = ep[i]
+                }
+            }
+            # New = a post by someone else, newer than the login epoch and the thread mark.
+            for (i = 1; i <= n; i++) {
+                if (del[i] || (me != "" && au[i] == me)) continue
+                j = root[i]; th = since
+                if (id[j] in mark) { if (th == "" || mark[id[j]] + 0 > th + 0) th = mark[id[j]] }
+                if (th != "" && ep[i] + 0 > th + 0) isnew[j] = 1
+            }
+            for (i = 1; i <= n; i++) {
+                if (want != "") { if (file[root[i]] == want) print file[i]; continue }
+                if (root[i] == i) printf "%s\t%d\t%s\t%d\n", file[i], cnt[i], last[i] + 0, isnew[i] + 0
+            }
+        }' | { if [[ -n ${3:-} ]]; then cat; else sort -t$'\t' -k3,3nr -k1,1r; fi; }
+}
+
+# Per-thread read marks: ~/.bashbbs-read, lines "<board> <root-msgid> <epoch>".
+READ_FILE=$HOME/.bashbbs-read
+READ_ID_RE='^[A-Za-z0-9._@:-]+$'
+READ_BOARD_RE='^[a-z0-9][a-z0-9_-]*$'
+
+read_mark() { # read_mark <board> <root-msgid>: the highest epoch read, or nothing
+    [[ $1 =~ $READ_BOARD_RE && $2 =~ $READ_ID_RE && -f $READ_FILE ]] || return 0
+    awk -v b="$1" -v i="$2" 'NF == 3 && $1 == b && $2 == i && $3 ~ /^[0-9]+$/ && $3 + 0 > m + 0 { m = $3 } END { if (m != "") print m }' "$READ_FILE"
+}
+
+# Raise the mark (never lower it). Temp file + rename, bad lines dropped, last 2000 kept.
+read_mark_save() { # read_mark_save <board> <root-msgid> <epoch>
+    local tmp
+    [[ $1 =~ $READ_BOARD_RE && $2 =~ $READ_ID_RE && $3 =~ ^[0-9]+$ ]] || return 0
+    tmp=$(mktemp "$HOME/.bashbbs-read.XXXXXX" 2>/dev/null) || return 0
+    {
+        [[ -f $READ_FILE ]] && awk -v b="$1" -v i="$2" -v e="$3" '
+            NF == 3 && $1 ~ /^[a-z0-9][a-z0-9_-]*$/ && $2 ~ /^[A-Za-z0-9._@:-]+$/ && $3 ~ /^[0-9]+$/ {
+                if ($1 == b && $2 == i) { if ($3 + 0 > e + 0) e = $3; next }
+                print }
+            END { print b, i, e }' "$READ_FILE" || printf '%s %s %s\n' "$1" "$2" "$3"
+        [[ -f $READ_FILE ]] || printf '%s %s %s\n' "$1" "$2" "$3"
+    } | tail -n 2000 > "$tmp" && mv -f "$tmp" "$READ_FILE" || rm -f "$tmp"
+    return 0
+}
+
+# One thread-list row as plain text lines: "  3) subject wrapped         (4) *".
+# The count and the star sit at the end of the first line; the subject wraps to the room
+# left, later lines hang under it. Columns are counted by wrap.py, so å ä ö never split.
+thread_row() { # thread_row <number> <width> <suffix> <subject>
+    PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=UTF-8 python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from wrap import wrap, vwidth
+num, width, suffix, subject = int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
+room = max(width - vwidth(suffix) - 1, 10)
+lines = wrap(subject, room) or [""]
+first = lines[0] + " " * max(width - vwidth(suffix) - vwidth(lines[0]), 1)
+print("%3d) %s%s" % (num, first, suffix))
+for l in lines[1:]:
+    print("     " + l)
+' "$NEWS_LIB" "$@"
+}
+
+# The thread list of a board. A number opens the thread. Rows with posts newer than the
+# last login are green, the others light grey (no colour: plain text, rows end in "*").
 board_view() {
     local board=$1 f rc keys hint wrapw
-    local -a files=()
+    local -a rows=() roots=() counts=() news=()
     # A news board with a section marker shows sections, not a thread list.
     if [[ $board == news && -f $BBS_ROOT/meta/news.sections ]]; then
         news_board
@@ -796,31 +1088,43 @@ board_view() {
         # Measured here, not inside the pipe below: there stdin is not the terminal and
         # term_width would fall back to 76 columns.
         wrapw=$(( $(term_width) - 5 ))
-        mapfile -t files < <(visible_posts "$board")
-        local i=1 subject
-        for f in "${files[@]}"; do
-            # Word wrap with a hanging indent, so a title fits the terminal. wrap.py counts
-            # columns, not bytes, so å ä ö and wide characters never split.
-            subject=$(sed -n 's/^Subject: //p' "$f" | head -n 1 | safe)
-            printf '%s' "$subject" | python3 "$NEWS_LIB/wrap.py" "$wrapw" \
-                | awk -v n="$i" 'NR == 1 { printf "%3d) %s\n", n, $0; next } { print "     " $0 }'
+        mapfile -t rows < <(board_threads "$board" "$SEEN_PREV")
+        roots=() counts=() news=()
+        local i=1 subject row suffix rest line cnt isnew
+        for row in "${rows[@]}"; do
+            IFS=$'\t' read -r f cnt _ isnew <<< "$row"
+            roots+=("$f") counts+=("$cnt") news+=("$isnew")
+            subject=$(post_hdr "$f" Subject)
+            [[ -n $(post_hdr "$f" Deleted) ]] && subject="(deleted)"
+            suffix="($cnt)"
+            (( isnew )) && suffix+=" *"
+            # Wrap on the plain text first, colour each finished line after: the number
+            # in mint, the trailing * of a new thread in gold, the subject stays default.
+            while IFS= read -r line; do
+                if (( COLOR )) && [[ $line =~ ^(\ *)([0-9]+\))(.*)$ ]]; then
+                    rest=${BASH_REMATCH[3]}
+                    (( isnew )) && [[ $rest == *' *' ]] && rest="${rest% \*} $(paint ACC '*')"
+                    line="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}")$rest"
+                fi
+                printf '%s\n' "$line"
+            done < <(thread_row "$i" "$wrapw" "$suffix" "$subject")
             echo
             i=$((i + 1))
         done
         keys=Qq hint="Q: back"
         if is_readonly "$board"; then
-            echo "Q) Back"
+            keyline "Q) Back"
         elif manages "$board"; then
-            echo "N) New post   S) Members   Q) Back"
+            keyline "N) New post   S) Members   Q) Back"
             keys+=NnSs hint="N: new post   S: members   Q: back"
         else
-            echo "N) New post   Q) Back"
+            keyline "N) New post   Q) Back"
             keys+=Nn hint="N: new post   Q: back"
         fi
         # A read-only board has no N. Its owner can still reach S.
         is_readonly "$board" && manages "$board" && keys+=Ss
-        menu_key "> " "$keys$(digit_keys "${#files[@]}")" \
-"Number: read a post
+        menu_key "> " "$keys$(digit_keys "${#roots[@]}")" \
+"Number: read a thread (* = new)
 $hint
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -828,19 +1132,76 @@ B M P W: jump   G: log out" || return
             [Qq]) return ;;
             [Nn]) is_readonly "$board" || compose "$board" ""; continue ;;
             [Ss]) manages "$board" && members_menu "$board"; continue ;;
-            [1-9]) read_num "${#files[@]}" || continue ;;
+            [1-9]) read_num "${#roots[@]}" || continue ;;
             *) continue ;;
         esac
-        f=${files[NUM - 1]}
-        while true; do
-            redraw
-            local_header "$board" "[Q] Back"
-            show_post "$f" "$(term_width)"
-            echo
-            post_actions "$board" "$f"; rc=$?
-            (( rc == 2 )) || break
-        done
+        thread_view "$board" "${roots[NUM - 1]}"; rc=$?
         (( rc == 1 )) && return
+    done
+}
+
+# Read one thread, one post per screen, in file order. Starts at the first post newer than
+# the last login, else at #1. Space goes on (after the last post: back to the list),
+# P back. Returns 0 for the list, 1 at end of input.
+thread_view() { # thread_view <board> <root-file>
+    local rid rc
+    rid=$(post_hdr "$2" Msgid)
+    TV_TH=$SEEN_PREV TV_MAX=""
+    if [[ $rid =~ $READ_ID_RE ]]; then
+        local m
+        m=$(read_mark "$1" "$rid")
+        [[ -n $m ]] && { [[ -z $TV_TH ]] || (( m > TV_TH )); } && TV_TH=$m
+    fi
+    _thread_view "$@"; rc=$?
+    [[ $rid =~ $READ_ID_RE && -n $TV_MAX ]] && read_mark_save "$1" "$rid" "$TV_MAX"
+    return $rc
+}
+
+_thread_view() {
+    local board=$1 root=$2 f i k=0 n rc id p pid at date author width head ep
+    local -a files=() ids=()
+    mapfile -t files < <(board_threads "$board" "$SEEN_PREV" "$root")
+    n=${#files[@]}
+    (( n )) || return 0
+    for f in "${files[@]}"; do ids+=("$(post_hdr "$f" Msgid)"); done
+    # The first new, active post; the file name starts with the publish epoch.
+    if [[ -n $TV_TH ]]; then
+        for (( i = 0; i < n; i++ )); do
+            ep=$(basename "${files[i]}"); ep=${ep%%-*}
+            [[ -z $(post_hdr "${files[i]}" Deleted) && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )) && { k=$i; break; }
+        done
+    fi
+    while true; do
+        f=${files[k]}
+        redraw
+        local_header "$board" "[Q] Back"
+        width=$(term_width)
+        author=$(post_hdr "$f" Author); date=$(local_time "$(post_hdr "$f" Date)")
+        head="#$((k + 1))/$n  $author  $date"
+        pid=$(post_hdr "$f" Parent); at=""
+        if [[ -n $pid ]]; then
+            for (( i = 0; i < n; i++ )); do [[ ${ids[i]} == "$pid" ]] && at=$((i + 1)); done
+            [[ -n $at ]] && head+="  · reply to #$at"
+        fi
+        (( ${#head} > width )) && head=$(printf '%s' "$head" | fold -s -w "$width")
+        ep=$(basename "$f"); ep=${ep%%-*}
+        if [[ $ep =~ ^[0-9]+$ ]] && { [[ -z $TV_MAX ]] || (( 10#$ep > TV_MAX )); }; then TV_MAX=$((10#$ep)); fi
+        if [[ -n $TV_TH && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )); then
+            printf '%s' "$head"; (( COLOR && ${#head} + 5 <= width )) && printf '  %s' "$(paint ACC new)"; echo
+        else
+            echo "$head"
+        fi
+        echo
+        show_post "$f" "$width"
+        echo
+        post_actions "$board" "$f"; rc=$?
+        case $rc in
+            1) return 1 ;;
+            2) ;;
+            3) (( k + 1 < n )) && k=$((k + 1)) || return 0 ;;
+            4) (( k > 0 )) && k=$((k - 1)) ;;
+            *) return 0 ;;
+        esac
     done
 }
 
@@ -849,24 +1210,35 @@ post_hdr() { sed '/^$/q' "$1" | sed -n "s/^$2: *//p" | head -n 1 | safe; }
 
 # Commands under an open post. Deleted posts and read-only boards have none.
 # Edit is for the author. Delete is for the author, the board owner and sysops.
-# Returns 0 for back to the list, 1 at end of input, 2 to redraw the post.
+# Space (next) and P (previous) move inside the thread.
+# Returns 0 for back to the list, 1 at end of input, 2 to redraw the post, 3 next, 4 previous.
 post_actions() { # post_actions <board> <file>
-    local board=$1 f=$2 cmds="" keys=Qq hint="Q: back"
+    local board=$1 f=$2 cmds="" keys="Qq Pp" hint="Space: next  P: previous
+"
     local author
     author=$(post_hdr "$f" Author)
     if [[ -z $(post_hdr "$f" Deleted) ]] && ! is_readonly "$board"; then
-        cmds="R) Reply"; keys+=Rr hint="R: reply"
+        cmds+="R) Reply"; keys+=Rr hint+="R: reply"
         [[ $author == "$me" ]] && { cmds+="  E) Edit"; keys+=Ee; hint+="  E: edit"; }
         if [[ $author == "$me" ]] || is_sysop || manages "$board"; then
             cmds+="  D) Delete"; keys+=Dd; hint+="  D: delete"
         fi
     fi
-    echo "${cmds:+$cmds  }Q) Back"
+    # Two lines: the full line does not fit in 40 columns.
+    # Both lines are built first and written at once (a test harness reacts to "Prev").
+    local l1="[Space] Next  P) Prev" l2="${cmds:+$cmds  }Q) Back"
+    if (( COLOR )); then
+        l1=$(keyline "$l1" | sed -E "s/\[Space\]/${C_KEY}[Space]${C_RST}/"); l2=$(keyline "$l2")
+    fi
+    printf '%s\n%s\n' "$l1" "$l2"
     # Inside an open post the jump keys are off.
-    menu_key "> " "$keys" "$hint  Q: back" local || return 1
+    [[ $hint == *$'\n' ]] && hint+="Q: back" || hint+="  Q: back"
+    menu_key "> " "$keys" "$hint" local || return 1
     case $MKEY in
         '?') return 2 ;;
-        [Rr]) compose "$board" "$(post_hdr "$f" Msgid)" ;;
+        ' ') return 3 ;;
+        [Pp]) return 4 ;;
+        [Rr]) reply_to "$board" "$f" ;;
         [Ee]) edit_post "$board" "$f" ;;
         [Dd]) delete_post "$board" "$f" ;;
     esac
@@ -885,7 +1257,7 @@ edit_post() { # edit_post <board> <file>
     [[ -n $new ]] && subject=$new
     while true; do
         drain_input   # before the prompt is drawn, never between it and the read
-        echo "K) Keep text   N) New text   Q) Cancel"
+        keyline "K) Keep text   N) New text   Q) Cancel"
         menu_key "> " "KkNnQq" "K: keep the text   N: write new text
 Q: cancel the edit" local || return
         [[ $MKEY == '?' ]] || break
@@ -930,13 +1302,39 @@ read_body() {
     done
 }
 
+# Reply to post <file>: Parent is that post's Msgid, the subject starts as "Re: <subject>"
+# (Re: only once, at most 100 characters) and Enter keeps it. Then the quote question.
+reply_to() { # reply_to <board> <file>
+    local subject
+    subject=$(post_hdr "$2" Subject)
+    [[ $subject =~ ^[Rr][Ee]:[[:space:]] ]] || subject="Re: $subject"
+    compose "$1" "$(post_hdr "$2" Msgid)" "$(printf '%s' "$subject" | head -c 100)" "$2"
+}
+
+# At most 6 lines of a post's text, each with "> " before. Lines that already start with
+# ">" (an older quote) and blank lines are skipped, so quotes do not pile up.
+quote_lines() { # quote_lines <file>
+    sed '1,/^$/d' "$1" | safe | grep -v -e '^>' -e '^[[:space:]]*$' | head -n 6 | sed 's/^/> /'
+}
+
 # Write one post into the queue. The publisher checks it and copies it
 # into boards/. Users cannot write into boards/ themselves.
-compose() {
-    local board=$1 parent=$2 subject tmp
-    rline subject "Subject: " || return
+# A reply passes a default subject and the post to quote; Enter keeps the subject.
+compose() { # compose <board> <parent> [default subject] [post to quote]
+    local board=$1 parent=$2 defsub=${3:-} quote=${4:-} subject tmp ql=""
+    if [[ -n $defsub ]]; then
+        rline subject "Subject [Enter keeps \"$(list_fit "$(( $(list_width) - 32 ))" "$defsub")\"]: " || return
+    else
+        rline subject "Subject: " || return
+    fi
     subject=$(printf '%s' "$subject" | safe | head -c 100)
+    [[ -n $subject ]] || subject=$defsub
     [[ -n $subject ]] || return
+    if [[ -n $quote ]]; then
+        read_key "Quote? [Y/n] " || return
+        echo
+        [[ $MKEY == [Nn] ]] || ql=$(quote_lines "$quote")
+    fi
     echo "Write text. End with a single dot (.)."
     tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX") || return
     {
@@ -944,6 +1342,7 @@ compose() {
         printf 'Subject: %s\n' "$subject"
         [[ -n $parent ]] && printf 'Parent: %s\n' "$parent"
         printf '\n'
+        [[ -n $ql ]] && printf '%s\n\n' "$ql"
         read_body
     } > "$tmp"
     mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
@@ -990,7 +1389,7 @@ members_menu() {
         echo "Members: $(getent group "bbsb-$board" | cut -d: -f4 | sed 's/bbs-//g; s/,/ /g')" \
             | python3 "$NEWS_LIB/wrap.py" "$cols"
         echo
-        echo "A) Add   R) Remove   Q) Back"
+        keyline "A) Add   R) Remove   Q) Back"
         menu_key "> " "AaRrQq" "A: add a member   R: remove one
 Q: back" local || return
         [[ $MKEY == '?' ]] || break
@@ -1015,12 +1414,22 @@ Q: back" local || return
 # files in the own Maildir. The other side keeps its copy.
 
 mail_menu() {
+    local note="" n
     while true; do
         redraw
         screen_header "Private messages" "[Q] Back"
-        echo "1) Inbox   2) Write"
-        echo "3) Sent    4) Trash   Q) Back"
-        menu_key "> " "1234Qq" "1-4: Inbox, Write, Sent, Trash
+        {
+            # Unread mail: the word Inbox in the accent colour (the 1) key stays mint).
+            local l1; l1=$(keyline "1) Inbox   2) Write")
+            (( COLOR )) && (( $(mail_unread) > 0 )) && l1=${l1/Inbox/"${C_ACC}Inbox${C_RST}"}
+            printf '%s\n' "$l1"
+        }
+        keyline "3) Sent    4) Trash   Q) Back"
+        keyline "L) Look 4 new mail"
+        [[ -n $note ]] && { echo; echo "$note"; }
+        note=""
+        menu_key "> " "1234QqLl" "1-4: Inbox, Write, Sent, Trash
+L: look 4 new mail
 Q: back   B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
@@ -1028,6 +1437,9 @@ Q: back   B M P W: jump   G: log out" || return
             2) mail_write ;;
             3) mail_view Sent ;;
             4) mail_view Trash ;;
+            [Ll]) n=$(mail_unread)
+                if (( n > 0 )); then note="$(count_text "$n" "new message" "new messages")"
+                else note="No new mail."; fi ;;
             [Qq]) return ;;
         esac
         [[ -n $nav_req ]] && return
@@ -1173,7 +1585,7 @@ mail_reply() { # mail_reply <file>
 
 # A folder list. Unread messages in new are marked with *.
 mail_view() { # mail_view <Inbox|Sent|Trash>
-    local folder=$1 dir f mark i width
+    local folder=$1 dir f mark i width row
     local -a files
     while true; do
         redraw
@@ -1187,25 +1599,35 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
         if (( ${#files[@]} == 0 )); then
             echo "No messages."
             echo
-            pause
-            return
+            keyline "R) Refresh   Q) Back"
+            menu_key "> " "QqRr" "R: look for new mail
+Q: back" local || return
+            [[ $MKEY == [Qq] ]] && return
+            continue
         fi
         i=1
         width=$(( $(list_width) - 7 ))  # "%3d) %s " is 7 columns
         for f in "${files[@]}"; do
             mark=" "
             [[ $f == "$dir"/new/* ]] && mark="*"
-            printf '%3d) %s %s\n' "$i" "$mark" "$(list_fit "$width" "$(post_hdr "$f" Subject)")"
+            row=$(printf '%3d) %s %s' "$i" "$mark" "$(list_fit "$width" "$(post_hdr "$f" Subject)" | safe)")
+            if (( COLOR )) && [[ $row =~ ^(\ *)([0-9]+\))\ (.)(.*)$ ]]; then
+                [[ ${BASH_REMATCH[3]} == '*' ]] && mark=$(paint ACC '*') || mark=${BASH_REMATCH[3]}
+                row="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}") ${mark}${BASH_REMATCH[4]}"
+            fi
+            printf '%s\n' "$row"
             i=$((i + 1))
         done
         echo
-        echo "Number: open   Q) Back"
+        keyline "Number: open   R) Refresh   Q) Back"
         # Inside a mailbox the jump keys are off: Q goes back one level.
-        menu_key "> " "Qq$(digit_keys "${#files[@]}")" \
+        menu_key "> " "QqRr$(digit_keys "${#files[@]}")" \
 "Number: open a message
+R: look for new mail
 Q: back" local || return
         case $MKEY in
             [Qq]) return ;;
+            [Rr]) continue ;;
             [1-9]) read_num "${#files[@]}" || continue ;;
             *) continue ;;
         esac
@@ -1271,12 +1693,17 @@ main_menu() {
     while true; do
         redraw
         screen_header "BashBBS"
-        echo "1) Public boards"
-        echo "2) Wall"
-        echo "3) Users"
-        echo "4) My account"
-        echo "5) Private messages   ($(mail_unread) unread)"
-        echo "Q) Log out"
+        keyline "1) Public boards"
+        keyline "2) Wall"
+        keyline "3) Users"
+        keyline "4) My account"
+        {
+            local un; un=$(mail_unread)
+            printf '%s' "$(keyline "5) Private messages   ")"
+            if (( un > 0 )); then paint ACC "($un unread)"; else printf '(%s unread)' "$un"; fi
+            echo
+        }
+        keyline "Q) Log out"
         menu_key "> " "12345Qq" "1-5: pick a section
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }
@@ -1364,7 +1791,7 @@ wall_menu() {
             echo
         fi
         echo "Page $((page + 1)) of $pages"
-        echo "[Space] Next  N) Write  Q) Back  [?]"
+        paint_bar "[Space] Next  N) Write  Q) Back  [?]"; echo
         menu_key "> " "NnQq " "N: write a greeting
 [Space]: next page   Q: back
 B M P W: jump   G: log out" || { nav_req=quit; return; }
@@ -1382,19 +1809,31 @@ B M P W: jump   G: log out" || { nav_req=quit; return; }
 
 # Shown on logout. Plain ASCII only, so it works on any terminal.
 goodbye() {
+    local g f
+    for g in goodbye.ans goodbye.txt; do
+        [[ $g == *.ans ]] && (( ! COLOR )) && continue
+        f=$BBS_ROOT/etc/$g
+        if [[ -f $f && ! -L $f && -r $f ]] && (( $(stat -c %s "$f") <= ADS_MAX_BYTES )); then
+            art_cat "$f"
+            printf '%s\n' "${C_RST}Bye."
+            return 0
+        fi
+    done
+    printf '%s' "$C_HEAD"
     cat <<'EOF'
     .-----------.
     |  BashBBS  |
     |  bye bye  |
     '-----------'
 EOF
+    printf '%s' "$C_RST"
     cat <<'EOF'
         /\_/\
        ( o.o )
         > ^ <
 
 EOF
-    echo "Bye."
+    printf '%s\n' "${C_RST}Bye."
 }
 
 # ---- Ads at logout ----------------------------------------------------------
@@ -1409,10 +1848,15 @@ ad_pick() { # ad_pick: prints the name of one ad, or nothing
     local f n last=""
     local -a fit=() again=()
     last=$(head -n 1 "$HOME/.bashbbs-ad" 2>/dev/null) || last=""
-    for f in "$BBS_ROOT"/etc/ads/*.txt; do
+    for f in "$BBS_ROOT"/etc/ads/*.txt "$BBS_ROOT"/etc/ads/*.ans; do
         n=${f##*/}
-        [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.txt$ && -f $f && ! -L $f && -r $f ]] || continue
+        [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.(txt|ans)$ && -f $f && ! -L $f && -r $f ]] || continue
         (( $(stat -c %s "$f") <= ADS_MAX_BYTES )) || continue
+        # .ans before .txt in colour; a .ans is never shown in plain mode.
+        if [[ $n == *.ans ]]; then (( COLOR )) || continue
+        elif (( COLOR )) && [[ -f ${f%.txt}.ans && ! -L ${f%.txt}.ans && -r ${f%.txt}.ans ]] \
+            && (( $(stat -c %s "${f%.txt}.ans") <= ADS_MAX_BYTES )); then continue
+        fi
         fit+=("$n")
         [[ $n == "$last" ]] || again+=("$n")
     done
@@ -1431,16 +1875,18 @@ ad_remember() { # ad_remember <name>
     return 0
 }
 
-# Shows one ad. Space ends it; so does end of input (a lost connection), so logout
-# never hangs. Keys typed before the ad are drained, so a stray Space cannot skip it.
+# Shows one ad under the Goodbye screen, which stays on the screen. Space ends it; so
+# does end of input (a lost connection), so logout never hangs. Keys typed before the
+# ad are drained, so a stray Space cannot skip it.
 ad_run() {
     local name c
     [[ -t 0 && -t 1 ]] || return 0
     name=$(ad_pick)
     [[ -n $name ]] || return 0
-    redraw
-    tr -d '\r' < "$BBS_ROOT/etc/ads/$name" || return 0
-    printf '\033[0m\n[Space] Bye\n'
+    drain_input
+    printf '\n'
+    art_cat "$BBS_ROOT/etc/ads/$name" || return 0
+    printf '\033[0m\n'; paint_bar "[Space] Bye"; echo
     ad_remember "$name"
     while IFS= read -rsn1 c; do
         [[ $c == ' ' ]] && break
@@ -1507,11 +1953,17 @@ intro_file() { # intro_file <name>: prints the path when it is a plain, small fi
     local f=$BBS_ROOT/etc/intro/$1
     [[ -f $f && ! -L $f && -r $f ]] || return 1
     (( $(stat -c %s "$f") <= INTRO_MAX_BYTES )) || return 1
+    # In colour a NAME.ans next to NAME.txt is shown instead of it.
+    if (( COLOR )) && [[ $1 == *.txt ]]; then
+        local t=${f%.txt}.ans
+        if [[ -f $t && ! -L $t && -r $t ]] && (( $(stat -c %s "$t") <= INTRO_MAX_BYTES )); then f=$t; fi
+    fi
     printf '%s' "$f"
 }
 
 intro_width() { # intro_width <file>: widest line in terminal columns
-    tr -d '\r' < "$1" | LC_ALL=C.UTF-8 wc -L
+    # Colour codes take no room: count the text without them.
+    art_raw "$1" | ansi_strip | LC_ALL=C.UTF-8 wc -L
 }
 
 # Wait up to <seconds> for Space. Returns 0 when it ended on Space, 1 on timeout,
@@ -1557,7 +2009,7 @@ intro_run() {
         fi
         (( shown )) && drain_input
         redraw
-        tr -d '\r' < "$f" | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
+        art_raw "$f" | ansi_out | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
         printf '\033[0m'
         c=$(intro_file "${caption:--}") || c=""
         if [[ -n $c ]] && (( $(intro_width "$c") > cols )); then
@@ -1566,7 +2018,7 @@ intro_run() {
         fi
         if [[ -n $c ]]; then
             echo
-            tr -d '\r' < "$c"
+            art_raw "$c" | ansi_out
             printf '\033[0m\n'
         fi
         shown=1
@@ -1581,6 +2033,7 @@ welcome_screen() {
     local seen=$HOME/.bashbbs-seen prev=""
     prev=$(sed -n 's/^login=//p' "$seen" 2>/dev/null | head -n 1)
     [[ $prev =~ ^[0-9]+$ ]] || prev=""
+    SEEN_PREV=$prev   # the thread list marks posts newer than this
     printf 'login=%s\n' "$(date +%s)" > "$seen" 2>/dev/null || true
     while true; do
         redraw
@@ -1597,7 +2050,7 @@ welcome_screen() {
             echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
         fi
         echo
-        echo "[Any key] Main"
+        paint_bar "[Any key] Main"; echo
         printf '> '
         # redraw drained before this screen was drawn; nothing drains here.
         read_key_raw || { nav_req=quit; return; }
@@ -1616,7 +2069,7 @@ welcome_screen() {
 
 # The tests source this file for its functions and skip the start loop.
 if [[ -z ${BASHBBS_TEST:-} ]]; then
-    intro_run
+    prefs_ask; intro_run
     welcome_screen
     # A section that returns without a nav request (Q) goes back to the main menu.
     while true; do

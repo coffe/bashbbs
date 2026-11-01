@@ -68,14 +68,14 @@ check "goodbye screen unchanged" cmp -s <(menu_fn "$root/head/lib/menu.sh" goodb
 # 8. Screens in a pty at 80 columns: Space ends it, end of input ends it, no ads is silent.
 drv=$root/ads_drv.py
 cat > "$drv" <<'PY'
-import fcntl, os, pty, select, struct, subprocess, sys, termios, time
+import fcntl, os, pty, re, select, struct, subprocess, sys, termios, time
 LIB, ROOT, HOME, MODE = sys.argv[1:5]
 ads = [n for n in os.listdir(ROOT + "/etc/ads")]
 art = open(ROOT + "/etc/ads/" + ads[0], "rb").read() if ads else b"\x00none"
 m, s = pty.openpty()
 fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 env = dict(os.environ, BBS_ROOT=ROOT, HOME=HOME, BASHBBS_TEST="1", BASHBBS_TEST_ID="bbs-adtest", TERM="xterm")
-p = subprocess.Popen(["bash", "-c", 'source "$1"; ad_run; echo DONE', "x", LIB],
+p = subprocess.Popen(["bash", "-c", 'source "$1"; goodbye; ad_run; echo DONE', "x", LIB],
                      stdin=s, stdout=s, stderr=s, env=env, start_new_session=True)
 os.close(s)
 out, end, sent = b"", time.time() + 5, False
@@ -103,20 +103,23 @@ try:
 except subprocess.TimeoutExpired:
     p.kill(); rc = "HANG"
 art_ok = int(art.replace(b"\r", b"") in out.replace(b"\r", b"")) if ads else 0
-print("RESULT %s rc=%s art=%d bye=%d done=%d" % (MODE, rc, art_ok, int(b"[Space] Bye" in out), int(b"DONE" in out)))
+after = out[out.find(b"Bye."):]
+cleared = re.search(rb"\x1b\[[0-3]?J", after) is not None
+cat_ok = int(0 <= out.find(b"Bye.") and not cleared and (not ads or out.find(b"Bye.") < out.find(art.replace(b"\r", b"").split(b"\n")[0])))
+print("RESULT %s rc=%s art=%d bye=%d done=%d cat=%d" % (MODE, rc, art_ok, int(b"[Space] Bye" in out), int(b"DONE" in out), cat_ok))
 PY
 pty_root=$root/pty; mkdir -p "$pty_root/etc/ads" "$pty_root/home"
 cp "$ads/a.txt" "$pty_root/etc/ads/"
 check "the ad is 80 columns or less" bash -c 'test "$(awk "{ if (length > m) m = length } END { print m }" "$1")" -le 80' x "$ads/a.txt"
-check "space: ad shown unchanged, Space ends it, logout completes" eq \
-    "$(python3 "$drv" "$lib" "$pty_root" "$pty_root/home" space)" "RESULT space rc=0 art=1 bye=1 done=1"
+check "space: cat stays, ad below it, Space ends it, logout completes" eq \
+    "$(python3 "$drv" "$lib" "$pty_root" "$pty_root/home" space)" "RESULT space rc=0 art=1 bye=1 done=1 cat=1"
 # Input closed mid-screen: the shell gets SIGHUP (rc=-1) and must not hang (rc=HANG).
 check "end of input: logout does not hang" bash -c \
-    'python3 "$1" "$2" "$3" "$4" eof | grep -qE "^RESULT eof rc=-?[0-9]+ art=1 bye=1 done=0$"' x \
+    'python3 "$1" "$2" "$3" "$4" eof | grep -qE "^RESULT eof rc=-?[0-9]+ art=1 bye=1 done=0 cat=1$"' x \
     "$drv" "$lib" "$pty_root" "$pty_root/home"
 empty_root=$root/empty; mkdir -p "$empty_root/etc/ads" "$empty_root/home"
-check "no ads: no screen, logout completes" eq \
-    "$(python3 "$drv" "$lib" "$empty_root" "$empty_root/home" none)" "RESULT none rc=0 art=0 bye=0 done=1"
+check "no ads: cat stays, no ad screen, logout completes" eq \
+    "$(python3 "$drv" "$lib" "$empty_root" "$empty_root/home" none)" "RESULT none rc=0 art=0 bye=0 done=1 cat=1"
 
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

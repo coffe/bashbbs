@@ -72,6 +72,15 @@ Before you run it, read these gotchas:
 - **The sshd `Match` block is appended once** and must stay at the end of
   `sshd_config`. The installer copies the original to
   `/etc/ssh/sshd_config.pre-bashbbs.<date>` first.
+- **Short login names.** `ssh ptrko@host` works like `ssh bbs-ptrko@host`: the alias is a
+  second passwd entry with the same uid, home and shell (`sbin/bbs-alias`, group `bbsalias`),
+  so `id -un` still says `bbs-ptrko` and the BBS identity does not change. Names on
+  `lib/reserved-names.conf` or already used by a system user or group get no alias, and the
+  web form refuses them. `bbs-provision` creates the alias, `bbs-admin users remove` removes
+  it (never `userdel -r`). Existing accounts: `bbs-alias backfill` (dry run), then `--apply`.
+  sshd needs `AllowGroups <admin> newsstatus bbs-* bbsalias` instead of `AllowUsers`
+  (`etc/sshd-hardening.example.conf`) and the `Match Group bbsalias` block
+  (`etc/sshd-bashbbs-alias.conf`, appended by `install.sh`).
 - **fail2ban needs `python3-systemd` and `nftables`** on Debian. The jail uses the
   systemd backend and bans through nft. The installer sets up the jail only when all
   three are present. The jail matches `ssh.service`, not `sshd.service`.

@@ -193,7 +193,7 @@ done
 # The real terminal width, not a stub: a pty set to 40 columns.
 mk_mail "$subj"
 # Expect-style: the key goes in when the prompt is visible; no fixed delay.
-check "pty 40: every prompt appeared, keys sent" python3 "$here/tests/pty_drive.py" --cols 40 --out "$root/pty-40.txt" --timeout 30 --step 'Number: open   Q) Back=>q' -- \
+check "pty 40: every prompt appeared, keys sent" python3 "$here/tests/pty_drive.py" --cols 40 --out "$root/pty-40.txt" --timeout 30 --step 'Number: open   R) Refresh   Q) Back=>q' -- \
     env BBS_ROOT="$root" HOME="$root/home/bbs-carol" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb \
     bash -c "source $here/lib/menu.sh; mail_view Inbox" 2>>"$log"
 check "pty 40: real 40-column terminal, no row wider than 40" fits "$root/pty-40.txt" 40
@@ -226,8 +226,8 @@ check "message: the open message shows no jump bar" eq "$(grep -c '\[B\] Boards'
 check "local header has no jump keys" not grep -q 'Boards' <(run_as carol local_header Test '[Q] Back')
 mkdir -p "$root/boards/general"; printf 'Author: bbs-bob\nSubject: Hej\nMsgid: <x@y>\n\nText\n' > "$root/boards/general/1-a.msg"
 pa() { post_actions general "$root/boards/general/1-a.msg"; echo "RC=$? NAV=[$nav_req]"; }
-o=$root/jump3.txt; printf 'bmpwgq' | run_as carol pa > "$o" 2>>"$log"
-check "open post: jump keys ignored, no logout question, Q returns 0" grep -q 'RC=0 NAV=\[\]$' "$o"
+o=$root/jump3.txt; printf 'bmwgq' | run_as carol pa > "$o" 2>>"$log"
+check "open post: jump keys ignored (P is Previous), no logout question, Q returns 0" grep -q 'RC=0 NAV=\[\]$' "$o"
 check "open post: no logout question" not grep -q 'Log out' "$o"
 # Main menu: Q and G both ask; only y logs out.
 mmn() { main_menu; echo "NAV=[$nav_req]"; }

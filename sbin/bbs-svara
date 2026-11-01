@@ -1,0 +1,43 @@
+#!/bin/bash
+# Resolve a short id (a prefix of the application's uuid) to its .app file
+# and accept or reject it via bbs-approve. Used by the Matrix "ja/nej <kod>"
+# command so the sysop never has to type the full file name.
+#   bbs-svara accept|reject <kod>
+# On success prints the resolved name= and contact= lines, for the caller to
+# build its confirmation message.
+set -euo pipefail
+umask 077
+
+[[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
+APP=/srv/bashbbs/applications/incoming
+action=${1:-}
+kod=${2:-}
+
+[[ $action == accept || $action == reject ]] || {
+    echo "usage: bbs-svara accept|reject <kod>" >&2
+    exit 1
+}
+[[ $kod =~ ^[0-9a-f]{4,36}$ ]] || { echo "bad id" >&2; exit 1; }
+
+shopt -s nullglob
+match=()
+for f in "$APP"/*.app; do
+    base=$(basename "$f")
+    uuid=${base#*-}
+    uuid=${uuid%.app}
+    [[ $uuid == "$kod"* ]] && match+=("$base")
+done
+
+case ${#match[@]} in
+    0) echo "no application matches $kod" >&2; exit 1 ;;
+    1) ;;
+    *) echo "ambiguous id $kod, matches: ${match[*]}" >&2; exit 1 ;;
+esac
+
+file=${match[0]}
+name=$(sed -n 's/^name=//p' "$APP/$file")
+contact=$(sed -n 's/^contact=//p' "$APP/$file")
+
+/usr/local/sbin/bbs-approve "$action" "$file"
+
+printf 'name=%s\ncontact=%s\n' "$name" "$contact"
