@@ -108,6 +108,34 @@ check "thread 40: no row wider than 40" fits "$out/v3.txt" 40
 run_list "$out/v4.txt" 80 "" 0 --step 'Q) Back=>3' --step 'Prev=>q' --step 'Q) Back=>q'
 check "thread: stub as root has no Reply" bash -c "tr -d '\r' < '$out/v4.txt' | awk '/^#1\/2/ { f = 1 } f && /^\[Space\] Next/ { getline; print; exit }' | grep -qx 'Q) Back'"
 
+# 3b. Per-thread read marks (~/.bashbbs-read): reading a thread clears its star.
+rf=$root/home/.bashbbs-read
+r1new() { roots general $((T0 + 5)) | grep -o 'r1:[0-9]*:[0-9]*:[01]' | sed 's/.*://'; }
+mkdir -p "$root/home"; : > "$rf"
+check "marks: r1 is new before reading" eq "$(r1new)" 1
+run_list "$out/m1.txt" 80 $((T0 + 5)) 0 --step 'Q) Back=>4' --step 'Prev=>\x20' --step 'Prev=>q' --step 'Q) Back=>q'
+check "marks: two of three posts read, the third keeps the thread new" eq "$(r1new)" 1
+check "marks: file has board, root id and epoch of the last post seen" eq "$(grep -c "^general r1 $((T0 + 20))\$" "$rf")" 1
+run_list "$out/m2.txt" 80 $((T0 + 5)) 0 --step 'Q) Back=>4' --step 'Prev=>q' --step 'Q) Back=>q'
+check "marks: thread reopens at the first unread post (#3)" has "$out/m2.txt" '^#3/3'
+check "marks: reading the last post clears the star" eq "$(r1new)" 0
+run_list "$out/m3.txt" 80 $((T0 + 5)) 0 --step 'Q) Back=>q'
+check "marks: list row for r1 has no star" bash -c "tr -d '\r' < '$out/m3.txt' | grep -q '^  4) Sommarens synthar *(3)\$'"
+check "marks: one line per thread" eq "$(grep -c '^general r1 ' "$rf")" 1
+mk 40 f1 b1 active
+check "marks: a later reply makes the thread new again" eq "$(r1new)" 1
+mv "$root/boards/general/$((T0 + 400))-f1.msg" "$out/f1.msg"
+printf 'Msgid: own1\nAuthor: alice\nNode: n\nDate: 2017-07-14T04:00:00+00:00\nSubject: Re: x\nParent: b1\n\nmine\n' > "$root/boards/general/$((T0 + 500))-own1.msg"
+check "marks: own post does not make the thread new" eq "$(r1new)" 0
+mv "$root/boards/general/$((T0 + 500))-own1.msg" "$out/own1.msg"
+printf 'general r1 abc\nbad line\nGENERAL r1 5\ngeneral r1 %s extra\n' "$((T0 + 5))" > "$rf"
+check "marks: bad lines are ignored (thread is new)" eq "$(r1new)" 1
+: > "$rf"
+for i in $(seq 1 2100); do printf 'general t%s 5\n' "$i"; done > "$rf"
+lib read_mark_save general r1 99
+check "marks: file is capped at 2000 lines, new mark kept" eq "$(wc -l < "$rf") $(tail -n 1 "$rf")" "2000 general r1 99"
+: > "$rf"
+
 # 4. Reply: Re: once, quote of up to 6 lines without ">" lines, new thread without either.
 f1=$root/q.msg
 { printf 'Msgid: m1\nAuthor: bob\nDate: 2017-07-14T04:00:00+00:00\nSubject: Hej\n\n'

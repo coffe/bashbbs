@@ -193,7 +193,7 @@ done
 # The real terminal width, not a stub: a pty set to 40 columns.
 mk_mail "$subj"
 # Expect-style: the key goes in when the prompt is visible; no fixed delay.
-check "pty 40: every prompt appeared, keys sent" python3 "$here/tests/pty_drive.py" --cols 40 --out "$root/pty-40.txt" --timeout 30 --step 'Number: open   Q) Back=>q' -- \
+check "pty 40: every prompt appeared, keys sent" python3 "$here/tests/pty_drive.py" --cols 40 --out "$root/pty-40.txt" --timeout 30 --step 'Number: open   R) Refresh   Q) Back=>q' -- \
     env BBS_ROOT="$root" HOME="$root/home/bbs-carol" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb \
     bash -c "source $here/lib/menu.sh; mail_view Inbox" 2>>"$log"
 check "pty 40: real 40-column terminal, no row wider than 40" fits "$root/pty-40.txt" 40

@@ -753,17 +753,24 @@ nav_req=
 # The [P] Mail label only fits from 50 columns. The key works at every width.
 # When the bar is wider than the terminal, Goodbye goes to a second line.
 top_bar() {
-    local mail="" cols line
+    local mail="" cols line tag="" n=0 f p1 p2=""
     cols=$(term_width)
-    (( cols >= 50 )) && mail=" [P] Mail"
+    # Unread mail on every screen, recomputed on each redraw (glob, no subshell per file).
+    for f in "$HOME"/Maildir/new/*; do [[ -f $f ]] && n=$((n + 1)); done
+    (( n > 0 )) && tag="Mail ($n)"
+    (( cols >= 50 )) && mail=" [P] ${tag:-Mail}"
     line="[B] Boards [M] Main${mail} [W] Wall [G] Goodbye${1:+  $1}"
     # The width is that of the plain text; the colour is added only when printing.
     if (( ${#line} <= cols )); then
-        paint_bar "$line"; echo
+        p1=$(paint_bar "$line")
     else
-        paint_bar "[B] Boards [M] Main${mail} [W] Wall"; echo
-        paint_bar "[G] Goodbye${1:+  $1}"; echo
+        p1=$(paint_bar "[B] Boards [M] Main${mail} [W] Wall")
+        p2=$(paint_bar "[G] Goodbye${1:+  $1}")
     fi
+    # The count is painted with the "new" colour, then the bar colour comes back.
+    [[ -n $tag && -n $C_NEW ]] && p1=${p1/"$tag"/"${C_NEW}${tag}${C_BAR}"}
+    printf '%s\n' "$p1"
+    [[ -n $p2 ]] && printf '%s\n' "$p2"
     echo
 }
 
@@ -956,11 +963,21 @@ visible_posts() { # visible_posts <board>
 # posts only (the epoch is the file name prefix). With <root-file> the output is instead
 # the files of that thread, in file order. Only headers are read; nothing is written.
 board_threads() { # board_threads <board> [since] [root-file]
-    visible_posts "$1" | awk -v since="${2:-}" -v want="${3:-}" '
+    visible_posts "$1" | awk -v since="${2:-}" -v want="${3:-}" -v board="$1" -v me="${me:-}" -v marks="$READ_FILE" '
         function hdr(line) { sub(/\r$/, "", line); return substr(line, index(line, ":") + 2) }
-        { file[++n] = $0; id[n] = ""; par[n] = ""; del[n] = 0
+        BEGIN {
+            # ~/.bashbbs-read: "<board> <root-msgid> <epoch>"; bad lines are ignored.
+            while (marks != "" && (getline ml < marks) > 0) {
+                if (split(ml, mf, " ") != 3 || mf[1] != board) continue
+                if (mf[1] !~ /^[a-z0-9][a-z0-9_-]*$/ || mf[2] !~ /^[A-Za-z0-9._@:-]+$/ || mf[3] !~ /^[0-9]+$/) continue
+                if (mf[3] + 0 > mark[mf[2]] + 0) mark[mf[2]] = mf[3]
+            }
+            if (marks != "") close(marks)
+        }
+        { file[++n] = $0; id[n] = ""; par[n] = ""; del[n] = 0; au[n] = ""
           while ((getline line < $0) > 0 && line != "" && line != "\r") {
               if (line ~ /^Msgid:/) id[n] = hdr(line)
+              else if (line ~ /^Author:/) au[n] = hdr(line)
               else if (line ~ /^Parent:/) par[n] = hdr(line)
               else if (line ~ /^Deleted:/) del[n] = 1
           }
@@ -975,14 +992,46 @@ board_threads() { # board_threads <board> [since] [root-file]
                 cnt[j]++
                 if (!del[i]) {
                     if (ep[i] + 0 > last[j] + 0) last[j] = ep[i]
-                    if (since != "" && ep[i] + 0 > since + 0) isnew[j] = 1
                 }
+            }
+            # New = a post by someone else, newer than the login epoch and the thread mark.
+            for (i = 1; i <= n; i++) {
+                if (del[i] || (me != "" && au[i] == me)) continue
+                j = root[i]; th = since
+                if (id[j] in mark) { if (th == "" || mark[id[j]] + 0 > th + 0) th = mark[id[j]] }
+                if (th != "" && ep[i] + 0 > th + 0) isnew[j] = 1
             }
             for (i = 1; i <= n; i++) {
                 if (want != "") { if (file[root[i]] == want) print file[i]; continue }
                 if (root[i] == i) printf "%s\t%d\t%s\t%d\n", file[i], cnt[i], last[i] + 0, isnew[i] + 0
             }
         }' | { if [[ -n ${3:-} ]]; then cat; else sort -t$'\t' -k3,3nr -k1,1r; fi; }
+}
+
+# Per-thread read marks: ~/.bashbbs-read, lines "<board> <root-msgid> <epoch>".
+READ_FILE=$HOME/.bashbbs-read
+READ_ID_RE='^[A-Za-z0-9._@:-]+$'
+READ_BOARD_RE='^[a-z0-9][a-z0-9_-]*$'
+
+read_mark() { # read_mark <board> <root-msgid>: the highest epoch read, or nothing
+    [[ $1 =~ $READ_BOARD_RE && $2 =~ $READ_ID_RE && -f $READ_FILE ]] || return 0
+    awk -v b="$1" -v i="$2" 'NF == 3 && $1 == b && $2 == i && $3 ~ /^[0-9]+$/ && $3 + 0 > m + 0 { m = $3 } END { if (m != "") print m }' "$READ_FILE"
+}
+
+# Raise the mark (never lower it). Temp file + rename, bad lines dropped, last 2000 kept.
+read_mark_save() { # read_mark_save <board> <root-msgid> <epoch>
+    local tmp
+    [[ $1 =~ $READ_BOARD_RE && $2 =~ $READ_ID_RE && $3 =~ ^[0-9]+$ ]] || return 0
+    tmp=$(mktemp "$HOME/.bashbbs-read.XXXXXX" 2>/dev/null) || return 0
+    {
+        [[ -f $READ_FILE ]] && awk -v b="$1" -v i="$2" -v e="$3" '
+            NF == 3 && $1 ~ /^[a-z0-9][a-z0-9_-]*$/ && $2 ~ /^[A-Za-z0-9._@:-]+$/ && $3 ~ /^[0-9]+$/ {
+                if ($1 == b && $2 == i) { if ($3 + 0 > e + 0) e = $3; next }
+                print }
+            END { print b, i, e }' "$READ_FILE" || printf '%s %s %s\n' "$1" "$2" "$3"
+        [[ -f $READ_FILE ]] || printf '%s %s %s\n' "$1" "$2" "$3"
+    } | tail -n 2000 > "$tmp" && mv -f "$tmp" "$READ_FILE" || rm -f "$tmp"
+    return 0
 }
 
 # One thread-list row as plain text lines: "  3) subject wrapped         (4) *".
@@ -1069,6 +1118,20 @@ B M P W: jump   G: log out" || return
 # the last login, else at #1. Space goes on (after the last post: back to the list),
 # P back. Returns 0 for the list, 1 at end of input.
 thread_view() { # thread_view <board> <root-file>
+    local rid rc
+    rid=$(post_hdr "$2" Msgid)
+    TV_TH=$SEEN_PREV TV_MAX=""
+    if [[ $rid =~ $READ_ID_RE ]]; then
+        local m
+        m=$(read_mark "$1" "$rid")
+        [[ -n $m ]] && { [[ -z $TV_TH ]] || (( m > TV_TH )); } && TV_TH=$m
+    fi
+    _thread_view "$@"; rc=$?
+    [[ $rid =~ $READ_ID_RE && -n $TV_MAX ]] && read_mark_save "$1" "$rid" "$TV_MAX"
+    return $rc
+}
+
+_thread_view() {
     local board=$1 root=$2 f i k=0 n rc id p pid at date author width head ep
     local -a files=() ids=()
     mapfile -t files < <(board_threads "$board" "$SEEN_PREV" "$root")
@@ -1076,10 +1139,10 @@ thread_view() { # thread_view <board> <root-file>
     (( n )) || return 0
     for f in "${files[@]}"; do ids+=("$(post_hdr "$f" Msgid)"); done
     # The first new, active post; the file name starts with the publish epoch.
-    if [[ -n $SEEN_PREV ]]; then
+    if [[ -n $TV_TH ]]; then
         for (( i = 0; i < n; i++ )); do
             ep=$(basename "${files[i]}"); ep=${ep%%-*}
-            [[ -z $(post_hdr "${files[i]}" Deleted) && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > SEEN_PREV )) && { k=$i; break; }
+            [[ -z $(post_hdr "${files[i]}" Deleted) && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )) && { k=$i; break; }
         done
     fi
     while true; do
@@ -1095,7 +1158,8 @@ thread_view() { # thread_view <board> <root-file>
             [[ -n $at ]] && head+="  · reply to #$at"
         fi
         ep=$(basename "$f"); ep=${ep%%-*}
-        if [[ -n $SEEN_PREV && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > SEEN_PREV )); then
+        if [[ $ep =~ ^[0-9]+$ ]] && { [[ -z $TV_MAX ]] || (( 10#$ep > TV_MAX )); }; then TV_MAX=$((10#$ep)); fi
+        if [[ -n $TV_TH && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )); then
             printf '%s%s%s\n' "$C_NEW" "$head" "$C_RST"
         else
             echo "$head"
@@ -1491,8 +1555,11 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
         if (( ${#files[@]} == 0 )); then
             echo "No messages."
             echo
-            pause
-            return
+            echo "R) Refresh   Q) Back"
+            menu_key "> " "QqRr" "R: look for new mail
+Q: back" local || return
+            [[ $MKEY == [Qq] ]] && return
+            continue
         fi
         i=1
         width=$(( $(list_width) - 7 ))  # "%3d) %s " is 7 columns
@@ -1503,13 +1570,15 @@ mail_view() { # mail_view <Inbox|Sent|Trash>
             i=$((i + 1))
         done
         echo
-        echo "Number: open   Q) Back"
+        echo "Number: open   R) Refresh   Q) Back"
         # Inside a mailbox the jump keys are off: Q goes back one level.
-        menu_key "> " "Qq$(digit_keys "${#files[@]}")" \
+        menu_key "> " "QqRr$(digit_keys "${#files[@]}")" \
 "Number: open a message
+R: look for new mail
 Q: back" local || return
         case $MKEY in
             [Qq]) return ;;
+            [Rr]) continue ;;
             [1-9]) read_num "${#files[@]}" || continue ;;
             *) continue ;;
         esac
