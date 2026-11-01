@@ -47,7 +47,7 @@ install -m 0755 "$src/sbin/bbs-maildir" /usr/local/sbin/bbs-maildir
 install -m 0755 "$src/sbin/bbs-alias" /usr/local/sbin/bbs-alias
 install -m 0755 "$src/sbin/bbs-admin" /usr/local/sbin/bbs-admin
 install -m 0644 "$src/lib/reserved-names.conf" /usr/local/lib/bashbbs/reserved-names.conf
-install -m 0644 "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
+keep_or_note "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
 install -m 0755 "$src/lib/wrap.py" /usr/local/lib/bashbbs/wrap.py
 install -m 0755 "$src/lib/news.sh" /usr/local/lib/bashbbs/news.sh
 # SSH keys: validator (run by users and root), root handler, shared root code.
