@@ -150,6 +150,36 @@ check "redraw clears with an unknown TERM" bash -c "
 export BBS_ROOT='$root' BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 TERM=syncterm; source '$here/lib/menu.sh'
 redraw | grep -q \$'\\033\\[H\\033\\[2J'"
 
+# 6d. Seasonal art: "season MMDD-MMDD file" in intro.conf, above the first screen only.
+[[ -f $root/etc/intro/halloween.txt ]] || printf ' .-.\n(o o) boo\n | |\n\n.:* HaPpY HaLooJen! *:.\n' > "$root/etc/intro/halloween.txt"
+check "intro_season: in, out, over New Year, bad window, bad file" bash -c "
+export BBS_ROOT='$root' BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 TERM=dumb; source '$here/lib/menu.sh'
+c='$root/season.conf'
+printf 'season 1031-1105 halloween.txt\n' > \$c
+for d in 1031 1101 1105; do BASHBBS_TEST_TODAY=\$d intro_season \$c | grep -q halloween.txt || exit 1; done
+for d in 1030 1106 0101; do BASHBBS_TEST_TODAY=\$d intro_season \$c && exit 1; done
+printf 'season 1220-0106 halloween.txt\n' > \$c
+for d in 1231 0103; do BASHBBS_TEST_TODAY=\$d intro_season \$c | grep -q halloween.txt || exit 1; done
+BASHBBS_TEST_TODAY=0107 intro_season \$c && exit 1
+printf 'season 1031 halloween.txt\nseason 1031-1105 ../../etc/passwd\n# season 1031-1105 halloween.txt\n' > \$c
+BASHBBS_TEST_TODAY=1101 intro_season \$c && exit 1
+BASHBBS_TEST=0; BASHBBS_TEST_TODAY=1101; [[ \$(intro_today) =~ ^[0-9]{4}\$ ]]"
+seasonconf() { fastconf; printf 'season 1031-1105 halloween.txt\n' >> "$root/etc/intro/intro.conf"; }
+seasonconf
+BASHBBS_TEST_TODAY=1101 TAIL=2.5 run 80 "" "$root/season-in.out"
+check "season: skull above the greetings on 1 Nov" python3 -c "
+import re, sys
+t = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', open(sys.argv[1], 'rb').read().decode(errors='replace')).replace('\r', '')
+a, b = t.find('HaLooJen'), t.find('reeting')
+sys.exit(0 if 0 <= a < b and t.count('HaLooJen') == 1 else 1)" "$root/season-in.out"
+BASHBBS_TEST_TODAY=1106 TAIL=2.5 run 80 "" "$root/season-out.out"
+check "season: no skull on 6 Nov" bash -c "grep -q 'reeting' '$root/season-out.out' && ! grep -q HaLooJen '$root/season-out.out'"
+BASHBBS_TEST_TODAY=1101 TAIL=2.5 run 40 "" "$root/season-40.out"
+w=$(wc -L < "$root/etc/intro/halloween.txt")
+(( w > 40 )) && check "season: skull left out when wider than the terminal (40)" bash -c "! grep -q HaLooJen '$root/season-40.out'"
+BASHBBS_TEST_TODAY=1101 TAIL=5 run 80 "" "$root/season-2nd.out"
+check "season: skull only once, not on the second screen" bash -c "[ \$(grep -c HaLooJen '$root/season-2nd.out') -eq 1 ]"
+
 # 7. The start loop calls intro_run before the welcome screen.
 check "start block: intro_run before welcome_screen" bash -c "grep -n -A2 -F '\${BASHBBS_TEST:-} ]]; then' '$here/lib/menu.sh' | tail -3 | tr '\n' ' ' | grep -q 'intro_run.*welcome_screen'"
 

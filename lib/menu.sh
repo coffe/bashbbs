@@ -1808,14 +1808,16 @@ B M P W: jump   G: log out" || { nav_req=quit; return; }
 
 
 # Shown on logout. Plain ASCII only, so it works on any terminal.
+# Art from etc/goodbye.{ans,txt} gets three blank lines above and below it.
 goodbye() {
     local g f
     for g in goodbye.ans goodbye.txt; do
         [[ $g == *.ans ]] && (( ! COLOR )) && continue
         f=$BBS_ROOT/etc/$g
         if [[ -f $f && ! -L $f && -r $f ]] && (( $(stat -c %s "$f") <= ADS_MAX_BYTES )); then
+            printf '\n\n\n'
             art_cat "$f"
-            printf '%s\n' "${C_RST}Bye."
+            printf '\n\n\n%s' "$C_RST"
             return 0
         fi
     done
@@ -1833,6 +1835,13 @@ EOF
         > ^ <
 
 EOF
+    printf '%s' "$C_RST"
+}
+
+# The whole logout: Goodbye art, then an ad if any, and "Bye." after the last art.
+logout_screen() {
+    goodbye
+    ad_run
     printf '%s\n' "${C_RST}Bye."
 }
 
@@ -1946,6 +1955,10 @@ count_text() { # count_text <n> <singular> <plural>
 # centred or changed (a CR from a DOS file is dropped, empty lines at the end of the
 # art are not shown). Space ends a screen at once, any other key is ignored. File
 # names are plain names in the intro directory.
+# A line "season <MMDD>-<MMDD> <file>" puts <file> above the first screen while today
+# (local time) is in the window, both days included; a window may run over New Year
+# (1220-0106). The rest of the year the line sleeps. The seasonal art is left out when it
+# is wider than the terminal, or when it and the first screen do not fit its height.
 INTRO_MAX_BYTES=16384
 
 intro_file() { # intro_file <name>: prints the path when it is a plain, small file
@@ -1994,10 +2007,46 @@ intro_pick() {
     printf '%s\n' "${alts[RANDOM % ${#alts[@]}]}"
 }
 
+# Today as MMDD. The tests may set BASHBBS_TEST_TODAY.
+intro_today() {
+    if [[ -n ${BASHBBS_TEST:-} && ${BASHBBS_TEST_TODAY:-} =~ ^[0-9]{4}$ ]]; then echo "$BASHBBS_TEST_TODAY"
+    else date +%m%d; fi
+}
+
+# intro_season <conf>: prints the path of today's seasonal art, if a season line matches.
+intro_season() {
+    local kw win file from to today
+    today=$(intro_today)
+    while read -r kw win file _; do
+        [[ $kw == season && $win =~ ^([01][0-9][0-3][0-9])-([01][0-9][0-3][0-9])$ ]] || continue
+        from=$((10#${BASH_REMATCH[1]})) to=$((10#${BASH_REMATCH[2]}))
+        if (( from <= to )); then
+            (( 10#$today >= from && 10#$today <= to )) || continue
+        else
+            (( 10#$today >= from || 10#$today <= to )) || continue
+        fi
+        intro_file "${file:--}" && return 0
+    done < <(grep -v '^[[:space:]]*#' "$1")
+    return 1
+}
+
+# Lines an art file takes on screen (empty lines at the end are not shown).
+intro_height() {
+    art_raw "$1" | ansi_strip | awk '/[^[:space:]]/ { n = NR } END { print n + 0 }'
+}
+
+intro_show() { # intro_show <file>: the art as it is, without the empty lines at its end
+    art_raw "$1" | ansi_out | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
+    printf '\033[0m'
+}
+
 intro_run() {
-    local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols f w c shown=0
+    local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols rows f w c s need shown=0 season=""
     [[ -t 0 && -t 1 && -r $conf ]] || return 0
     cols=$(list_width)
+    rows=$(stty size 2>/dev/null | awk '{print $1}')
+    [[ $rows =~ ^[0-9]+$ ]] || rows=24
+    season=$(intro_season "$conf") || season=""
     while read -r -u 3 secs file narrow caption ncaption extra; do
         [[ $secs =~ ^[0-9]+$ ]] && (( secs >= 1 && secs <= 60 )) || continue
         f=$(intro_file "$(intro_pick "${file:-}")") || continue
@@ -2007,15 +2056,21 @@ intro_run() {
             w=$(intro_width "$f")
             (( w <= cols )) || continue
         fi
-        (( shown )) && drain_input
-        redraw
-        art_raw "$f" | ansi_out | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
-        printf '\033[0m'
         c=$(intro_file "${caption:--}") || c=""
         if [[ -n $c ]] && (( $(intro_width "$c") > cols )); then
             c=$(intro_file "${ncaption:--}") || c=""
             [[ -z $c ]] || (( $(intro_width "$c") <= cols )) || c=""
         fi
+        (( shown )) && drain_input
+        redraw
+        # Seasonal art above the first screen only, when it fits.
+        if [[ -n $season ]] && (( ! shown )); then
+            s=$season; season=""
+            need=$(( $(intro_height "$s") + $(intro_height "$f") ))
+            [[ -n $c ]] && need=$(( need + 1 + $(intro_height "$c") ))
+            (( $(intro_width "$s") <= cols && need <= rows )) && intro_show "$s"
+        fi
+        intro_show "$f"
         if [[ -n $c ]]; then
             echo
             art_raw "$c" | ansi_out
@@ -2084,6 +2139,5 @@ if [[ -z ${BASHBBS_TEST:-} ]]; then
         esac
         [[ -n $nav_req ]] || nav_req=main
     done
-    goodbye
-    ad_run
+    logout_screen
 fi

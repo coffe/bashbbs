@@ -61,9 +61,13 @@ check "30 overlapping writes leave one whole name" eq "$(wc -l < "$home/.bashbbs
 check "the file holds b.txt or c.txt" bash -c 'grep -qxE "b.txt|c.txt" "$1"' x "$home/.bashbbs-ad"
 check "no temp files after overlapping writes" eq "$(ls -A "$home" | grep -c '^\.bashbbs-ad\.')" 0
 
-# 7. Goodbye is unchanged against the committed version.
-mkdir -p "$root/head" && git -C "$here" archive HEAD lib | tar -x -C "$root/head"
-check "goodbye screen unchanged" cmp -s <(menu_fn "$root/head/lib/menu.sh" goodbye) <(menu_fn "$lib" goodbye)
+# 7. Goodbye art from etc/ has three blank lines above and below it.
+mkdir -p "$root/etc" && printf '  cup\n  Thanks\n' > "$root/etc/goodbye.txt"
+gb=$(BBS_ROOT=$root menu_fn "$lib" goodbye | sed 's/\x1b\[[0-9;]*m//g')
+check "goodbye: three blank lines, art, three blank lines" eq "$gb" $'\n\n\n  cup\n  Thanks'
+gb=$(BBS_ROOT=$root menu_fn "$lib" logout_screen | sed 's/\x1b\[[0-9;]*m//g')
+check "logout without a tty: Bye. comes after the art" eq "${gb##*Thanks}" $'\n\n\n\nBye.'
+mv "$root/etc/goodbye.txt" "$root/goodbye.txt.used"
 
 # 8. Screens in a pty at 80 columns: Space ends it, end of input ends it, no ads is silent.
 drv=$root/ads_drv.py
@@ -75,7 +79,7 @@ art = open(ROOT + "/etc/ads/" + ads[0], "rb").read() if ads else b"\x00none"
 m, s = pty.openpty()
 fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 env = dict(os.environ, BBS_ROOT=ROOT, HOME=HOME, BASHBBS_TEST="1", BASHBBS_TEST_ID="bbs-adtest", TERM="xterm")
-p = subprocess.Popen(["bash", "-c", 'source "$1"; goodbye; ad_run; echo DONE', "x", LIB],
+p = subprocess.Popen(["bash", "-c", 'source "$1"; logout_screen; echo DONE', "x", LIB],
                      stdin=s, stdout=s, stderr=s, env=env, start_new_session=True)
 os.close(s)
 out, end, sent = b"", time.time() + 5, False
@@ -103,23 +107,25 @@ try:
 except subprocess.TimeoutExpired:
     p.kill(); rc = "HANG"
 art_ok = int(art.replace(b"\r", b"") in out.replace(b"\r", b"")) if ads else 0
-after = out[out.find(b"Bye."):]
-cleared = re.search(rb"\x1b\[[0-3]?J", after) is not None
-cat_ok = int(0 <= out.find(b"Bye.") and not cleared and (not ads or out.find(b"Bye.") < out.find(art.replace(b"\r", b"").split(b"\n")[0])))
-print("RESULT %s rc=%s art=%d bye=%d done=%d cat=%d" % (MODE, rc, art_ok, int(b"[Space] Bye" in out), int(b"DONE" in out), cat_ok))
+first = art.replace(b"\r", b"").split(b"\n")[0]
+cat_at = out.find(b"bye bye")
+cleared = cat_at >= 0 and re.search(rb"\x1b\[[0-3]?J", out[cat_at:]) is not None
+cat_ok = int(cat_at >= 0 and not cleared and (not ads or cat_at < out.find(first)))
+end_ok = int(b"Bye." in out and (not ads or out.rfind(b"Bye.") > out.find(first)))
+print("RESULT %s rc=%s art=%d bye=%d done=%d cat=%d end=%d" % (MODE, rc, art_ok, int(b"[Space] Bye" in out), int(b"DONE" in out), cat_ok, end_ok))
 PY
 pty_root=$root/pty; mkdir -p "$pty_root/etc/ads" "$pty_root/home"
 cp "$ads/a.txt" "$pty_root/etc/ads/"
 check "the ad is 80 columns or less" bash -c 'test "$(awk "{ if (length > m) m = length } END { print m }" "$1")" -le 80' x "$ads/a.txt"
-check "space: cat stays, ad below it, Space ends it, logout completes" eq \
-    "$(python3 "$drv" "$lib" "$pty_root" "$pty_root/home" space)" "RESULT space rc=0 art=1 bye=1 done=1 cat=1"
+check "space: cat stays, ad below it, Space ends it, Bye. last" eq \
+    "$(python3 "$drv" "$lib" "$pty_root" "$pty_root/home" space)" "RESULT space rc=0 art=1 bye=1 done=1 cat=1 end=1"
 # Input closed mid-screen: the shell gets SIGHUP (rc=-1) and must not hang (rc=HANG).
 check "end of input: logout does not hang" bash -c \
-    'python3 "$1" "$2" "$3" "$4" eof | grep -qE "^RESULT eof rc=-?[0-9]+ art=1 bye=1 done=0 cat=1$"' x \
+    'python3 "$1" "$2" "$3" "$4" eof | grep -qE "^RESULT eof rc=-?[0-9]+ art=1 bye=1 done=0 cat=1 end=0$"' x \
     "$drv" "$lib" "$pty_root" "$pty_root/home"
 empty_root=$root/empty; mkdir -p "$empty_root/etc/ads" "$empty_root/home"
 check "no ads: cat stays, no ad screen, logout completes" eq \
-    "$(python3 "$drv" "$lib" "$empty_root" "$empty_root/home" none)" "RESULT none rc=0 art=0 bye=0 done=1 cat=1"
+    "$(python3 "$drv" "$lib" "$empty_root" "$empty_root/home" none)" "RESULT none rc=0 art=0 bye=0 done=1 cat=1 end=1"
 
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]
