@@ -241,12 +241,71 @@ rline_drain() { # discard the rest of the current line, in bounded pieces
     return 1
 }
 
+# Drop escape sequences and control characters (a tab becomes a space).
+rline_clean() {
+    printf '%s' "$1" | LC_ALL=C.UTF-8 sed -E 's/\t/ /g; s/\x1b(\[[0-9;?]*[ -/]*[@-~]|O.|.)?//g; s/[\x00-\x1f\x7f]//g'
+}
+
+# Line editor for a terminal: Left/Right, Home/End (also Ctrl-A/E), Delete,
+# Backspace, Ctrl-U/K. Up/Down and every other key or escape sequence do nothing,
+# so they never land in the text. Not read -e: bash's readline keys can run
+# commands (Esc Ctrl-E expands $(...), Ctrl-X Ctrl-E opens an editor).
+# A line wider than the terminal scrolls sideways. Drawn on stderr, like read -p.
+# rline_edit <var> [prompt]. Returns 1 at end of input (Ctrl-D on an empty line).
+rline_edit() {
+    local __o=$1 __p=${2-} buf="" pos=0 off=0 c s plen cols=80 rows avail
+    read -r rows cols < <(stty size 2>/dev/null) || true
+    [[ $cols =~ ^[0-9]+$ ]] || cols=80
+    s=$(printf '%s' "$__p" | ansi_strip); plen=${#s}
+    avail=$(( cols - plen - 1 )); (( avail < 10 )) && avail=10
+    while :; do
+        # Draw: keep the cursor inside the visible window.
+        (( pos < off )) && off=$pos
+        (( pos > off + avail )) && off=$(( pos - avail ))
+        s=${buf:off:avail}
+        printf '\r%s%s\033[K' "$__p" "$s" >&2
+        (( off + ${#s} > pos )) && printf '\033[%dD' $(( off + ${#s} - pos )) >&2
+        IFS= read -rsn1 -d '' c || { [[ -n $buf ]] && break; printf '\n' >&2; return 1; }
+        case $c in
+            $'\n'|$'\r') break ;;
+            $'\x7f'|$'\b') (( pos > 0 )) && { buf=${buf:0:pos-1}${buf:pos}; pos=$(( pos - 1 )); } ;;
+            $'\x01') pos=0 ;;
+            $'\x05') pos=${#buf} ;;
+            $'\x15') buf=${buf:pos}; pos=0 ;;
+            $'\x0b') buf=${buf:0:pos} ;;
+            $'\x04') [[ -z $buf ]] && { printf '\n' >&2; return 1; }
+                     buf=${buf:0:pos}${buf:pos+1} ;;
+            $'\e')
+                IFS= read -rsn1 -t 0.2 c || c=
+                [[ $c == '[' || $c == O ]] || continue
+                s=
+                while IFS= read -rsn1 -t 0.2 c; do
+                    s+=$c
+                    [[ $c == [@-~] ]] && break
+                    (( ${#s} > 16 )) && break
+                done
+                case $s in
+                    D) (( pos > 0 )) && pos=$(( pos - 1 )) ;;
+                    C) (( pos < ${#buf} )) && pos=$(( pos + 1 )) ;;
+                    H|1~|7~) pos=0 ;;
+                    F|4~|8~) pos=${#buf} ;;
+                    3~) buf=${buf:0:pos}${buf:pos+1} ;;
+                esac ;;
+            $'\t') c=' ' ;&
+            *)  [[ -z $c || $c == [[:cntrl:]] ]] && continue
+                (( ${#buf} < INPUT_MAX )) || continue
+                buf=${buf:0:pos}$c${buf:pos}; pos=$(( pos + 1 )) ;;
+        esac
+    done
+    printf '\n' >&2
+    printf -v "$__o" '%s' "$buf"
+}
+
 rline() {
     local __v=$1 __p=${2-} __raw=${3-} __l __c
     RLINE_LONG=
     if [[ -t 0 ]]; then
-        IFS= read -r -p "$__p" __l || return 1
-        (( ${#__l} > INPUT_MAX )) && RLINE_LONG=1
+        rline_edit __l "$__p" || return 1
     else
         IFS= read -r -n "$INPUT_MAX" __l || return 1
         if (( ${#__l} >= INPUT_MAX )); then
@@ -254,6 +313,8 @@ rline() {
             IFS= read -r -n 1 __c || return 1
             [[ -z $__c ]] || { RLINE_LONG=1; rline_drain || true; }
         fi
+        # Escape sequences (arrow keys) and control characters never reach the text.
+        [[ $__l == *[[:cntrl:]]* ]] && __l=$(rline_clean "$__l")
     fi
     if [[ -n $RLINE_LONG ]]; then
         __l=
