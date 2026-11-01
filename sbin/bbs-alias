@@ -17,12 +17,14 @@ umask 022
 GETENT=/usr/bin/getent USERADD=/usr/sbin/useradd USERDEL=/usr/sbin/userdel
 USERMOD=/usr/sbin/usermod GROUPADD=/usr/sbin/groupadd
 RESERVED=/usr/local/lib/bashbbs/reserved-names.conf
+KEYS=/srv/bashbbs/keys
 GROUP=bbsalias
 BBS_SHELL=/usr/local/sbin/bbs-shell
 if [[ -n ${BASHBBS_TEST:-} ]]; then
     GETENT=${BBS_GETENT:-$GETENT}; USERADD=${BBS_USERADD:-$USERADD}
     USERDEL=${BBS_USERDEL:-$USERDEL}; USERMOD=${BBS_USERMOD:-$USERMOD}
     GROUPADD=${BBS_GROUPADD:-$GROUPADD}; RESERVED=${BBS_RESERVED:-$RESERVED}
+    KEYS=${BBS_KEYS:-$KEYS}
 elif [[ $EUID -ne 0 ]]; then
     echo "must run as root" >&2; exit 1
 fi
@@ -72,12 +74,24 @@ add_alias() { # add_alias <name> [bbs-<acct>]; prints a status line
     uid=$(acct_field "$acct" 3); gid=$(acct_field "$acct" 4)
     home=$(acct_field "$acct" 6); shell=$(acct_field "$acct" 7)
     [[ -n $uid ]] || { echo "no account $acct"; return 1; }
-    if [[ $(alias_owner "$n") == "$acct" ]]; then echo "$n: alias exists"; return 0; fi
+    if [[ $(alias_owner "$n") == "$acct" ]]; then echo "$n: alias exists"; key_link "$n" "$acct"; return 0; fi
     why=$(check_name "$n") || { echo "$n: skipped ($why)"; return 1; }
     "$GETENT" group "$GROUP" >/dev/null 2>&1 || "$GROUPADD" --system "$GROUP" || { echo "groupadd failed"; return 1; }
     "$USERADD" -o -u "$uid" -g "$gid" -M -N -d "$home" -s "${shell:-$BBS_SHELL}" -G "$GROUP" "$n" \
         || { echo "$n: useradd failed"; return 1; }
     echo "$n: alias created (uid $uid)"
+    key_link "$n" "$acct"
+}
+
+# key_link <name> <bbs-acct>: sshd reads keys/bbs-%u for aliases, so a named alias
+# (sys0p for bbs-coffe) gets keys/bbs-sys0p as a symlink to bbs-coffe. bbs-keys skips links.
+key_link() {
+    local n=$1 acct=$2 l=$KEYS/bbs-$1
+    [[ $acct == "bbs-$n" ]] && return 0
+    if [[ -L $l ]]; then [[ $(readlink "$l") == "$acct" ]] && return 0; echo "$n: $l points elsewhere, left alone"; return 1; fi
+    [[ -e $l ]] && { echo "$n: $l is a real file, left alone"; return 1; }
+    ln -s -- "$acct" "$l" || { echo "$n: key link failed"; return 1; }
+    echo "$n: key file linked to $acct"
 }
 
 cmd=${1:-}
@@ -93,6 +107,8 @@ case $cmd in
     remove)
         n=${2:-}; [[ $n =~ ^[a-z][a-z0-9]{2,8}$ ]] || die "usage: bbs-alias remove <name>"
         alias_owner "$n" >/dev/null || { echo "$n: no alias"; exit 0; }
+        # A named alias has a key symlink; unlink only the link, never a real key file.
+        [[ -L $KEYS/bbs-$n ]] && unlink -- "$KEYS/bbs-$n"
         # Never -r: the home belongs to bbs-$n.
         "$USERDEL" "$n" || die "userdel $n failed"
         echo "$n: alias removed"

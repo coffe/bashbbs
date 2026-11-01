@@ -13,6 +13,7 @@ check() { local d=$1; shift
 has() { grep -qF -- "$2" "$1"; }
 not_has() { ! grep -qF -- "$2" "$1" 2>/dev/null; }
 rc_is() { [[ $1 == "$2" ]]; }
+eq_link() { [[ -L $1 && $(readlink "$1") == "$2" ]]; }
 [[ $(id -u) -ne 0 ]] || { echo "Run as a normal user, not root." >&2; exit 2; }
 
 root=$(mktemp -d "$scratch/alias.XXXXXX")
@@ -61,7 +62,8 @@ EOF2
 chmod +x "$root/useradd2"
 cp "$root/passwd" "$root/passwd.0"; cp "$root/group" "$root/group.0"
 
-al() { BASHBBS_TEST=1 BBS_GETENT=$root/getent BBS_USERADD=$root/useradd2 BBS_USERDEL=$root/userdel \
+mkdir -p "$root/keys"; echo "ssh-ed25519 AAAA coffe" > "$root/keys/bbs-coffe"
+al() { BASHBBS_TEST=1 BBS_KEYS=$root/keys BBS_GETENT=$root/getent BBS_USERADD=$root/useradd2 BBS_USERDEL=$root/userdel \
     BBS_USERMOD=$root/usermod BBS_GROUPADD=$root/groupadd BBS_RESERVED=$root/reserved \
     "$here/sbin/bbs-alias" "$@"; }
 out=$root/out.txt
@@ -98,6 +100,8 @@ check "add named: uses bbs-coffe uid, gid and home" \
     has "$calls" "useradd -o -u 1003 -g 1003 -M -N -d /srv/bashbbs/home/coffe -s /usr/local/sbin/bbs-shell -G bbsalias sys0p"
 : > "$calls"; run add sys0p bbs-coffe
 check "add named: idempotent" not_has "$calls" "useradd"
+check "add named: key file is a symlink to bbs-coffe" eq_link "$root/keys/bbs-sys0p" bbs-coffe
+check "add plain: no key symlink" bash -c '[[ ! -L $1 ]]' _ "$root/keys/bbs-ptrko"
 run add sys0p bbs-ptrko; check "add named: name already used by another alias refused" rc_is "$rc" 1
 run add root bbs-coffe; check "add named: reserved name refused" rc_is "$rc" 1
 run add sys1p coffe; check "add named: target must be a bbs- account" rc_is "$rc" 1
@@ -105,6 +109,7 @@ run add sys1p bbs-ghost; check "add named: unknown target refused" rc_is "$rc" 1
 run shell sys0p /usr/sbin/nologin
 check "shell: works on a named alias" has "$calls" "usermod -s /usr/sbin/nologin sys0p"
 run remove sys0p; check "remove: works on a named alias" has "$calls" "userdel sys0p"
+check "remove: key symlink gone, real key kept" bash -c '[[ ! -e $1 && -f $2 ]]' _ "$root/keys/bbs-sys0p" "$root/keys/bbs-coffe"
 
 # 3. shell + remove
 : > "$calls"
