@@ -252,9 +252,19 @@ rline_clean() {
 # so they never land in the text. Not read -e: bash's readline keys can run
 # commands (Esc Ctrl-E expands $(...), Ctrl-X Ctrl-E opens an editor).
 # A line wider than the terminal scrolls sideways. Drawn on stderr, like read -p.
+# Redraws only when no more input is waiting, so a paste is not drawn key by key.
 # rline_edit <var> [prompt]. Returns 1 at end of input (Ctrl-D on an empty line).
+rline_draw() { # uses rline_edit's locals; keeps the cursor inside the visible window
+    (( pos < off )) && off=$pos
+    (( pos > off + avail )) && off=$(( pos - avail ))
+    s=${buf:off:avail}
+    printf '\r%s%s\033[K' "$__p" "$s" >&2
+    (( off + ${#s} > pos )) && printf '\033[%dD' $(( off + ${#s} - pos )) >&2
+    return 0
+}
+
 rline_edit() {
-    local __o=$1 __p=${2-} buf="" pos=0 off=0 c s plen cols=80 rows avail
+    local __o=$1 __p=${2-} buf="" pos=0 off=0 c s plen cols=80 rows avail dirty=
     read -r rows cols < <(stty size 2>/dev/null) || true
     [[ $cols =~ ^[0-9]+$ ]] || cols=80
     s=$(printf '%s' "$__p" | ansi_strip); plen=${#s}
@@ -265,6 +275,7 @@ rline_edit() {
     fi
     printf '%s' "$__p" >&2   # first draw: just the prompt, like read -p
     while :; do
+        if [[ -n $dirty ]] && ! read -t 0; then rline_draw; dirty=; fi
         IFS= read -rsn1 -d '' c || { [[ -n $buf ]] && break; printf '\n' >&2; return 1; }
         case $c in
             $'\n'|$'\r') break ;;
@@ -296,13 +307,9 @@ rline_edit() {
                 (( ${#buf} < INPUT_MAX )) || continue
                 buf=${buf:0:pos}$c${buf:pos}; pos=$(( pos + 1 )) ;;
         esac
-        # Redraw: keep the cursor inside the visible window.
-        (( pos < off )) && off=$pos
-        (( pos > off + avail )) && off=$(( pos - avail ))
-        s=${buf:off:avail}
-        printf '\r%s%s\033[K' "$__p" "$s" >&2
-        (( off + ${#s} > pos )) && printf '\033[%dD' $(( off + ${#s} - pos )) >&2
+        dirty=1
     done
+    [[ -n $dirty ]] && rline_draw
     printf '\n' >&2
     printf -v "$__o" '%s' "$buf"
 }

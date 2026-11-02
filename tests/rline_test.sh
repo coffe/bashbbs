@@ -88,5 +88,33 @@ piped=$(printf 'ab\033[Dc\033OA\x01d\te\n' | env BBS_ROOT="$root" HOME="$root/ho
     BASHBBS_TEST_ID=bbs-rltest bash -c 'source "$1"; rline x "> " 2>/dev/null; printf "%s" "$x"' x "$lib")
 check "piped input is cleaned" eq "$piped" "abcd e"
 
+# A paste is not redrawn key by key, every line still shows, and the text arrives whole.
+pst=$root/paste.py
+cat > "$pst" <<'PY'
+import os, pty, select, sys, time, fcntl, termios, struct
+lib, d, out_f = sys.argv[1:4]
+lines = ["line %02d %s" % (i, "x" * 60) for i in range(20)]
+text = ("\r".join(lines) + "\r.\r").encode()
+env = dict(os.environ, BBS_ROOT=d, HOME=d + "/home", BASHBBS_TEST="1", BASHBBS_TEST_ID="bbs-rltest")
+pid, m = pty.fork()
+if pid == 0:
+    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    os.execvpe("bash", ["bash", "--norc", "-c", 'source "$1"; read_body > "$2"; echo END-MARK', "x", lib, out_f], env)
+time.sleep(0.5)
+out = b""; sent = 0; end = time.time() + 30
+while time.time() < end and b"END-MARK" not in out:
+    r, w, _ = select.select([m], [m] if sent < len(text) else [], [], 0.2)
+    if r:
+        try: out += os.read(m, 65536)
+        except OSError: break
+    if w: sent += os.write(m, text[sent:sent + 1024])
+got = open(out_f).read().split("\n")[:-1]
+shown = all(l.encode() in out for l in lines)
+print("whole" if got == lines else "broken", "shown" if shown else "hidden",
+      "small" if len(out) < 3 * len(text) else "big:%d" % len(out))
+PY
+check "paste: text whole, every line shown, not redrawn per key" eq \
+    "$(python3 "$pst" "$lib" "$root" "$root/paste.out")" "whole shown small"
+
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]
