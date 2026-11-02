@@ -97,7 +97,7 @@ python3 "$here/tests/pty_drive.py" --cols 80 --out "$root/a3.out" --timeout 15 -
 check "(a) not asked again once saved" bash -c '! grep -q "A/n" "$1" && grep -q RESULT=1 "$1"' x "$root/a3.out"
 check "(a) test mode with no prefs does not ask" eq "$(env BBS_ROOT="$root" HOME="$root/home4" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-coltest bash -c 'mkdir -p "$HOME"; source "$1"; echo "$COLOR$COLOR_ASK"' x "$lib")" "00"
 
-# (g) My account: C toggles and saves
+# (g) My Account > 3 Settings: C toggles and saves
 h5=$root/home5; mkdir -p "$h5"; printf 'color=1\n' > "$h5/.bashbbs-prefs"
 cat > "$root/acct_drv.sh" <<'EOF'
 export BBS_ROOT="$1" HOME="$2" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-coltest TERM=xterm USER=bbs-coltest
@@ -105,7 +105,7 @@ source "$3"
 my_account; echo "RESULT=$COLOR"
 EOF
 python3 "$here/tests/pty_drive.py" --cols 80 --out "$root/g.out" --timeout 15 \
-    --step 'Any key=>c' --step 'Any key=>q' -- bash "$root/acct_drv.sh" "$root" "$h5" "$lib" >>"$log" 2>&1
+    --step 'Back=>3' --step 'Any key=>c' --step 'Any key=>x' --step 'Back=>q' -- bash "$root/acct_drv.sh" "$root" "$h5" "$lib" >>"$log" 2>&1
 check "(g) C turns colour off and saves it" bash -c 'grep -q "RESULT=0" "$1" && grep -qx "color=0" "$2" && grep -qx "replymail=1" "$2"' x "$root/g.out" "$h5/.bashbbs-prefs"
 check "(g) the menu showed Colour: on, then off" bash -c 'grep -q "Colour: on" "$1" && grep -q "Colour: off" "$1"' x "$root/g.out"
 check "(g) no temp files left" eq "$(ls -A "$h5" | grep -c '^\.bashbbs-prefs\.')" 0
@@ -132,9 +132,9 @@ mm() { fn "$1" mail_menu </dev/null 2>/dev/null | tr -d '\r'; }
 mm 1 > "$root/k0.out"                                   # no unread
 printf 'From: b\nSubject: s\n\nx\n' > "$home/Maildir/new/1700000000.k.h"
 mm 1 > "$root/k1.out"; mm 0 > "$root/k2.out"
-check "(k) unread + colour: Inbox is 1;33, 1) is 1;36" bash -c 'grep -q "$2\[1;36m1)$2\[0m $2\[1;33mInbox$2\[0m   " "$1"' x "$root/k1.out" "$ESC"
-check "(k) no unread + colour: Inbox plain" bash -c '! grep -q "$2\[1;33mInbox" "$1" && grep -q "Inbox   " "$1"' x "$root/k0.out" "$ESC"
-check "(k) unread + COLOR=0: plain line" bash -c 'grep -qx "1) Inbox   2) Write" "$1"' x "$root/k2.out"
+check "(k) unread + colour: (1 unread) is 1;33, 1) is 1;36" bash -c 'grep -q "$2\[1;36m1)$2\[0m Inbox .*$2\[1;33m(1 unread)$2\[0m" "$1"' x "$root/k1.out" "$ESC"
+check "(k) no unread + colour: no gold suffix" bash -c '! grep -q "$2\[1;33m(" "$1" && grep -q "Inbox" "$1"' x "$root/k0.out" "$ESC"
+check "(k) unread + COLOR=0: plain line" bash -c 'grep -qx "1) Inbox (1 unread)" "$1"' x "$root/k2.out"
 mv "$home/Maildir/new/1700000000.k.h" "$root/"
 
 # (l) roles: only 1;35 1;36 1;33 0 are ever emitted by the frame and key helpers

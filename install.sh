@@ -59,7 +59,14 @@ install -m 0644 "$src/lib/keys-common.sh" /usr/local/lib/bashbbs/keys-common.sh
 
 # Data layout. Users never write into boards/ or keys/ directly.
 install -d -m 0755 /srv/bashbbs /srv/bashbbs/home /srv/bashbbs/keys /srv/bashbbs/users
-install -d -m 0755 /srv/bashbbs/boards/general
+install -d -m 0755 /srv/bashbbs/boards/general /srv/bashbbs/boards/sharednews /srv/bashbbs/boards/whatsup
+# One-line descriptions for the board menu. A description already there is kept.
+board_desc_seed() { [[ -d /srv/bashbbs/boards/$1 && ! -e /srv/bashbbs/boards/$1/.desc ]] \
+    && printf '%s\n' "$2" > "/srv/bashbbs/boards/$1/.desc" && chmod 0644 "/srv/bashbbs/boards/$1/.desc"; return 0; }
+board_desc_seed general "General chat. Pull up a chair!"
+board_desc_seed sharednews "News and links shared by users."
+board_desc_seed whatsup "Demoparties, events and meetups."
+board_desc_seed testboard "A place for testing things."
 
 # Maildir folders for every existing account. Only accounts that already have a
 # profile and a home get folders; install.sh never creates accounts or messages.

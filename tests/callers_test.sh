@@ -98,7 +98,7 @@ check "view: newest first" eq "$(grep -m1 ' user' "$root/v.txt" | awk '{print $N
 check "view: oldest shown is user3" grep -q ' user3$' "$root/v.txt"
 check "view: user2 not shown" not grep -q ' user2$' "$root/v.txt"
 check "view fits 40 columns" fits 40 "$root/v.txt"
-check "main menu offers Last callers" bash -c "grep -q '6) Last callers' '$here/lib/menu.sh'"
+check "Fame & Glory offers Last Callers" grep -q 'menu_item 2 "Last Callers"' "$here/lib/menu.sh"
 
 echo "SUMMARY pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

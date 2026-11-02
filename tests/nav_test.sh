@@ -28,6 +28,8 @@ open(DRV, "w").write('''#!/bin/bash
 # The start loop of lib/menu.sh, taken from the file itself (no copy that can drift).
 export BASHBBS_TEST=1
 source "%s/lib/menu.sh"
+# The fixture marks private boards with meta/<b>.meta (no bbsb-* groups without root).
+board_is_private() { [[ -f $BBS_ROOT/meta/$(basename "$1").meta ]]; }
 eval "$(sed -n '/^if \\[\\[ -z \\${BASHBBS_TEST/,$p' "%s/lib/menu.sh" | sed '1d;$d')"
 ''' % (HERE, HERE))
 
@@ -168,14 +170,36 @@ def title_pat(title, extra=""):
     return r"== %s ==.*?%s.*?%s" % (re.escape(title), extra, PROMPT)
 
 
-GEN = lambda: r"== general ==.*N\) New post.*" + PROMPT      # thread list
-POST = lambda: r"== general ==.*Reply.*" + PROMPT           # open post (R) Reply)
-BOARDS = r"== Public boards ==.*K\) New private board.*" + PROMPT
-MAILM = r"== Private messages ==.*" + PROMPT
+GEN = lambda: r"== The Pub ==.*N\) New post.*" + PROMPT      # thread list
+POST = lambda: r"== The Pub ==.*Reply.*" + PROMPT           # open post (R) Reply)
+BOARDS = r"== Public boards ==.*Q\) Back.*" + PROMPT
+PRIVB = r"== Private boards ==.*K\) New private board.*" + PROMPT
+MAILM = r"== Mail ==.*" + PROMPT
+BH = r"== Boards ==.*Q\) Back.*" + PROMPT       # Boards: Public / Private
+FAME = r"== Fame & Glory ==.*Q\) Back.*" + PROMPT
 WALL = r"== Wall ==.*\[Space\] Next.*" + PROMPT
 USERS = r"== Users ==.*" + PAUSE
-ACCT = r"== My account ==.*" + PAUSE
+ACCT = r"== My Account ==.*Q\) Back.*" + PROMPT   # My Account menu
 CONF = r"Log out\? \[y/N\] $"
+
+
+def bo(s):
+    """Main -> Boards -> Public boards (two keys)."""
+    s.k("1", BH)
+    return s.k("1", BOARDS)
+
+
+def priv(s, pat):
+    """From the Public boards list to the private board 'priv' (first private board)."""
+    s.k("q", BH)
+    s.k("2", PRIVB)
+    return s.k("1", pat)
+
+
+def users(s):
+    """Main -> Fame & Glory -> Users."""
+    s.k("4", FAME)
+    return s.k("1", USERS)
 
 
 def layout(name, scr, kind, w):
@@ -303,13 +327,13 @@ def s_layout(w):
     try:
         layout("welcome", last_screen(s.start()), "jump", w)
         layout("main", last_screen(s.k("x", MAIN)), "jump", w)
-        layout("boards", last_screen(s.k("1", BOARDS)), "jump", w)
+        layout("boards", last_screen(bo(s)), "jump", w)
         layout("thread list (board view)", last_screen(s.k("1", GEN())), "jump", w)
         layout("post view", last_screen(s.k("1", POST())), "local", w)
         s.k("q", GEN()); s.k("q", BOARDS)
-        layout("thread list, private board with members key", last_screen(s.k("3", title_pat("priv", r"S\) Members"))), "jump", w)
+        layout("thread list, private board with members key", last_screen(priv(s, title_pat("priv", r"S\) Members"))), "jump", w)
         layout("members", last_screen(s.k("s", title_pat("Members", r"A\) Add"))), "local", w)
-        s.k("q", title_pat("priv")); s.k("q", BOARDS); s.k("q", MAIN)
+        s.k("q", title_pat("priv")); s.k("q", PRIVB); s.k("q", BH); s.k("q", MAIN)
         layout("mail menu", last_screen(s.k("5", MAILM)), "jump", w)
         layout("inbox", last_screen(s.k("1", title_pat("Inbox", r"Number: open"))), "local", w)
         layout("mail_view (open message)", last_screen(s.k("1", title_pat("Inbox", r"R\) Reply"))), "local", w)
@@ -318,10 +342,10 @@ def s_layout(w):
         s.k("q", MAILM)
         layout("trash", last_screen(s.k("4", title_pat("Trash", r"Number: open"))), "local", w)
         s.k("q", MAILM); s.k("q", MAIN)
-        layout("users", last_screen(s.k("3", USERS)), "local", w)
-        s.k("x", MAIN)
-        layout("my account", last_screen(s.k("4", ACCT)), "local", w)
-        s.k("x", MAIN)
+        layout("users", last_screen(users(s)), "local", w)
+        s.k("x", FAME); s.k("q", MAIN)
+        layout("my account", last_screen(s.k("6", ACCT)), "jump", w)
+        s.k("q", MAIN)
         layout("wall", last_screen(s.k("2", WALL)), "jump", w)
         bad = s.rows_ok()
         chk("1 layout: no row wider than %d on any screen of the walk" % w, not bad, repr(bad[:2]))
@@ -335,17 +359,12 @@ def s_single(w):
     s, root, home = sess(w)
     try:
         s.main()
-        for key, pat, nm in (("1", BOARDS, "1 Boards"), ("2", WALL, "2 Wall"), ("3", USERS, "3 Users"),
-                             ("4", ACCT, "4 My account"), ("5", MAILM, "5 Private messages")):
+        for key, pat, nm in (("1", BH, "1 Boards"), ("2", WALL, "2 Wall"), ("4", FAME, "4 Fame & Glory"),
+                             ("6", ACCT, "6 My Account"), ("5", MAILM, "5 Mail")):
             s.send(key)
             t = s.expect(pat)
             chk("2 single key: %s acts without Enter" % nm, True)
-            if key in "12":
-                s.k("q", MAIN)
-            elif key == "5":
-                s.k("q", MAIN)
-            else:
-                s.k("x", MAIN)
+            s.k("q", MAIN)
         # case: letters
         for key, pat, nm in (("b", BOARDS, "B"), ("m", MAIN, "M"), ("p", MAILM, "P"), ("w", WALL, "W")):
             for kk in (key, key.upper()):
@@ -358,15 +377,15 @@ def s_single(w):
             s.k("n", MAIN)
             chk("2 case: main menu %s asks Log out?" % kk, True)
         # Enter alone / unknown keys
-        inert(s, b"\n\r\n", b"4", ACCT, "2 main menu: Enter alone")
-        s.k("x", MAIN)
-        inert(s, b"x z ! 9 0 7 8 /", b"4", ACCT, "2 main menu: unknown keys")
-        s.k("x", MAIN)
-        s.k("1", BOARDS)
+        inert(s, b"\n\r\n", b"6", ACCT, "2 main menu: Enter alone")
+        s.k("q", MAIN)
+        inert(s, b"x z ! 9 0 8 /", b"6", ACCT, "2 main menu: unknown keys")
+        s.k("q", MAIN)
+        bo(s)
         inert(s, b"\n\nx!", b"1", GEN(), "2 boards list: Enter and unknown key")
         inert(s, b"\nx", b"1", POST(), "2 thread list: Enter and unknown key")
         inert(s, b"\nx", b"q", GEN(), "2 open post: Enter and unknown key")
-        s.k("q", BOARDS); s.k("q", MAIN)
+        s.k("q", BOARDS); s.k("q", BH); s.k("q", MAIN)
         s.k("5", MAILM)
         inert(s, b"\nx", b"1", title_pat("Inbox", r"Number: open"), "2 mail menu: Enter and unknown key")
         inert(s, b"\nx", b"1", title_pat("Inbox", r"R\) Reply"), "2 inbox: Enter and unknown key")
@@ -395,8 +414,8 @@ def s_logout(w):
                     t = s.k(ans, MAIN)
                 chk("3 main %s then %s: stays (no logout)" % (kk, nm), "Bye." not in t)
         # after all that, the input is clean: a probe still works
-        inert(s, b"", b"4", ACCT, "3 main: nothing left over from the cancelled questions")
-        s.k("x", MAIN)
+        inert(s, b"", b"6", ACCT, "3 main: nothing left over from the cancelled questions")
+        s.k("q", MAIN)
         s.k("q", CONF)
         s.send("y")
         t = s.expect(r"Bye\.")
@@ -415,9 +434,9 @@ def s_logout(w):
     s, root, home = sess(w)
     try:
         s.main()
-        s.k("1", BOARDS); t = s.k("q", MAIN)
+        bo(s); t = s.k("q", BH); s.k("q", MAIN)
         chk("3 boards list: Q is back to main", True)
-        s.k("1", BOARDS); s.k("1", GEN()); s.k("q", BOARDS); s.k("q", MAIN)
+        bo(s); s.k("1", GEN()); s.k("q", BOARDS); s.k("q", BH); s.k("q", MAIN)
         chk("3 thread list: Q is back to boards list", True)
         s.k("5", MAILM); s.k("q", MAIN)
         chk("3 mail menu: Q is back to main", True)
@@ -427,8 +446,8 @@ def s_logout(w):
         s.close()
     # G outside the main menu
     for scr, setup, pat in (("welcome", lambda s: s.start(), r"== Welcome, alice ==.*?" + PROMPT),
-                            ("boards list", lambda s: (s.main(), s.k("1", BOARDS)), BOARDS),
-                            ("thread list", lambda s: (s.main(), s.k("1", BOARDS), s.k("1", GEN())), GEN()),
+                            ("boards list", lambda s: (s.main(), bo(s)), BOARDS),
+                            ("thread list", lambda s: (s.main(), bo(s), s.k("1", GEN())), GEN()),
                             ("mail menu", lambda s: (s.main(), s.k("5", MAILM)), MAILM),
                             ("wall", lambda s: (s.main(), s.k("2", WALL)), WALL)):
         s, root, home = sess(w)
@@ -447,16 +466,16 @@ def s_logout(w):
     # nothing in open posts, folders, open messages, edit_post, members
     s, root, home = sess(w)
     try:
-        s.main(); s.k("1", BOARDS); s.k("1", GEN()); s.k("1", POST())
+        s.main(); bo(s); s.k("1", GEN()); s.k("1", POST())
         inert(s, b"gG", b"q", GEN(), "3 G in an open post")
         s.k("1", POST())
         s.send("e"); s.expect(r"New subject \(\[Enter\] keeps\): $")
         s.k("\n", r"K\) Keep text.*" + PROMPT)
         inert(s, b"gG", b"q", GEN(), "3 G in edit_post (K/N/Q menu)")
-        s.k("q", BOARDS); s.k("3", title_pat("priv", r"S\) Members"))
+        s.k("q", BOARDS); priv(s, title_pat("priv", r"S\) Members"))
         s.k("s", title_pat("Members", r"A\) Add"))
         inert(s, b"gG", b"q", title_pat("priv", r"S\) Members"), "3 G in members")
-        s.k("q", BOARDS); s.k("q", MAIN)
+        s.k("q", PRIVB); s.k("q", BH); s.k("q", MAIN)
         s.k("5", MAILM)
         s.k("1", title_pat("Inbox", r"Number: open"))
         inert(s, b"gG", b"1", title_pat("Inbox", r"R\) Reply"), "3 G in a mail folder")
@@ -473,15 +492,15 @@ def s_logout(w):
 
 
 # ---------------------------------------------------------------- 4. jump keys
-JUMP = {"b": ("Public boards", BOARDS), "m": ("BashBBS", MAIN), "p": ("Private messages", MAILM), "w": ("Wall", WALL)}
+JUMP = {"b": ("Public boards", BOARDS), "m": ("BashBBS", MAIN), "p": ("Mail", MAILM), "w": ("Wall", WALL)}
 
 
 @scenario
 def s_jump(w):
     origins = (
         ("welcome", lambda s: s.start(), None),
-        ("boards list", lambda s: (s.main(), s.k("1", BOARDS)), lambda s: s.k("1", BOARDS)),
-        ("thread list", lambda s: (s.main(), s.k("1", BOARDS), s.k("1", GEN())), lambda s: (s.k("1", BOARDS), s.k("1", GEN()))),
+        ("boards list", lambda s: (s.main(), bo(s)), lambda s: bo(s)),
+        ("thread list", lambda s: (s.main(), bo(s), s.k("1", GEN())), lambda s: (bo(s), s.k("1", GEN()))),
         ("mail menu", lambda s: (s.main(), s.k("5", MAILM)), lambda s: s.k("5", MAILM)),
         ("wall", lambda s: (s.main(), s.k("2", WALL)), lambda s: s.k("2", WALL)),
     )
@@ -512,9 +531,9 @@ def s_jump(w):
     # ignored where the origin is a folder / open item / text input
     s, root, home = sess(w)
     try:
-        s.main(); s.k("1", BOARDS); s.k("1", GEN()); s.k("1", POST())
+        s.main(); bo(s); s.k("1", GEN()); s.k("1", POST())
         inert(s, b"bmwBMW", b"q", GEN(), "4 open post ignores B M W (P is Previous there)")
-        s.k("q", BOARDS); s.k("q", MAIN)
+        s.k("q", BOARDS); s.k("q", BH); s.k("q", MAIN)
         s.k("5", MAILM)
         s.k("1", title_pat("Inbox", r"Number: open"))
         inert(s, b"bmpwBMPW", b"1", title_pat("Inbox", r"R\) Reply"), "4 mail folder ignores B M P W")
@@ -524,7 +543,7 @@ def s_jump(w):
         chk("4 Q: message -> folder -> mail menu", True)
         s.k("q", MAIN)
         chk("4 Q: mail menu -> main", True)
-        s.k("1", BOARDS); s.k("1", GEN())
+        bo(s); s.k("1", GEN())
         # text input: bmpw are letters
         s.send("n"); s.expect(r"Subject: $")
         s.send("bmpwBMPWgG\n")
@@ -567,15 +586,15 @@ def s_help(w):
         s.screens.append(last_screen(t0))
         helpcheck("welcome", r"== Welcome, alice ==.*?" + PROMPT, b"g")
         s.k("x", MAIN); helpcheck("main", MAIN, b"q")
-        s.k("1", BOARDS); helpcheck("boards", BOARDS, b"q")
+        bo(s); helpcheck("boards", BOARDS, b"q")
         s.k("1", GEN()); helpcheck("thread list", GEN(), b"q")
         s.k("1", POST()); helpcheck("post", POST(), b"d")
         s.send("e"); s.expect(r"New subject \(\[Enter\] keeps\): $")
         s.k("\n", r"K\) Keep text.*" + PROMPT); helpcheck("edit_post", r"K\) Keep text.*" + PROMPT, b"q", True)
         s.k("q", GEN()); s.k("q", BOARDS)
-        s.k("3", title_pat("priv", r"S\) Members"))
+        priv(s, title_pat("priv", r"S\) Members"))
         s.k("s", title_pat("Members", r"A\) Add")); helpcheck("members", title_pat("Members", r"A\) Add"), b"q")
-        s.k("q", title_pat("priv")); s.k("q", BOARDS); s.k("q", MAIN)
+        s.k("q", title_pat("priv")); s.k("q", PRIVB); s.k("q", BH); s.k("q", MAIN)
         s.k("5", MAILM); helpcheck("mail menu", MAILM, b"q")
         s.k("1", title_pat("Inbox", r"Number: open")); helpcheck("inbox", title_pat("Inbox", r"Number: open"), b"q")
         s.k("1", title_pat("Inbox", r"R\) Reply")); helpcheck("mail_view (message)", title_pat("Inbox", r"R\) Reply"), b"d")
@@ -587,10 +606,11 @@ def s_help(w):
         s.k("2", WALL); helpcheck("wall", WALL, b"q")
         s.k("q", MAIN)
         # users / my account have no help: any key (including ?) simply returns
-        s.k("3", USERS); t = s.k("?", MAIN)
-        chk("5 users: any key (even ?) returns to main, no help screen", "== Help ==" not in t)
-        s.k("4", ACCT); t = s.k("?", MAIN)
-        chk("5 my account: any key (even ?) returns to main, no help screen", "== Help ==" not in t)
+        users(s); t = s.k("?", FAME)
+        chk("5 users: any key (even ?) returns to Fame & Glory, no help screen", "== Help ==" not in t)
+        s.k("q", MAIN)
+        s.k("6", ACCT); helpcheck("my account", ACCT, b"q")
+        s.k("q", MAIN)
         bad = s.rows_ok()
         chk("5 help walk: no row wider than %d" % w, not bad, repr(bad[:2]))
     finally:
@@ -627,22 +647,24 @@ def s_buffer(w):
         t = s.k("b\n\n\n\n", BOARDS)
         chk("7a B + 4 Enters: only B acts (one redraw)", len(CLR.split(t)) == 2, repr(t[:100]))
         inert(s, b"", b"q", MAIN, "7a ... and nothing is left over")
-        # 3 + Enters: Enters must not dismiss the [Any key] screen
-        t = s.k("3\n\n\n\n", USERS)
-        chk("7a 3 + 4 Enters: the Users screen stays up", len(CLR.split(t)) == 2)
-        t = s.k("z", MAIN)
-        chk("7a ... the next key dismisses it, one redraw of main", len(CLR.split(t)) == 2)
-        inert(s, b"", b"4", ACCT, "7a ... nothing left over")
-        s.k("x", MAIN)
+        # 4 + Enters: Enters must not dismiss the [Any key] screen
+        s.k("4", FAME)
+        t = s.k("1\n\n\n\n", USERS)
+        chk("7a 4 + 4 Enters: the Users screen stays up", len(CLR.split(t)) == 2)
+        t = s.k("z", FAME)
+        chk("7a ... the next key dismisses it, one redraw of Fame & Glory", len(CLR.split(t)) == 2)
+        s.k("q", MAIN)
+        inert(s, b"", b"6", ACCT, "7a ... nothing left over")
+        s.k("q", MAIN)
         # (d) arrow keys do nothing in menus
         for scr, setup, back, pat, probe, ppat in (
-                ("main", None, None, MAIN, b"4", ACCT),):
+                ("main", None, None, MAIN, b"6", ACCT),):
             inert(s, ARROWS, probe, ppat, "7d arrows in the %s menu" % scr)
-            s.k("x", MAIN)
-        s.k("1", BOARDS); inert(s, ARROWS, b"1", GEN(), "7d arrows in the boards list")
+            s.k("q", MAIN)
+        bo(s); inert(s, ARROWS, b"1", GEN(), "7d arrows in the boards list")
         inert(s, ARROWS, b"1", POST(), "7d arrows in the thread list")
         inert(s, ARROWS, b"q", GEN(), "7d arrows in an open post")
-        s.k("q", BOARDS); s.k("q", MAIN)
+        s.k("q", BOARDS); s.k("q", BH); s.k("q", MAIN)
         s.k("5", MAILM); inert(s, ARROWS, b"1", title_pat("Inbox", r"Number: open"), "7d arrows in the mail menu")
         inert(s, ARROWS, b"1", title_pat("Inbox", r"R\) Reply"), "7d arrows in a mail folder")
         inert(s, ARROWS, b"q", title_pat("Inbox", r"Number: open"), "7d arrows in an open message")
@@ -653,13 +675,13 @@ def s_buffer(w):
         for arrow in (b"\x1b[A", b"\x1b[B", b"\x1bOA"):
             s.k("q", CONF); t = s.k(arrow, MAIN)
             chk("7d %r at Log out?: no, stays" % arrow, "Bye." not in t)
-        inert(s, b"", b"4", ACCT, "7d ... no leftover bytes after the arrows at the confirm")
-        s.k("x", MAIN)
+        inert(s, b"", b"6", ACCT, "7d ... no leftover bytes after the arrows at the confirm")
+        s.k("q", MAIN)
         # (e) split escape sequence: ESC, 100 ms, [A
         s.send(ESC); time.sleep(0.1); s.send(b"[A")
-        inert(s, b"", b"4", ACCT, "7e ESC + 100 ms + [A in the main menu")
-        s.k("x", MAIN)
-        s.k("1", BOARDS); s.k("3", title_pat("priv", r"S\) Members")); s.k("s", title_pat("Members", r"A\) Add"))
+        inert(s, b"", b"6", ACCT, "7e ESC + 100 ms + [A in the main menu")
+        s.k("q", MAIN)
+        bo(s); priv(s, title_pat("priv", r"S\) Members")); s.k("s", title_pat("Members", r"A\) Add"))
         s.send(ESC); time.sleep(0.1); s.send(b"[A")
         # in members A is Add: an escaped A must not open the User: prompt
         t = s.k("q", title_pat("priv", r"S\) Members"))
@@ -682,7 +704,7 @@ def s_buffer(w):
     # (c) compose text, then Enters right behind it
     s, root, home = sess(w)
     try:
-        s.main(); s.k("1", BOARDS); s.k("1", GEN())
+        s.main(); bo(s); s.k("1", GEN())
         s.send("n"); s.expect(r"Subject: $")
         s.send("Rubrik\n"); s.expect(r"Write text\. End with a single dot \(\.\)\.\r\n")
         s.send("rad\n.\n\n\n\n")
@@ -692,7 +714,7 @@ def s_buffer(w):
         chk("7c ... then one redraw of the thread list, no menu action", len(CLR.split(t)) == 2)
         chk("7c the post was queued once", len(files(root, "*.post")) == 1)
         # wall: text + Enters
-        s.k("q", BOARDS); s.k("q", MAIN); s.k("2", WALL)
+        s.k("q", BOARDS); s.k("q", BH); s.k("q", MAIN); s.k("2", WALL)
         s.send("n"); s.expect(r"Back\.\r\n> $")
         s.send("hej\n\n\n\n"); s.expect(PAUSE)
         t = s.k("z", WALL)
@@ -704,8 +726,10 @@ def s_buffer(w):
     try:
         s.main()
         for i in range(50):
-            s.send(b"3"); s.expect(USERS)
-            s.send(b"x"); s.expect(MAIN)
+            s.send(b"4"); s.expect(FAME)
+            s.send(b"1"); s.expect(USERS)
+            s.send(b"x"); s.expect(FAME)
+            s.send(b"q"); s.expect(MAIN)
         chk("7f main menu + [Any key]: 50 keys sent at the prompt, none lost", True)
         for i in range(50):
             s.send(b"q"); s.expect(CONF)
@@ -734,10 +758,10 @@ def s_buffer(w):
         s, root, home = sess(w)
         try:
             s.main()
-            s.send(b"x"); time.sleep(d); s.send(b"z"); time.sleep(d); s.send(b"4")
+            s.send(b"x"); time.sleep(d); s.send(b"z"); time.sleep(d); s.send(b"6")
             s.expect(ACCT)
-            chk("7g %d ms: ignored keys then 4 arrive in order" % ms, True)
-            s.k("x", MAIN)
+            chk("7g %d ms: ignored keys then 6 arrive in order" % ms, True)
+            s.k("q", MAIN)
             s.send(b"2"); s.expect(WALL)
             s.send(b"n"); s.expect(r"Back\.\r\n> $")
             for ch in b"abcdef":
@@ -747,7 +771,7 @@ def s_buffer(w):
                 any(rd(f).strip() == "abcdef" for f in files(root, "*.wall")))
             s.k("x", WALL)
             s.k("q", MAIN)
-            s.k("1", BOARDS); s.k("3", title_pat("priv", r"S\) Members")); s.k("s", title_pat("Members", r"A\) Add"))
+            bo(s); priv(s, title_pat("priv", r"S\) Members")); s.k("s", title_pat("Members", r"A\) Add"))
             if d < 0.2:
                 s.send(ESC); time.sleep(d); s.send(b"[A")
                 t = s.k("q", title_pat("priv", r"S\) Members"))
@@ -758,7 +782,7 @@ def s_buffer(w):
             s.close()
         s, root, home = sess(w, "many", ["b%02d" % i for i in range(1, 13)])
         try:
-            s.main(); s.k("1", BOARDS.replace("K\\) New private board", "b12") if False else r"== Public boards ==.*b12.*" + PROMPT)
+            s.main(); s.k("1", BH); s.k("1", r"== Public boards ==.*b12.*" + PROMPT)
             s.send(b"1"); time.sleep(d); s.send(b"2")
             t = s.expect(r"== b12 ==.*" + PROMPT)
             chk("7g %d ms: two-digit board number 12 arrives in order" % ms, True)
@@ -776,7 +800,7 @@ BODY = ["Första stycket åäö", "", "Andra stycket 日本語 – q är bara te
 def s_text(w):
     s, root, home = sess(w)
     try:
-        s.main(); s.k("1", BOARDS); s.k("1", GEN())
+        s.main(); bo(s); s.k("1", GEN())
         s.send("n"); s.expect(r"Subject: $")
         s.send("Ämne åäö 日本\n"); s.expect(r"Write text\. End with a single dot \(\.\)\.\r\n")
         s.send("\n".join(BODY) + "\n.\n")
@@ -795,7 +819,7 @@ def s_text(w):
         s.k("1", POST()); s.send("r"); s.expect(r"Subject \[Enter keeps .*\]: (\r\n)?$")
         s.send("Svar\n"); s.expect(r"Quote\? \[Y/n\] "); s.send("n"); s.expect(r"single dot \(\.\)\.\r\n"); s.send("ja\n.\n"); s.expect(PAUSE)
         chk("11 reply: queued with Parent: m1", any("Parent: m1\n" in rd(x) and "Subject: Svar" in rd(x) for x in files(root, "*.post")))
-        s.k("x", GEN()); s.k("q", BOARDS); s.k("q", MAIN)
+        s.k("x", GEN()); s.k("q", BOARDS); s.k("q", BH); s.k("q", MAIN)
         # wall
         s.k("2", WALL)
         txt = "q är text bmpwg åäö 日本 end"
@@ -845,7 +869,7 @@ def s_text(w):
         s.k("q", MAILM); t = s.k("4", title_pat("Trash", r"Number: open"))
         chk("11 mail trash: list opens", "Raderat" in t)
         s.k("q", MAILM); s.k("q", MAIN)
-        t = s.k("4", ACCT)
+        s.k("6", ACCT); t = s.k("1", PAUSE)
         chk("11 my account: shows the name", "Name:  alice" in t)
     finally:
         s.close()
@@ -857,13 +881,13 @@ def s_utf8(w):
     s, root, home = sess(w)
     try:
         s.main()
-        s.k("1", BOARDS); s.k("1", GEN())
+        bo(s); s.k("1", GEN())
         t = s.k("1", POST())
         s.k("q", GEN())
-        t = s.k("2", POST() if False else r"== general ==.*日本語.*" + PROMPT)
+        t = s.k("2", POST() if False else r"== The Pub ==.*日本語.*" + PROMPT)
         s.k("q", GEN())
-        s.k("q", BOARDS); s.k("q", MAIN)
-        s.k("3", USERS); s.k("x", MAIN)
+        s.k("q", BOARDS); s.k("q", BH); s.k("q", MAIN)
+        users(s); s.k("x", FAME); s.k("q", MAIN)
         s.k("2", WALL); s.k("q", MAIN)
         s.k("5", MAILM); s.k("1", title_pat("Inbox", r"Number: open")); s.k("1", title_pat("Inbox", r"R\) Reply"))
         s.k("q", title_pat("Inbox", r"Number: open")); s.k("q", MAILM); s.k("3", title_pat("Sent", r"Number: open"))
@@ -916,7 +940,7 @@ def s_destructive(w):
                            (b"DELET\n", "DELET", False), (b"DELETE\n", "DELETE", True)):
         s, root, home = sess(w)
         try:
-            s.main(); s.k("1", BOARDS); s.k("1", GEN()); s.k("1", POST())
+            s.main(); bo(s); s.k("1", GEN()); s.k("1", POST())
             s.k("d", r"Type DELETE \(\[Enter\] Back\): $")
             s.send(text)
             if sent:
@@ -931,7 +955,7 @@ def s_destructive(w):
     # a post of somebody else: no D offered
     s, root, home = sess(w)
     try:
-        s.main(); s.k("1", BOARDS); s.k("1", GEN())
+        s.main(); bo(s); s.k("1", GEN())
         t = s.k("3", POST())
         chk("10 public post by others: no Delete or Edit offered to an ordinary user", "D) Delete" not in t and "E) Edit" not in t)
     finally:
@@ -943,7 +967,7 @@ def s_destructive(w):
 def s_commands(w):
     s, root, home = sess(w)
     try:
-        s.main(); s.k("1", BOARDS); s.k("1", GEN()); s.k("1", POST())
+        s.main(); bo(s); s.k("1", GEN()); s.k("1", POST())
         # edit: new subject, new text
         s.send("e"); s.expect(r"New subject \(\[Enter\] keeps\): $"); s.send("Nytt ämne\n")
         s.expect(r"K\) Keep text.*" + PROMPT); s.send("n"); s.expect(r"single dot \(\.\)\.\r\n")
@@ -964,7 +988,7 @@ def s_commands(w):
         chk("11 edit: Q cancels the edit (nothing queued)", len(files(root, "*.req")) == 2)
         s.k("q", BOARDS)
         # members
-        s.k("3", title_pat("priv", r"S\) Members")); s.k("s", title_pat("Members", r"A\) Add"))
+        priv(s, title_pat("priv", r"S\) Members")); s.k("s", title_pat("Members", r"A\) Add"))
         s.send("a"); s.expect(r"User: $"); s.send("bob\n"); s.expect(PAUSE)
         chk("11 members: add queued", any("Action: invite" in rd(x) and "User: bob" in rd(x) for x in files(root, "*.req")))
         s.k("x", title_pat("priv", r"S\) Members"))
@@ -972,9 +996,9 @@ def s_commands(w):
         chk("11 members: remove queued (capital R)", any("Action: remove" in rd(x) for x in files(root, "*.req")))
         s.k("x", title_pat("priv", r"S\) Members"))
         # new private board
-        s.k("q", BOARDS); s.send("k"); s.expect(r"Name \(a-z.*\): (\r\n)?$"); s.send("nyttbrade\n"); s.expect(PAUSE)
+        s.k("q", PRIVB); s.send("k"); s.expect(r"Name \(a-z.*\): (\r\n)?$"); s.send("nyttbrade\n"); s.expect(PAUSE)
         chk("11 new private board: create-board queued", any("Action: create-board" in rd(x) and "Board: nyttbrade" in rd(x) for x in files(root, "*.req")))
-        s.k("x", BOARDS)
+        s.k("x", PRIVB); s.k("q", BH); s.k("q", MAIN); bo(s)
         t = s.k("2", r"== hobby ==.*" + PROMPT)
         chk("11 second board opens", "Hobbypost" in t)
         bad = s.rows_ok()

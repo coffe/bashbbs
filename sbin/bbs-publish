@@ -61,6 +61,7 @@ WALL_LOCK=$STATE/wall.lock
 CALLERS_LOG=$STATE/callers.log      # "YYYY-MM-DDTHH:MMZ name", world readable
 CALLERS_TOTAL=$STATE/callers.total  # running number of logins
 CALLERS_LOCK=$STATE/callers.lock
+ACTIVITY_LOG=$STATE/activity.log    # "YYYY-MM-DD post|wall|call name", world readable; Fame & Glory
 CALLERS_KEEP=${BBS_CALLERS_KEEP:-500}
 [[ $CALLERS_KEEP =~ ^[0-9]{1,6}$ ]] && (( CALLERS_KEEP >= 1 )) || CALLERS_KEEP=500
 
@@ -383,6 +384,19 @@ quarantine() { # quarantine <file>
     fi
 }
 
+# Follows Parent up to the thread root and looks for "<root msgid> closed" in the pins file.
+thread_is_closed() { # thread_is_closed <board> <msgid>
+    local board=$1 id=$2 pins=$META/$1.pins pf p step
+    [[ -f $pins && ! -L $pins ]] || return 1
+    for (( step = 0; step < 1000; step++ )); do
+        pf=$(post_file "$board" "$id") || return 1
+        p=$(hdr_get "$pf" Parent)
+        [[ -n $p ]] || break
+        id=$p
+    done
+    grep -qxF -- "$id closed" "$pins"
+}
+
 handle_post() { # handle_post <file> <owner account>
     local f=$1 owner=$2 board subject parent msgid stamp out tmp
     board=$(field "$f" Board)
@@ -399,6 +413,11 @@ handle_post() { # handle_post <file> <owner account>
     fi
     # A read-only board (the news board) takes posts only from the news account.
     if [[ -f $META/$board.readonly && $owner != bbs-news ]]; then return 1; fi
+
+    # A closed thread (meta/<board>.pins) takes replies only from sysops.
+    if [[ -n $parent ]] && thread_is_closed "$board" "$parent" && ! is_sysop "${owner#bbs-}"; then
+        return 1
+    fi
 
     msgid=$(cat /proc/sys/kernel/random/uuid)
     stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -422,6 +441,10 @@ handle_post() { # handle_post <file> <owner account>
         chmod 0644 "$tmp" || return 1
     fi
     mv -f "$tmp" "$out" || return 1
+    # Private boards and the news accounts stay out of Fame & Glory.
+    if ! is_private "$board" && [[ $board != news && $owner != bbs-news && $owner != bbs-newsstatus ]]; then
+        activity_add post "$owner"
+    fi
     # The post is published; a failed mail never undoes it.
     [[ -z $parent ]] || reply_notify "$board" "$parent" "$owner" "$out" || true
     return 0
@@ -471,6 +494,34 @@ reply_notify() { # reply_notify <board> <parent msgid> <replier account> <new po
 }
 
 # Value of a header, read from the header block only (up to the first blank line).
+# One line for Fame & Glory. Never fails the publication it records.
+activity_add() { # activity_add <post|wall|call> <account>
+    { printf '%s %s %s\n' "$(date -u +%F)" "$1" "${2#bbs-}" >> "$ACTIVITY_LOG"; } 2>/dev/null
+    chmod 0644 "$ACTIVITY_LOG" 2>/dev/null
+    return 0
+}
+
+# Built once, when the log does not exist: the posts on public boards still on disk
+# (not deleted, not news), the Wall (newest 100) and the callers log (newest 500).
+activity_backfill() {
+    [[ -e $ACTIVITY_LOG ]] && return 0
+    local tmp=$ACTIVITY_LOG.tmp.$$ b name files
+    local prog='FNR == 1 { body = 0; a = ""; d = ""; x = 0 }
+        body { next }
+        /^$/ { body = 1; if (a != "" && !x && a != "news" && a != "newsstatus") print substr(d, 1, 10), kind, a; next }
+        /^Author: / { a = $2 } /^Date: / { d = $2 } /^Deleted: / { x = 1 }'
+    {
+        for b in "$BBS_ROOT"/boards/*/; do
+            name=$(basename "$b")
+            [[ $name == news ]] && continue
+            is_private "$name" && continue
+            find "$b" -maxdepth 1 -type f -name '*.msg' -exec awk -v kind=post "$prog" {} +
+        done
+        [[ -d $WALL ]] && find "$WALL" -maxdepth 1 -type f -name '*.msg' -exec awk -v kind=wall "$prog" {} +
+        [[ -r $CALLERS_LOG ]] && awk 'NF == 2 { print substr($1, 1, 10), "call", $2 }' "$CALLERS_LOG"
+    } | sort > "$tmp" && chmod 0644 "$tmp" && mv -f -- "$tmp" "$ACTIVITY_LOG" || rm -f -- "$tmp"
+}
+
 hdr_get() { # hdr_get <file> <Name>
     sed '/^$/q' "$1" | sed -n "s/^$2: *//p" | head -n 1
 }
@@ -667,6 +718,7 @@ handle_wall() { # handle_wall <file> <owner account>
         || { rm -f -- "$tmp"; wall_lock_drop; return 2; }
     wall_trim
     wall_lock_drop
+    activity_add wall "$owner"
     return 0
 }
 
@@ -686,6 +738,7 @@ handle_call() { # handle_call <file> <owner account>
         total=$(head -n 1 "$CALLERS_TOTAL" 2>/dev/null)
         [[ $total =~ ^[0-9]{1,12}$ ]] || total=$(wc -l < "$CALLERS_LOG" 2>/dev/null || echo 0)
         printf '%s %s\n' "$stamp" "$name" >> "$CALLERS_LOG"
+        activity_add call "$name"
         tmp=$CALLERS_TOTAL.tmp.$$
         echo $(( total + 1 )) > "$tmp" && chmod 0644 "$tmp" && mv -f -- "$tmp" "$CALLERS_TOTAL"
         chmod 0644 "$CALLERS_LOG"
@@ -792,6 +845,7 @@ repair_index() {
 
 reconcile_sysops
 mkdir -p "$STATE/tmp" 2>/dev/null
+activity_backfill
 news_sections_on && repair_index
 for f in "$INCOMING"/*.post "$INCOMING"/*.req "$INCOMING"/*.wall "$INCOMING"/*.call; do
     process "$f"

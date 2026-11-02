@@ -169,14 +169,14 @@ STEPS=('Subject=>nytt\n' 'Write text=>hej\n.\n' 'Any key=>x')
 check "new thread: runs without a Quote question" drive "compose general ''"
 check "new thread: no Parent, no quote, no Quote? prompt" bash -c "! grep -q '^Parent' '$(lastq)' && ! grep -q Quote '$out/c.txt' && ! grep -q '^>' '$(lastq)'"
 
-# 5. Reply mail switch in My account.
+# 5. Reply mail switch in My Account > 3 Settings.
 mkdir -p "$root/users/alice"; printf 'name=alice\nuuid=x\n' > "$root/users/alice/profile"
 check "prefs: default is on" eq "$(lib eval 'prefs_load; echo $REPLYMAIL')" 1
-STEPS=('Reply mail: on=>n' 'Reply mail: off=>x')
+STEPS=('Q) Back=>3' 'Reply mail: on=>n' 'Reply mail: off=>x' 'Q) Back=>q')
 check "my_account: N turns reply mail off" drive "me=alice; my_account"
 check "my_account: saved with both keys" bash -c "grep -qx 'replymail=0' '$root/home/.bashbbs-prefs' && grep -qx 'color=0' '$root/home/.bashbbs-prefs'"
 check "prefs: read back as off" eq "$(lib eval 'prefs_load; echo $REPLYMAIL')" 0
-STEPS=('Reply mail: off=>n' 'Reply mail: on=>x')
+STEPS=('Q) Back=>3' 'Reply mail: off=>n' 'Reply mail: on=>x' 'Q) Back=>q')
 check "my_account: N turns it on again" drive "me=alice; my_account"
 check "prefs: on again" grep -qx 'replymail=1' "$root/home/.bashbbs-prefs"
 

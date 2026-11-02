@@ -460,12 +460,34 @@ list_users() {
 }
 
 my_account() {
+    while true; do
+        redraw
+        screen_header "My Account" "[Q] Back"
+        menu_item 1 "Profile"
+        menu_item 2 "SSH Keys"
+        menu_item 3 "Settings"
+        echo
+        keyline "Q) Back"
+        menu_key "> " "123Qq" "1-3: pick a section
+Q: back
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
+            1) account_profile ;;
+            2) ssh_keys_menu ;;
+            3) account_settings ;;
+            [Qq]) return ;;
+        esac
+        [[ -n $nav_req ]] && return
+    done
+}
+
+account_profile() {
     local uuid keys
     uuid=$(sed -n 's/^uuid=//p' "$BBS_ROOT/users/$me/profile" 2>/dev/null | safe)
     keys=$(grep -c . "$BBS_ROOT/keys/$login" 2>/dev/null || echo 0)
-    while true; do
     redraw
-    local_header "My account"
+    local_header "Profile"
     echo "Name:  $me"
     if (( ${#uuid} + 7 > $(list_width) )); then   # 36 characters do not fit beside the label at 40 columns
         echo "UUID:"
@@ -475,21 +497,22 @@ my_account() {
     fi
     echo "Keys:  $keys registered"
     echo
-    echo "[K] SSH keys"
-    echo "[C] Colour: $( ((COLOR)) && echo on || echo off )"
-    echo "[N] Reply mail: $( ((REPLYMAIL)) && echo on || echo off )"
-    read_key "$(paint_bar "[Any key] ")" || true
-    echo
-    if [[ $MKEY == [Cc] ]]; then
-        COLOR=$(( 1 - COLOR )); color_init; prefs_save
-        continue
-    fi
-    if [[ $MKEY == [Nn] ]]; then
-        REPLYMAIL=$(( 1 - REPLYMAIL )); prefs_save
-        continue
-    fi
-    [[ $MKEY == [Kk] ]] && ssh_keys_menu
-    return 0
+    pause
+}
+
+account_settings() {
+    while true; do
+        redraw
+        local_header "Settings"
+        echo "[C] Colour: $( ((COLOR)) && echo on || echo off )"
+        echo "[N] Reply mail: $( ((REPLYMAIL)) && echo on || echo off )"
+        read_key "$(paint_bar "[Any key] ")" || true
+        echo
+        case $MKEY in
+            [Cc]) COLOR=$(( 1 - COLOR )); color_init; prefs_save ;;
+            [Nn]) REPLYMAIL=$(( 1 - REPLYMAIL )); prefs_save ;;
+            *) return 0 ;;
+        esac
     done
 }
 
@@ -893,27 +916,123 @@ local_header() { # local_header <title> [bar text]
 
 # ---- Stage B: public boards -------------------------------------------------
 
-board_menu() {
-    local boards b
+# Display name of a board. The directories stay lowercase ASCII (they are also
+# queue keys and group names), so only the label changes.
+board_label() {
+    case $1 in
+        general) printf 'The Pub' ;;
+        sharednews) printf 'Shared News' ;;
+        whatsup) printf "What's up?!" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# A private board is group-owned by bbsb-<name>. The official boards are not.
+board_is_private() { [[ $(stat -c %G "$1" 2>/dev/null) == bbsb-* ]]; }
+
+# One menu row: key, label in an 18-wide column, " - description", optional suffix in
+# the accent colour. Below 50 columns only the label and suffix are shown; a description
+# that does not fit is cut. The key and label are fixed strings or board labels, the
+# description may come from a data file and has passed safe().
+menu_item() { # menu_item <key> <label> [description] [suffix]
+    local k=$1 label=$2 desc=${3:-} suffix=${4:-} width room
+    width=$(list_width)
+    printf '%s ' "$(paint KEY "$k)")"
+    if [[ -z $desc ]] || (( width < 50 )); then
+        printf '%s' "$label"
+    else
+        room=$(( width - 24 - ${#suffix} - (${#suffix} ? 1 : 0) ))
+        (( ${#desc} > room )) && desc=$(list_fit "$room" "$desc")
+        printf '%-18s - %s' "$label" "$desc"
+    fi
+    [[ -n $suffix ]] && printf ' %s' "$(paint ACC "$suffix")"
+    echo
+}
+
+# First line of boards/<name>/.desc. Private boards without one get a standard text.
+board_desc() { # board_desc <name>
+    local line="" f=$BBS_ROOT/boards/$1/.desc
+    if [[ -f $f && ! -L $f && -r $f ]]; then
+        IFS= read -r line < "$f"
+        printf '%s' "$line" | safe | head -c 200
+    elif board_is_private "$BBS_ROOT/boards/$1"; then
+        printf 'A private board for invited members.'
+    fi
+}
+
+# Boards of one kind, in a fixed order. Public: The Pub, Shared News, What's up?!, then
+# the rest alphabetically; the news board has its own place in the main menu. Private:
+# the boards the user is a member of. Fills the array named by $2.
+board_order() { # board_order public|private <array>
+    local kind=$1 b name d
+    local -n _out=$2
+    local -a rest=()
+    _out=()
+    if [[ $kind == public ]]; then
+        for name in general sharednews whatsup; do
+            d=$BBS_ROOT/boards/$name
+            [[ -d $d && ! -L $d && -r $d && -x $d ]] && _out+=("$name")
+        done
+    fi
+    for b in "$BBS_ROOT"/boards/*/; do
+        b=${b%/}; name=$(basename "$b")
+        # Private boards stay hidden from users who are not members.
+        [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
+        [[ $kind == public && $name =~ ^(general|sharednews|whatsup|news)$ ]] && continue
+        if board_is_private "$b"; then
+            [[ $kind == private ]] && rest+=("$name")
+        else
+            [[ $kind == public ]] && rest+=("$name")
+        fi
+    done
+    _out+=("${rest[@]}")
+}
+
+# Boards: Public boards and Private boards. Key B jumps straight to Public boards.
+boards_home() {
     while true; do
         redraw
-        screen_header "Public boards" "[Q] Back"
-        boards=()
-        for b in "$BBS_ROOT"/boards/*/; do
-            b=${b%/}
-            # Private boards stay hidden from users who are not members.
-            [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
-            boards+=("$(basename "$b")")
-        done
+        screen_header "Boards" "[Q] Back"
+        menu_item 1 "Public boards"
+        menu_item 2 "Private boards"
+        echo
+        keyline "Q) Back"
+        menu_key "> " "12Qq" "1-2: pick a section
+Q: back
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
+            1) board_menu public ;;
+            2) board_menu private ;;
+            [Qq]) return ;;
+        esac
+        [[ -n $nav_req ]] && return
+    done
+}
+
+# One list of boards: Public boards, or Private boards (only those you belong to).
+board_menu() { # board_menu [public|private]
+    local kind=${1:-public} boards b title=${1:-public}
+    [[ $kind == private ]] && title="Private boards" || title="Public boards"
+    while true; do
+        redraw
+        screen_header "$title" "[Q] Back"
+        board_order "$kind" boards
         local i=1
         for b in "${boards[@]}"; do
-            echo "$(key "$i)") $b"
+            menu_item "$i" "$(board_label "$b")"
             i=$((i + 1))
         done
-        keyline "K) New private board   Q) Back"
-        menu_key "> " "KkQq$(digit_keys "${#boards[@]}")" \
+        echo
+        if [[ $kind == private ]]; then
+            (( ${#boards[@]} )) || echo "You are not in any private boards yet."
+            keyline "K) New private board   Q) Back"
+        else
+            keyline "Q) Back"
+        fi
+        menu_key "> " "$([[ $kind == private ]] && echo Kk)Qq$(digit_keys "${#boards[@]}")" \
 "Number: open a board
-K: new private board   Q: back
+$([[ $kind == private ]] && echo 'K: new private board   ')Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
@@ -1046,6 +1165,31 @@ visible_posts() { # visible_posts <board>
         }'
 }
 
+# Pinned threads: meta/<board>.pins, written by the sysop (root). One line per thread,
+# "<root msgid> open|closed", in display order. Closed means only sysops can reply;
+# sbin/bbs-publish enforces that, the menu only hides the key.
+pins_first() { # pins_first <board>: reorders the global rows, pinned threads first
+    local pins=$BBS_ROOT/meta/$1.pins id state row
+    local -a top=() rest=()
+    [[ -f $pins ]] || return 0
+    rest=("${rows[@]}")
+    while read -r id state; do
+        [[ $id =~ ^[0-9a-f-]{36}$ ]] || continue
+        local -a keep=()
+        for row in "${rest[@]}"; do
+            if [[ ${row%%$'\t'*} == *-"$id".msg ]]; then top+=("$row"); else keep+=("$row"); fi
+        done
+        rest=("${keep[@]}")
+    done < "$pins"
+    rows=("${top[@]}" "${rest[@]}")
+}
+
+thread_closed() { # thread_closed <board> <root file>
+    local pins=$BBS_ROOT/meta/$1.pins id=${2##*/}
+    id=${id%.msg}; id=${id#*-}
+    [[ -f $pins ]] && grep -qxF -- "$id closed" "$pins"
+}
+
 # Threads of a board, newest activity first. One line per thread:
 #   root-file<TAB>posts<TAB>last-epoch<TAB>new (1 if a post is newer than <since>, else 0)
 # The root is found by following Parent upwards until a post has none or its parent is not
@@ -1154,11 +1298,12 @@ board_view() {
     fi
     while true; do
         redraw
-        screen_header "$board" "[Q] Back"
+        screen_header "$(board_label "$board")" "[Q] Back"
         # Measured here, not inside the pipe below: there stdin is not the terminal and
         # term_width would fall back to 76 columns.
         wrapw=$(( $(term_width) - 5 ))
         mapfile -t rows < <(board_threads "$board" "$SEEN_PREV")
+        pins_first "$board"
         roots=() counts=() news=()
         local i=1 subject row suffix rest line cnt isnew
         for row in "${rows[@]}"; do
@@ -1244,7 +1389,7 @@ _thread_view() {
     while true; do
         f=${files[k]}
         redraw
-        local_header "$board" "[Q] Back"
+        local_header "$(board_label "$board")" "[Q] Back"
         width=$(term_width)
         author=$(post_hdr "$f" Author); date=$(local_time "$(post_hdr "$f" Date)")
         head="#$((k + 1))/$n  $author  $date"
@@ -1288,10 +1433,13 @@ post_actions() { # post_actions <board> <file>
     local author
     author=$(post_hdr "$f" Author)
     if [[ -z $(post_hdr "$f" Deleted) ]] && ! is_readonly "$board"; then
-        cmds+="R) Reply"; keys+=Rr hint+="R: reply"
-        [[ $author == "$me" ]] && { cmds+="  E) Edit"; keys+=Ee; hint+="  E: edit"; }
+        # $root is the thread being read, a local of _thread_view.
+        if ! thread_closed "$board" "$root" || is_sysop; then
+            cmds+="R) Reply"; keys+=Rr hint+="R: reply"
+        fi
+        [[ $author == "$me" ]] && { cmds+="${cmds:+  }E) Edit"; keys+=Ee; hint+="  E: edit"; }
         if [[ $author == "$me" ]] || is_sysop || manages "$board"; then
-            cmds+="  D) Delete"; keys+=Dd; hint+="  D: delete"
+            cmds+="${cmds:+  }D) Delete"; keys+=Dd; hint+="  D: delete"
         fi
     fi
     # Two lines: the full line does not fit in 40 columns.
@@ -1478,7 +1626,7 @@ Q: back" local || return
 
 # ---- Stage B: private mail via local Postfix --------------------------------
 
-# ---- Private messages -------------------------------------------------------
+# ---- Mail (private messages) -------------------------------------------------------
 # Mail is Maildir in ~/Maildir and Postfix delivers. The Inbox is ~/Maildir,
 # Sent and Trash are Maildir++ dot folders. A user moves or deletes only
 # files in the own Maildir. The other side keeps its copy.
@@ -1487,15 +1635,14 @@ mail_menu() {
     local note="" n
     while true; do
         redraw
-        screen_header "Private messages" "[Q] Back"
-        {
-            # Unread mail: the word Inbox in the accent colour (the 1) key stays mint).
-            local l1; l1=$(keyline "1) Inbox   2) Write")
-            (( COLOR )) && (( $(mail_unread) > 0 )) && l1=${l1/Inbox/"${C_ACC}Inbox${C_RST}"}
-            printf '%s\n' "$l1"
-        }
-        keyline "3) Sent    4) Trash   Q) Back"
-        keyline "L) Look 4 new mail"
+        screen_header "Mail" "[Q] Back"
+        n=$(mail_unread)
+        menu_item 1 "Inbox" "" "$( (( n > 0 )) && echo "($n unread)")"
+        menu_item 2 "Write Message"
+        menu_item 3 "Sent Messages"
+        menu_item 4 "Trash"
+        echo
+        keyline "L) Look 4 new mail   Q) Back"
         [[ -n $note ]] && { echo; echo "$note"; }
         note=""
         menu_key "> " "1234QqLl" "1-4: Inbox, Write, Sent, Trash
@@ -1763,17 +1910,14 @@ main_menu() {
     while true; do
         redraw
         screen_header "BashBBS"
-        keyline "1) Public boards"
-        keyline "2) Wall"
-        keyline "3) Users"
-        keyline "4) My account"
-        {
-            local un; un=$(mail_unread)
-            printf '%s' "$(keyline "5) Private messages   ")"
-            if (( un > 0 )); then paint ACC "($un unread)"; else printf '(%s unread)' "$un"; fi
-            echo
-        }
-        keyline "6) Last callers"
+        local un; un=$(mail_unread)
+        menu_item 1 "Boards"
+        menu_item 2 "Wall"
+        menu_item 3 "News"
+        menu_item 4 "Fame & Glory"
+        menu_item 5 "Mail" "" "$( (( un > 0 )) && echo "($un unread)")"
+        menu_item 6 "My Account"
+        echo
         keyline "Q) Log out"
         menu_key "> " "123456Qq" "1-6: pick a section
 Q or G: log out
@@ -1783,14 +1927,94 @@ B M P W: jump" || { nav_req=quit; return; }
         esac
         nav_key "$MKEY" && return
         case $MKEY in
-            1) nav_req=boards; return ;;
+            1) nav_req=boardshome; return ;;
             2) nav_req=wall; return ;;
-            3) list_users; pause ;;
-            4) my_account ;;
+            3) nav_req=news; return ;;
+            4) nav_req=fame; return ;;
             5) nav_req=mail; return ;;
-            6) callers_view ;;
+            6) my_account; [[ -n $nav_req ]] && return ;;
         esac
     done
+}
+
+# News goes straight to the section list. Without sections it is an ordinary board.
+news_open() {
+    if [[ -f $BBS_ROOT/meta/news.sections ]]; then news_board; else board_view news; fi
+}
+
+# ---- Fame & Glory -------------------------------------------------------------
+# Top Uploaders and Top Downloads join between these rows when file areas exist.
+FAME_SHOW=10
+
+fame_menu() {
+    while true; do
+        redraw
+        screen_header "Fame & Glory" "[Q] Back"
+        menu_item 1 "Users"
+        menu_item 2 "Last Callers"
+        menu_item 3 "Most Active"
+        menu_item 4 "BBS Records"
+        echo
+        keyline "Q) Back"
+        menu_key "> " "1234Qq" "1-4: pick a list
+Q: back
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
+            [Qq]) return ;;
+            1) list_users; pause ;;
+            2) callers_view ;;
+            3) most_active_view ;;
+            4) records_view ;;
+        esac
+    done
+}
+
+# Posts per user from state/activity.log ("YYYY-MM-DD post|wall|call name", written by
+# bbs-publish; private boards and news never get there). Hidden accounts are left out.
+most_active_view() {
+    local c n shown=0 width
+    redraw
+    local_header "Most Active"
+    width=$(list_width)
+    echo "Posts on public boards and the Wall."
+    echo
+    while read -r c n; do
+        [[ $n =~ ^[a-z0-9_-]+$ ]] || continue
+        grep -qsx 'hidden=yes' "$BBS_ROOT/users/$n/profile" && continue
+        printf '%5d  %s\n' "$c" "$(list_fit $(( width - 7 )) "$n")"
+        shown=$(( shown + 1 ))
+        (( shown >= FAME_SHOW )) && break
+    done < <(awk '$2 == "post" || $2 == "wall" { c[$3]++ } END { for (n in c) print c[n], n }' \
+                 "$BBS_ROOT/state/activity.log" 2>/dev/null | sort -k1,1nr -k2,2)
+    (( shown )) || echo "Nobody yet."
+    echo
+    pause
+}
+
+# The busiest day for calls and for posts (the earliest, on a tie) and total calls.
+records_view() {
+    local calls="" cdate="" posts="" pdate="" total
+    redraw
+    local_header "BBS Records"
+    read -r calls cdate posts pdate < <(awk '
+        $2 == "call" { c[$1]++ }
+        $2 == "post" || $2 == "wall" { p[$1]++ }
+        function best(a, d) {
+            bn = 0; bd = "-"
+            for (d in a) if (a[d] > bn || (a[d] == bn && d < bd)) { bn = a[d]; bd = d }
+            return bn " " bd
+        }
+        END { print best(c), best(p) }' "$BBS_ROOT/state/activity.log" 2>/dev/null)
+    total=$(head -n 1 "$BBS_ROOT/state/callers.total" 2>/dev/null)
+    [[ $total =~ ^[0-9]+$ ]] || total=0
+    if (( ${calls:-0} )); then printf '%-20s %s on %s\n' "Most calls in a day" "$calls" "$cdate"
+    else printf '%-20s %s\n' "Most calls in a day" "-"; fi
+    if (( ${posts:-0} )); then printf '%-20s %s on %s\n' "Most posts in a day" "$posts" "$pdate"
+    else printf '%-20s %s\n' "Most posts in a day" "-"; fi
+    printf '%-20s %s\n' "Total calls" "$total"
+    echo
+    pause
 }
 
 # ---- Callers: visitor counter and the last callers ---------------------------
@@ -2253,7 +2477,10 @@ if [[ -z ${BASHBBS_TEST:-} ]]; then
         case $section in
             quit) break ;;
             main) main_menu ;;
-            boards) board_menu ;;
+            boards) board_menu public ;;
+            boardshome) boards_home ;;
+            news) news_open ;;
+            fame) fame_menu ;;
             wall) wall_menu ;;
             mail) mail_menu ;;
         esac

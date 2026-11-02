@@ -62,20 +62,20 @@ drive "$out/c.txt" 0 'main_menu' 'Q) Log out=>?' 'Any key=>x' 'Q) Log out=>Q' 'L
 c=$(tr -d '\r' < "$out/c.txt")
 check "top bar: plain 'Mail (1)' after the message arrived" bash -c "grep -q '\[B\] Boards \[M\] Main \[P\] Mail (1) \[W\] Wall' <<<'$c'"
 check "top bar: no indicator before the message arrived" bash -c "grep -q '\[P\] Mail \[W\]' <<<'$c'"
-check "main menu counts it too" bash -c "grep -q 'Private messages   (1 unread)' <<<'$c'"
+check "main menu counts it too" bash -c "grep -q '5) Mail (1 unread)' <<<'$c'"
 mv_away
 check "top bar: no colour codes with colour off" not has "$out/c.txt" "$ESC\[[0-9;]*m"
 
 # 4. Mail menu: L) Look 4 new mail finds the message that arrived at the prompt.
 drive "$out/d.txt" 0 'mail_menu' 'Look 4 new mail=>l' '1 new message=>l' 'Q) Back=>q'
 d=$(tr -d '\r' < "$out/d.txt")
-check "mail menu lists L) Look 4 new mail" bash -c "grep -q '^L) Look 4 new mail' <<<'$d'"
-check "L reports the new message" bash -c "grep -q '^1 new message' <<<'$d'"
+check "mail menu lists L) Look 4 new mail" grep -q '^L) Look 4 new mail' "$out/d.txt"
+check "L reports the new message" grep -q '^1 new message' "$out/d.txt"
 check "session ends" has "$out/d.txt" DONE
 mv_away
 drive "$out/e.txt" 0 'mail_menu' 'Look 4 new mail=>l' 'Q) Back=>q'
 e=$(tr -d '\r' < "$out/e.txt")
-check "second look still counts it (no move to cur)" bash -c "grep -q '^1 new message' <<<'$e'"
+check "second look still counts it (no move to cur)" grep -q '^1 new message' "$out/e.txt"
 mv_away
 drive "$out/f.txt" 0 'mail_menu' 'Look 4 new mail=>q'
 mv_away

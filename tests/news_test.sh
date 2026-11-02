@@ -199,11 +199,15 @@ check(pos["fut"] < pos["bad"] < pos["old"], "index: future Published falls back 
 check("Legacy root file" not in idx.stdout and "Unknown category" not in idx.stdout and "Bad id" not in idx.stdout,
       "index: excluded files not listed")
 
-# ---- Session A: board_menu -> sections -> list -> reader ----
-t = Term(["bash", "-c", 'source "$1"; board_menu', "bash", menu], env_for(cols))
+# ---- Session A: news_open (main menu 3) -> sections -> list -> reader ----
+t = Term(["bash", "-c", 'source "$1"; board_menu public', "bash", menu], env_for(cols))
 t.read()
-check("Public boards" in t.screen and "1) news" in t.screen, "A: board menu lists the news board")
-ok = t.send("1", "NEWS")
+check("Public boards" in t.screen and "1) news" not in t.screen and "news" not in t.screen.split("Public boards")[1], "A: Public boards does not list the news board")
+t.send("Q")
+t.close()
+t = Term(["bash", "-c", 'source "$1"; news_open', "bash", menu], env_for(cols))
+t.read()
+ok = "NEWS" in t.screen
 check(ok and re.search(r"1  ai +10", t.screen) and re.search(r"2  security +2", t.screen), "A: sections with counts", t.screen[:200])
 check("[1-7] Open section" in t.screen, "A: section footer")
 ok = t.send("1", "NEWS / ai")
@@ -301,7 +305,6 @@ t.send("1", "Article 1 of 2")
 check("Article 1 of 2" in t.screen and "escape and  bell" in t.screen.replace("[2J", "") or "Body with" in t.screen, "A: hostile body shown without control bytes")
 t.send("Q", "NEWS / security")
 t.send("Q", "NEWS\n")
-t.send("Q", "Public boards")
 t.send("Q")
 screen_checks(t, "A", W)
 all_text = "\n".join(t.screens)
