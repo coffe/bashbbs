@@ -1971,7 +1971,8 @@ B M P W: jump   G: log out" || return
 }
 
 # Posts per user from state/activity.log ("YYYY-MM-DD post|wall|call name", written by
-# bbs-publish; private boards and news never get there). Hidden accounts are left out.
+# bbs-publish; private boards and news never get there). Hidden accounts and sysops
+# are left out.
 most_active_view() {
     local c n shown=0 width
     redraw
@@ -1982,6 +1983,7 @@ most_active_view() {
     while read -r c n; do
         [[ $n =~ ^[a-z0-9_-]+$ ]] || continue
         grep -qsx 'hidden=yes' "$BBS_ROOT/users/$n/profile" && continue
+        grep -qsx -- "$n" "$BBS_ROOT/sysops" && continue
         printf '%5d  %s\n' "$c" "$(list_fit $(( width - 7 )) "$n")"
         shown=$(( shown + 1 ))
         (( shown >= FAME_SHOW )) && break
@@ -2043,20 +2045,23 @@ caller_queue() {
     return 0
 }
 
-# The last CALLERS_SHOW callers, newest first: time (minute) and name.
+# The last CALLERS_SHOW callers, newest first: time (minute) and name. Sysops are
+# left out, but still count towards the caller number and the records.
 callers_view() {
-    local t n width
+    local t n width shown=0
     redraw
     local_header "Last callers"
     width=$(list_width)
     if [[ -r $BBS_ROOT/state/callers.log ]]; then
-        tail -n "$CALLERS_SHOW" "$BBS_ROOT/state/callers.log" | tac | while read -r t n; do
+        while read -r t n; do
+            grep -qsx -- "$n" "$BBS_ROOT/sysops" && continue
             n=$(printf '%s' "$n" | safe)
             printf '%s  %s\n' "$(local_time "$t")" "$(list_fit $(( width - 18 )) "$n")"
-        done
-    else
-        echo "Nobody yet."
+            shown=$(( shown + 1 ))
+            (( shown >= CALLERS_SHOW )) && break
+        done < <(tail -n 500 "$BBS_ROOT/state/callers.log" | tac)
     fi
+    (( shown )) || echo "Nobody yet."
     echo
     pause
 }

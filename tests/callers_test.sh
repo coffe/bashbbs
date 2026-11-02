@@ -99,6 +99,17 @@ check "view: oldest shown is user3" grep -q ' user3$' "$root/v.txt"
 check "view: user2 not shown" not grep -q ' user2$' "$root/v.txt"
 check "view fits 40 columns" fits 40 "$root/v.txt"
 check "Fame & Glory offers Last Callers" grep -q 'menu_item 2 "Last Callers"' "$here/lib/menu.sh"
+# 8. Sysops stay out of the view, and ten others still fill it.
+echo boss > "$root/sysops"
+{ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf '2026-11-01T10:%02dZ user%d\n' "$i" "$i"; printf '2026-11-01T10:%02dZ boss\n' "$i"; done; } > "$root/state/callers.log"
+SV=$(grep -n "^menu_run \"\$root/v.txt\"" "$0" | head -n 1 | cut -d: -f1)
+eval "$(sed -n "${SV}p" "$0" | sed 's#\$root/v.txt#$root/v2.txt#g')"
+check "view: sysop left out" not grep -q ' boss$' "$root/v2.txt"
+check "view: still 10 callers" eq "$(grep -c ' user[0-9]*$' "$root/v2.txt")" 10
+printf '2026-11-01T10:01Z boss\n' > "$root/state/callers.log"
+eval "$(sed -n "${SV}p" "$0" | sed 's#\$root/v.txt#$root/v3.txt#g')"
+check "view: only sysops gives Nobody yet" grep -q 'Nobody yet' "$root/v3.txt"
+rm -f "$root/sysops"
 
 echo "SUMMARY pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

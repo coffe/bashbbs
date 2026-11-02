@@ -105,6 +105,10 @@ mkdir -p "$root/users/ghost"; echo "hidden=yes" > "$root/users/ghost/profile"
 menu_run "$root/ma.txt" most_active_view
 check "most active: hidden user excluded" not grep -q ghost "$root/ma.txt"
 check "most active: call-only user not listed" not grep -q callonly "$root/ma.txt"
+echo "boss" > "$root/sysops"; for i in 1 2 3 4 5 6; do echo "2026-10-01 post boss"; done >> "$AL"
+menu_run "$root/ma2.txt" most_active_view
+check "most active: sysop excluded" not grep -q boss "$root/ma2.txt"
+rm -f "$root/sysops"; sed -i '/ boss$/d' "$AL"
 check "most active: ties by name (amy before zed), bob last" eq "$(grep -E '^ +[0-9]+  ' "$root/ma.txt" | awk '{print $2}' | tr '\n' ' ')" "amy zed bob "
 check "most active: counts" grep -Eq '^ +3  amy$' "$root/ma.txt"
 : > "$AL"
