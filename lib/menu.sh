@@ -1955,7 +1955,7 @@ games_menu() {
         redraw
         screen_header "Games" "[Q] Back"
         menu_item 1 "Hisingen Hustle" "Buy low. Sell high. Stay off the bridge."
-        menu_item 2 "Hisingen Hustle, other callers" "Play against the others on this BBS."
+        menu_item 2 "Hisingen Turf Wars" "Take on the other callers. Rule the streets!"
         echo
         keyline "Q) Back"
         menu_key "> " "12Qq" "1: play alone   2: play against other callers
