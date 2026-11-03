@@ -1958,7 +1958,7 @@ games_menu() {
         menu_item 2 "Hisingen Turf Wars" "Take on the other callers. Rule the streets!"
         echo
         keyline "Q) Back"
-        menu_key "> " "12Qq" "1: play alone   2: play against other callers
+        menu_key "> " "12Qq" "1: play alone   2: Turf Wars against other callers
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
