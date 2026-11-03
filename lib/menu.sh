@@ -1924,9 +1924,10 @@ main_menu() {
         menu_item 4 "Fame & Glory"
         menu_item 5 "Mail" "" "$( (( un > 0 )) && echo "($un unread)")"
         menu_item 6 "My Account"
+        menu_item 7 "Games"
         echo
         keyline "Q) Log out"
-        menu_key "> " "123456Qq" "1-6: pick a section
+        menu_key "> " "1234567Qq" "1-7: pick a section
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }
         case $MKEY in
@@ -1940,8 +1941,44 @@ B M P W: jump" || { nav_req=quit; return; }
             4) nav_req=fame; return ;;
             5) nav_req=mail; return ;;
             6) my_account; [[ -n $nav_req ]] && return ;;
+            7) games_menu; [[ -n $nav_req ]] && return ;;
         esac
     done
+}
+
+# ---- Games --------------------------------------------------------------------
+# Games are the unmodified Debian package dopewars (GPL), shown under our own name.
+GAMES_DOPEWARS=/usr/games/dopewars
+
+games_menu() {
+    while true; do
+        redraw
+        screen_header "Games" "[Q] Back"
+        menu_item 1 "Hisingen Hustle" "Buy low. Sell high. Stay off the bridge."
+        echo
+        keyline "Q) Back"
+        menu_key "> " "1Qq" "1: play Hisingen Hustle
+Q: back
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
+            [Qq]) return ;;
+            1) hisingen_hustle ;;
+        esac
+    done
+}
+
+hisingen_hustle() {
+    if [[ ! -x $GAMES_DOPEWARS ]]; then
+        echo "The game is not installed on this BBS."
+        pause
+        return
+    fi
+    # Black and white: the game's own colours are hard to read on a BBS terminal.
+    # -n: single player only, no network servers.
+    "$GAMES_DOPEWARS" --no-color -n -t 2>/dev/null
+    stty sane 2>/dev/null || true
+    drain_input
 }
 
 # News goes straight to the section list. Without sections it is an ordinary board.
