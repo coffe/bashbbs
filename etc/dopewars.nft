@@ -1,0 +1,11 @@
+#!/usr/sbin/nft -f
+# Multiplayer dopewars listens on all interfaces, so block its port from everywhere but lo.
+# Own table: does not touch zero-egress or any other table. Re-loading is safe.
+add table inet zero_dopewars
+delete table inet zero_dopewars
+table inet zero_dopewars {
+  chain input {
+    type filter hook input priority 0; policy accept;
+    tcp dport 7902 iif != "lo" drop
+  }
+}

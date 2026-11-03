@@ -1,0 +1,24 @@
+[Unit]
+Description=BashBBS multiplayer dopewars server (this host only)
+After=network.target zero-egress.service
+ConditionFileIsExecutable=/usr/games/dopewars
+
+[Service]
+Type=simple
+User=dopewars
+# Firewall first (root): drops port 7902 from every interface except lo.
+ExecStartPre=+/usr/sbin/nft -f /usr/local/lib/bashbbs/dopewars.nft
+# dopewars exits when its stdin reaches EOF (systemd gives /dev/null), so feed it a pipe that stays open.
+# A process substitution (< <(...)) did not work under systemd; a plain pipe does.
+# -S: private server, does not report to the metaserver. Score file and log live in StateDirectory.
+ExecStart=/bin/sh -c 'tail -f /dev/null | exec /usr/games/dopewars -S -p 7902 -f /var/lib/dopewars/dopewars.sco -l /var/lib/dopewars/server.log'
+StateDirectory=dopewars
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

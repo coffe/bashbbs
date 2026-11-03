@@ -1955,15 +1955,17 @@ games_menu() {
         redraw
         screen_header "Games" "[Q] Back"
         menu_item 1 "Hisingen Hustle" "Buy low. Sell high. Stay off the bridge."
+        menu_item 2 "Hisingen Hustle, other callers" "Play against the others on this BBS."
         echo
         keyline "Q) Back"
-        menu_key "> " "1Qq" "1: play Hisingen Hustle
+        menu_key "> " "12Qq" "1: play alone   2: play against other callers
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return ;;
             1) hisingen_hustle ;;
+            2) hisingen_multi ;;
         esac
     done
 }
@@ -1977,6 +1979,27 @@ hisingen_hustle() {
     # Black and white: the game's own colours are hard to read on a BBS terminal.
     # -n: single player only, no network servers.
     "$GAMES_DOPEWARS" --no-color -n -t 2>/dev/null
+    stty sane 2>/dev/null || true
+    drain_input
+}
+
+# Multiplayer: connects to the dopewars server on this host only (systemd/dopewars-server.service).
+# The server is not reachable from the network; the firewall rule is in etc/dopewars.nft.
+# The player name is the login name without the bbs- prefix.
+hisingen_multi() {
+    if [[ ! -x $GAMES_DOPEWARS ]]; then
+        echo "The game is not installed on this BBS."
+        pause
+        return
+    fi
+    if ! (exec 3<>/dev/tcp/127.0.0.1/7902) 2>/dev/null; then
+        echo "The multiplayer server is not running. Play alone for now."
+        pause
+        return
+    fi
+    local who
+    who=$(id -un); who=${who#bbs-}
+    "$GAMES_DOPEWARS" --no-color -t -o 127.0.0.1 -p 7902 -P "$who" 2>/dev/null
     stty sane 2>/dev/null || true
     drain_input
 }

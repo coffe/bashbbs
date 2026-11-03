@@ -47,6 +47,16 @@ install -m 0755 "$src/sbin/bbs-maildir" /usr/local/sbin/bbs-maildir
 install -m 0755 "$src/sbin/bbs-alias" /usr/local/sbin/bbs-alias
 install -m 0755 "$src/sbin/bbs-admin" /usr/local/sbin/bbs-admin
 install -m 0755 "$src/bin/bbs-health" /usr/local/sbin/bbs-health
+# Multiplayer Hisingen Hustle: a private dopewars server on this host, reached only through the menu.
+install -m 0644 "$src/etc/dopewars.nft" /usr/local/lib/bashbbs/dopewars.nft
+install -m 0644 "$src/systemd/dopewars-server.service" /etc/systemd/system/dopewars-server.service
+if [[ -x /usr/games/dopewars ]]; then
+    id dopewars >/dev/null 2>&1 || useradd --system --home-dir /var/lib/dopewars --shell /usr/sbin/nologin dopewars
+    systemctl daemon-reload
+    systemctl enable --now dopewars-server.service
+else
+    echo "dopewars not installed: multiplayer server skipped" >&2
+fi
 install -m 0644 "$src/lib/reserved-names.conf" /usr/local/lib/bashbbs/reserved-names.conf
 keep_or_note "$src/lib/news-categories.conf" /usr/local/lib/bashbbs/news-categories.conf
 install -m 0755 "$src/lib/wrap.py" /usr/local/lib/bashbbs/wrap.py
