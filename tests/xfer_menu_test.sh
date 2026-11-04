@@ -97,6 +97,7 @@ start
 seen "U) Upload" >/dev/null
 keys u
 seen "Waiting for your browser" >/dev/null
+check "upload: counts the files this user owns" grep -qE '^Your files: +1 B of' "$out"
 token=$(newest_ticket)
 res=$root/state/xfer-results/$token
 printf 'ok\tfirst.zip\t1500000200-bbbbbbbb\n' >> "$res"
