@@ -496,10 +496,14 @@ function put(file, bar, note) {
     x.send(file);
   });
 }
-async function check(names) {
+async function results() {
+  const r = await fetch(location.pathname + '?results=1');
+  return (await r.text()).split('\\n').filter(l => l);
+}
+// A link can be used again, so only lines written after this round began count.
+async function check(names, from) {
   for (let i = 0; i < 40; i++) {
-    const r = await fetch(location.pathname + '?results=1');
-    const lines = (await r.text()).split('\\n').map(l => l.split('\\t'));
+    const lines = (await results()).slice(from).map(l => l.split('\\t'));
     for (const [row, n] of names) {
       const hit = lines.filter(l => l[1] === n).pop();
       if (hit) row.textContent = hit[0] === 'ok' ? 'Accepted. It is on the BBS now.' : 'Not accepted: ' + hit[2];
@@ -510,6 +514,7 @@ async function check(names) {
   state.textContent = 'Still checking. See the file list in the BBS.';
 }
 go.addEventListener('click', async () => {
+  if (!input.files.length) return;
   go.disabled = true; input.disabled = true;
   const rows = [];
   for (const file of input.files) {
@@ -523,11 +528,12 @@ go.addEventListener('click', async () => {
     rows.push([file, bar, note]);
   }
   state.textContent = 'Sending...';
+  const from = (await results().catch(() => [])).length;
   for (const [file, bar, note] of rows) await put(file, bar, note);
   await fetch(location.pathname + '?done=1', {method: 'POST'});
   state.textContent = 'Testing...';
   const names = rows.map(([file, , note]) => [note, file.name.replace(/[^A-Za-z0-9._-]/gu, '_')]);
-  check(names);
+  check(names, from);
 });
 """
 

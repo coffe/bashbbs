@@ -174,6 +174,46 @@ ok=$root/.file; printf 'upload one\n' > "$ok"
 cgi GET "$TU" ""
 check "upload page: 200" eq "$(status)" 200
 check "upload page: script carries the nonce" bash -c 'n=$(sed -n "s/.*nonce-\([^;]*\).*/\1/p" "$1" | head -n 1 | tr -d "\r"); [[ -n $n ]] && grep -q "<script nonce=.$n" "$1"' _ "$out"
+# The page itself, with the browser stubbed. A link can be used twice.
+if command -v node >/dev/null; then
+    cp "$out" "$root/.page"
+    page() { node - "$root/.page" "$1" <<'EOF'
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
+const empty = process.argv[3] === 'empty';
+const el = () => ({ textContent: '', append() {}, addEventListener(_, f) { this.click = f; } });
+const ids = {};
+const rows = [];
+let polls = 0, posted = 0;
+let text = 'ok\ta.zip\t1-aaaaaaaa\ndone\n';     // the round before
+const document = {
+  getElementById: id => ids[id] || (ids[id] = el()),
+  createElement: () => { const e = el(); rows.push(e); return e; },
+};
+class XMLHttpRequest {
+  constructor() { this.upload = {}; this.status = 200; this.responseText = 'Received.'; }
+  open() {}
+  send() { setImmediate(() => this.onload()); }
+}
+const fetch = async (url, opts) => {
+  if (opts && opts.method === 'POST') { posted++; return { text: async () => 'Done.' }; }
+  if (posted && ++polls === 3) text += 'rejected\ta.zip\tduplicate\ndone\n';
+  return { text: async () => text };
+};
+const run = new Function('document', 'location', 'XMLHttpRequest', 'fetch', 'setTimeout', src);
+run(document, { pathname: '/x' }, XMLHttpRequest, fetch, f => setImmediate(f));
+ids.files.files = empty ? [] : [{ name: 'a.zip', size: 1 }];
+ids.go.click();
+setTimeout(() => {
+  const note = rows.length ? rows[2].textContent : '';   // li, progress, note
+  console.log([posted, ids.go.disabled ? 'off' : 'on', note, ids.state.textContent].join('|'));
+}, 300);
+EOF
+    }
+    check "page: an old done does not end a new round" \
+        eq "$(page second)" "1|off|Not accepted: duplicate|All done. You can close this page."
+    check "page: Send with no files does nothing" eq "$(page empty)" "0|on||"
+fi
 cgi PUT "$TU" "name=hello.txt" "$ok"
 check "PUT: 200" eq "$(status)" 200
 check "PUT: in place under its name" cmp "$ok" "$root/webup/$TU/hello.txt"

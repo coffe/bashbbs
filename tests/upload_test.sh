@@ -222,6 +222,29 @@ check "result: zip with a description" grep -qP '^ok\tup1\.zip\t[0-9]+-[0-9a-f]{
 check "result: zip without one" grep -qP '^ok\tup2\.zip\t[0-9]+-[0-9a-f]{8}\tarchive$' "$r"
 check "result: no note on other files" grep -qP '^ok\tup3\.txt\t[0-9]+-[0-9a-f]{8}$' "$r"
 
+# The last file lands while the sorter works on the one before: done waits for it.
+L=ABCDEFGHIJKLMNOPQRSTUW
+mkdir -p "$root/webup/$L" "$root/.stub"
+: > "$root/queue/xfer/$L"
+printf 'first\n' > "$root/webup/$L/early.txt"
+cat > "$root/.stub/sha256sum" <<EOF
+#!/bin/bash
+if [[ ! -e "$root/.stub/fired" ]]; then
+    : > "$root/.stub/fired"
+    printf 'last\n' > "$root/webup/$L/late.txt"
+    : > "$root/webup/$L/.done"
+fi
+exec /usr/bin/sha256sum "\$@"
+EOF
+chmod +x "$root/.stub/sha256sum"
+r=$root/state/xfer-results/$L
+up BBS_UPLOAD_TEST_OWNER=bbs-alice PATH="$root/.stub:$PATH"
+check "late file: no done before its result" not_grep '^done$' "$r"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "late file: gets its result" grep -qP '^ok\tlate\.txt\t' "$r"
+check "late file: done comes last" eq "$(tail -n 1 "$r")" done
+check "late file: done once" eq "$(grep -c '^done$' "$r")" 1
+
 # --- description requests ---
 mkdir -p "$root/queue/filedesc"
 D=1500000900-dddddddd

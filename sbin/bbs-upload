@@ -375,12 +375,16 @@ ticket_area() { # ticket_area <token> <account>
 # .done means the browser has sent everything, so "done" goes in the results after the
 # last file. A folder without a valid ticket is not trusted: its files are rejected.
 process_webup() {
-    local d token owner f name pending
+    local d token owner f name pending finished
     [[ -d $WEBUP ]] || return 0
     mkdir -p -m 0711 "$XFER_RESULTS"
     while IFS= read -r -d '' d; do
         token=${d##*/}
         pending=0
+        # Before the listing: a file that lands while this run works is not in it, and
+        # "done" must wait for that file. The browser asks for done after its last file.
+        finished=0
+        [[ -e $d/.done ]] && finished=1
         if owner=$(ticket_owner "$token"); then
             RESULTS_FILE=$XFER_RESULTS/$token
             UPLOAD_AREA=$(ticket_area "$token" "$owner")
@@ -409,7 +413,7 @@ process_webup() {
                     ;;
             esac
         done < <(find "$d" -mindepth 1 -maxdepth 1 -print0)
-        if [[ -e $d/.done ]] && (( pending == 0 )); then
+        if (( finished && pending == 0 )); then
             result_line done
             rm -f -- "$d/.done"
         fi
