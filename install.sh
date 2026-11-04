@@ -120,6 +120,10 @@ install -d -m 0711 /srv/bashbbs/incoming
 install -d -m 0700 /srv/bashbbs/incoming/rejected /srv/bashbbs/state/expired
 install -d -m 0755 /srv/bashbbs/published
 install -d -m 1733 /srv/bashbbs/queue/transfers /srv/bashbbs/queue/ip /srv/bashbbs/queue/filedel
+# Transfer links: tickets and wake-up requests for the sorter, same write-only pattern.
+# Results may be read by whoever knows the token, but the directory cannot be listed.
+install -d -m 1733 /srv/bashbbs/queue/xfer /srv/bashbbs/queue/kick
+install -d -m 0711 /srv/bashbbs/state/xfer-results
 getent passwd | awk -F: '$1 ~ /^bbs-/ && $7 == "/usr/local/sbin/bbs-shell" { print $1 }' | while IFS= read -r acct; do
     install -d -m 0700 -o "$acct" -g "$acct" "/srv/bashbbs/incoming/$acct"
 done
@@ -142,11 +146,11 @@ install -d -m 0750 -o root -g root /srv/bashbbs/drop/rejected
 
 # Timers: the publisher and the key handler every minute, the drop folder every
 # 5 minutes, history retention daily at 04:10.
-for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer bbs-upload.service bbs-upload.timer; do
+for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer bbs-upload.service bbs-upload.timer bbs-upload.path; do
     install -m 0644 "$src/systemd/$u" "/etc/systemd/system/$u"
 done
 systemctl daemon-reload
-systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer bbs-upload.timer
+systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer bbs-upload.timer bbs-upload.path
 
 # Application form. www-data writes new applications into incoming/ (write only,
 # no listing). The sysop moves them to done/ or rejected/ with bbs-approve.
@@ -161,6 +165,9 @@ install -d -m 0755 /var/www/bbs
 install -m 0644 "$src/web/index.html" /var/www/bbs/index.html
 install -m 0644 "$src/web/style.css" /var/www/bbs/style.css
 install -m 0755 "$src/web/apply.cgi" /var/www/bbs/apply.cgi
+install -m 0755 "$src/web/x.cgi" /var/www/bbs/x.cgi
+# x.cgi (www-data) keeps its uploads, its transfer slots and its log markers here.
+install -d -m 0700 -o www-data -g www-data /srv/bashbbs/webup /srv/bashbbs/state/xfer-done /srv/bashbbs/state/xfer-slots
 if command -v lighttpd >/dev/null; then
     install -d -m 0755 /var/log/lighttpd
     keep_or_note "$src/etc/lighttpd-bashbbs.conf" /etc/lighttpd/bashbbs.conf

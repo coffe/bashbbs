@@ -1,5 +1,8 @@
 [Unit]
 Description=BashBBS upload inbox sorter
+# Many uploads in a row each wake the sorter. The default limit would stop it, and the
+# path unit with it, until someone reset them.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

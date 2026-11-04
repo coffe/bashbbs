@@ -104,7 +104,7 @@ check "upload refused when over quota, no scp started" bash -c \
 # 6. bbs-upload turns the record and an accepted upload into log lines.
 printf 'hello\n' > "$root/incoming/alice/hi.txt"
 touch -d '10 minutes ago' "$root/incoming/alice/hi.txt"
-env BBS_ROOT="$root" BBS_UPLOAD_NOCHOWN=1 bash "$here/sbin/bbs-upload" >>"$log" 2>&1
+env BBS_ROOT="$root" BBS_UPLOAD_NOCHOWN=1 BBS_UPLOAD_TEST_OWNER=carol bash "$here/sbin/bbs-upload" >>"$log" 2>&1
 check "log: upload line with the address" bash -c \
     'awk -F"\t" "\$3==\"up\" && \$5==\"hi.txt\" && \$7==\"198.51.100.7\"" "$1" | grep -q .' _ "$root/state/transfers.log"
 check "log: download line with the user and address" bash -c \

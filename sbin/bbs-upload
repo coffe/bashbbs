@@ -1,5 +1,6 @@
 #!/bin/bash
-# Root-run every minute (bbs-upload.timer). Two jobs:
+# Root-run every minute (bbs-upload.timer), and at once when a file lands in
+# queue/kick/ (bbs-upload.path). Its jobs:
 #  1. Sorts files that users sent with scp -O (see bin/bbs-shell) from
 #     incoming/<user>/ into published/<id> (+ published/<id>.meta) or into
 #     incoming/rejected/.
@@ -8,6 +9,9 @@
 #     state/transfers.log, one tab-separated line per transfer:
 #     date user dir id name size ip   (dir is up, down or del)
 #  3. Carries out file removals asked for in the menu (queue/filedel/<id>.del).
+#  4. Sorts files sent through a transfer link (web/x.cgi) from webup/<token>/, for
+#     the owner of the ticket queue/xfer/<token>, and writes what happened to each
+#     file to state/xfer-results/<token>, where the session and the page can read it.
 #
 # Rules per file:
 #  - bbs-shell moves a file into the inbox only after scp has finished, so what
@@ -16,7 +20,8 @@
 #    by a lost connection or an over-size transfer, and its files are rejected.
 #  - Rejected: zero size, over the size limit, odd names (leading dot, control
 #    characters, over MAX_NAME bytes), not a regular file (symlinks, dirs),
-#    user quota, global quota or disk space. Rejected files go to
+#    user quota, global quota, disk space, or the same content (sha256) as a
+#    file already published. Rejected files go to
 #    incoming/rejected/<ts>-<user>-<n> with a reason on stderr (journal).
 #  - Accepted: moved to published/<id>, root-owned, mode 0644, with a sidecar
 #    .meta (user, name, size, sha256, date, ip). Visible to everyone at once.
@@ -41,13 +46,30 @@ QUEUE=$BBS_ROOT/queue
 LOG=$BBS_ROOT/state/transfers.log
 LOCK=$BBS_ROOT/state/upload.lock
 LOCK_WAIT=${BBS_LOCK_WAIT:-20}
+WEBUP=$BBS_ROOT/webup
+XFER=$QUEUE/xfer
+XFER_RESULTS=$BBS_ROOT/state/xfer-results
+XFER_DONE=$BBS_ROOT/state/xfer-done
+XFER_KEEP_SECS=${XFER_KEEP_SECS:-5400}           # tickets stay this long, past any request that uses them
+XFER_STATE_MINS=${XFER_STATE_MINS:-1440}         # results and log markers stay this long
+RESULTS_FILE=""                                  # set while sorting a transfer-link upload
 
 IDLE_SECS=${UPLOAD_IDLE_SECS:-60}                # a staging directory untouched this long and unlocked is abandoned
 MAX_NAME=${UPLOAD_MAX_NAME:-100}                 # bytes
 KEEP_DAYS=${UPLOAD_KEEP_DAYS:-14}                # rejected files kept this long
 
+# result_line <fields...>: one tab-separated line for the session waiting on this upload.
+result_line() {
+    [[ -n $RESULTS_FILE ]] || return 0
+    local IFS=$'\t'
+    printf '%s\n' "$*" >> "$RESULTS_FILE"
+}
+
 reject() { # reject <file> <user> <reason>
-    local f=$1 u=$2 why=$3 n=1 dest
+    local f=$1 u=$2 why=$3 n=1 dest shown
+    shown=$(basename -- "$f")
+    shown=${shown#.part-*-}          # an unfinished link upload: .part-<random>-<name>
+    result_line rejected "$(sanitize_name "$shown")" "$why"
     mkdir -p "$REJECTED"
     while :; do
         dest=$REJECTED/$(date +%s)-$u-$n
@@ -93,6 +115,13 @@ handle() { # handle <file> <user>
     if why=$(ub_check "$u" "$size"); then :; else reject "$f" "$u" "$why"; return; fi
 
     sum=$(sha256sum -- "$f" | cut -d' ' -f1)
+    # The meta files are root's, and a desc= line can never pass for a sha256= line.
+    local same
+    same=$(grep -lsx -- "sha256=$sum" "$PUBLISHED"/*.meta | head -n 1)
+    if [[ -n $same ]]; then
+        reject "$f" "$u" "already on the BBS as $(sed -n 's/^name=//p' "$same" | head -n 1)"
+        return
+    fi
     ip=$(client_ip "$u")
     id=$(date +%s)-$(cat /proc/sys/kernel/random/uuid | cut -c1-8)
     mkdir -p "$PUBLISHED"
@@ -113,6 +142,7 @@ handle() { # handle <file> <user>
     mv -- "$f" "$PUBLISHED/$id" || { rm -f -- "$PUBLISHED/$id.meta.tmp"; return; }
     mv -- "$PUBLISHED/$id.meta.tmp" "$PUBLISHED/$id.meta"
     log_line "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$u" up "$id" "$(sanitize_name "$name")" "$size" "$ip"
+    result_line ok "$(sanitize_name "$name")" "$id"
     echo "bbs-upload: accepted '$(sanitize_name "$name")' from $u as $id ($size bytes)"
 }
 
@@ -129,9 +159,12 @@ handle_stage() {
 }
 
 # Download records: queue/transfers/<file> with key=value lines written by
-# bbs-shell after a successful scp -f. Values are checked, never sourced.
+# bbs-shell after a successful scp -f, or by x.cgi as www-data. Values are checked,
+# never sourced, and only the user or x.cgi may speak for a user: the directory is
+# open to all accounts, and the log feeds the download counts.
+# BBS_UPLOAD_TEST_OWNER stands in for the owner in the tests.
 log_downloads() {
-    local rec u id name size ip
+    local rec u id name size ip owner
     [[ -d $QUEUE/transfers ]] || return 0
     for rec in "$QUEUE"/transfers/*; do
         [[ -f $rec && ! -L $rec ]] || continue
@@ -140,7 +173,11 @@ log_downloads() {
         name=$(sed -n 's/^name=//p' "$rec" | head -n 1)
         size=$(sed -n 's/^size=//p' "$rec" | head -n 1)
         ip=$(sed -n 's/^ip=//p' "$rec" | head -n 1 | tr -cd '0-9a-fA-F:.')
-        if [[ $u =~ ^[A-Za-z0-9_-]+$ && $id =~ ^[0-9]+-[0-9a-f]{8}$ && $size =~ ^[0-9]+$ ]]; then
+        owner=$(stat -c %U -- "$rec")
+        [[ -n ${BBS_UPLOAD_TEST_OWNER:-} ]] && owner=$BBS_UPLOAD_TEST_OWNER
+        if [[ $owner != "$u" && $owner != www-data ]]; then
+            echo "bbs-upload: ignored a transfer record for '$(sanitize_name "$u")' written by $owner" >&2
+        elif [[ $u =~ ^[A-Za-z0-9_-]+$ && $id =~ ^[0-9]+-[0-9a-f]{8}$ && $size =~ ^[0-9]+$ ]]; then
             log_line "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$u" down "$id" "$(sanitize_name "$name")" "$size" "${ip:--}"
         fi
         rm -f -- "$rec"          # our own record, already logged
@@ -184,12 +221,95 @@ process_removals() {
     done < <(find "$QUEUE/filedel" -mindepth 1 -maxdepth 1 -print0)
 }
 
+# ticket_owner <token>: prints the account a ticket belongs to, by the file's owner.
+# Nothing in the file is read: x.cgi checked it before it took the upload.
+ticket_owner() {
+    local rec=$XFER/$1 owner
+    [[ $1 =~ ^[A-Za-z0-9_-]{22}$ && -f $rec && ! -L $rec ]] || return 1
+    owner=$(stat -c %U -- "$rec")
+    [[ -n ${BBS_UPLOAD_TEST_OWNER:-} ]] && owner=$BBS_UPLOAD_TEST_OWNER
+    [[ $owner =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || return 1
+    printf '%s' "$owner"
+}
+
+# Link uploads: webup/<token>/<name> is complete; .part-* is being written, and x.cgi
+# holds a lock on it; one that is unlocked and idle was left by a lost connection.
+# .done means the browser has sent everything, so "done" goes in the results after the
+# last file. A folder without a valid ticket is not trusted: its files are rejected.
+process_webup() {
+    local d token owner f name pending
+    [[ -d $WEBUP ]] || return 0
+    mkdir -p -m 0711 "$XFER_RESULTS"
+    while IFS= read -r -d '' d; do
+        token=${d##*/}
+        pending=0
+        if owner=$(ticket_owner "$token"); then
+            RESULTS_FILE=$XFER_RESULTS/$token
+        else
+            owner=webup
+            RESULTS_FILE=""
+        fi
+        while IFS= read -r -d '' f; do
+            name=${f##*/}
+            case $name in
+                .done) continue ;;
+                .part-*)
+                    if [[ ! -f $f || -L $f ]] \
+                        || { (( $(date +%s) - $(stat -c %Y -- "$f") >= IDLE_SECS )) && flock -n "$f" true; }; then
+                        reject "$f" "$owner" "upload did not finish"
+                    else
+                        pending=1
+                    fi
+                    ;;
+                *)
+                    if [[ $owner == webup ]]; then
+                        reject "$f" webup "no valid ticket"
+                    else
+                        handle "$f" "$owner"
+                    fi
+                    ;;
+            esac
+        done < <(find "$d" -mindepth 1 -maxdepth 1 -print0)
+        if [[ -e $d/.done ]] && (( pending == 0 )); then
+            result_line done
+            rm -f -- "$d/.done"
+        fi
+        RESULTS_FILE=""
+        # The folder goes when its ticket does; x.cgi makes a new one if it needs to.
+        [[ -e $XFER/$token ]] || rmdir -- "$d" 2>/dev/null
+    done < <(find "$WEBUP" -mindepth 1 -maxdepth 1 -type d -print0)
+}
+
+# Tickets past any use, names that cannot be tickets, and old results and markers.
+# The queue is open to all accounts, so what is there may not be a plain file.
+expire_xfer() {
+    local rec now
+    now=$(date +%s)
+    find "$QUEUE/transfers" -maxdepth 1 -type f -name '.tmp-*' -mmin +60 -delete 2>/dev/null
+    if [[ -d $XFER ]]; then
+        while IFS= read -r -d '' rec; do
+            if [[ ! ${rec##*/} =~ ^[A-Za-z0-9_-]{22}$ || ! -f $rec || -L $rec ]] \
+                || (( now - $(stat -c %Z -- "$rec") >= XFER_KEEP_SECS )); then
+                find "$rec" -delete
+            fi
+        done < <(find "$XFER" -mindepth 1 -maxdepth 1 -print0)
+    fi
+    [[ -d $XFER_RESULTS ]] && find "$XFER_RESULTS" -mindepth 1 -maxdepth 1 -type f -mmin "+$XFER_STATE_MINS" -delete
+    [[ -d $XFER_DONE ]] && find "$XFER_DONE" -mindepth 1 -maxdepth 1 -type f -mmin "+$XFER_STATE_MINS" -delete
+    return 0
+}
+
 mkdir -p "$BBS_ROOT/state" 2>/dev/null
 exec 9>>"$BBS_ROOT/state/upload.lock" || exit 1
 flock -w "$LOCK_WAIT" 9 || { echo "bbs-upload: lock busy" >&2; exit 1; }
 
+# Empty the kick queue before the work, so a kick that arrives during it runs us again.
+[[ -d $QUEUE/kick ]] && find "$QUEUE/kick" -mindepth 1 -delete
+
 log_downloads
 process_removals      # before the sorting below, so a removal frees quota at once
+process_webup
+expire_xfer
 
 [[ -d $INCOMING ]] || exit 0
 for dir in "$INCOMING"/*/; do

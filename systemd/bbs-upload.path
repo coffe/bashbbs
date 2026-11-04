@@ -1,0 +1,11 @@
+[Unit]
+Description=Wake the BashBBS upload sorter when a transfer asks for it
+
+[Path]
+# A glob, not PathChanged: a change made while the sorter runs could go unseen, but
+# a file left here starts it again. The sorter empties the directory first thing.
+PathExistsGlob=/srv/bashbbs/queue/kick/*
+Unit=bbs-upload.service
+
+[Install]
+WantedBy=paths.target

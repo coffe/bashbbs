@@ -6,6 +6,8 @@ UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES:-10485760}          # 10 MB per file
 UPLOAD_USER_QUOTA=${UPLOAD_USER_QUOTA:-209715200}       # 200 MB per user in published/
 UPLOAD_GLOBAL_QUOTA=${UPLOAD_GLOBAL_QUOTA:-2147483648}  # 2 GB for all uploads
 UPLOAD_MIN_FREE_KB=${UPLOAD_MIN_FREE_KB:-1048576}       # refuse when less than 1 GB is free
+XFER_TTL_DOWN=${XFER_TTL_DOWN:-900}                     # a download link works for 15 minutes
+XFER_TTL_UP=${XFER_TTL_UP:-1800}                        # an upload link works for 30 minutes
 
 # ub_used [user]: bytes in published/, summed from the size= lines of the .meta
 # files (only one user's files when a user is given). Always prints a number.
