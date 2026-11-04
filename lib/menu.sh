@@ -995,13 +995,38 @@ board_order() { # board_order public|private <array>
     _out+=("${rest[@]}")
 }
 
+# Inherited unread marks. A gold * shows on a board row when the board has a thread with
+# a new post, on Public/Private boards when one of their boards has, and on Boards in the
+# main menu when either has. Only boards the user can see are scanned (board_order). One
+# scan per visit: UNREAD_STALE is set when a menu opens and after a board was read, so
+# redraws do not scan again.
+UNREAD_STALE=1 UNREAD_PUB=0 UNREAD_PRIV=0
+declare -A UNREAD=()
+unread_refresh() {
+    local b kind
+    local -a list=()
+    [[ $UNREAD_STALE == 1 ]] || return 0
+    UNREAD=() UNREAD_PUB=0 UNREAD_PRIV=0
+    for kind in public private; do
+        board_order "$kind" list
+        for b in "${list[@]}"; do
+            board_threads "$b" "$SEEN_PREV" | grep -q $'\t1$' || continue
+            UNREAD[$b]=1
+            if [[ $kind == public ]]; then UNREAD_PUB=1; else UNREAD_PRIV=1; fi
+        done
+    done
+    UNREAD_STALE=0
+}
+
 # Boards: Public boards and Private boards. Key B jumps straight to Public boards.
 boards_home() {
+    UNREAD_STALE=1
     while true; do
+        unread_refresh
         redraw
         screen_header "Boards" "[Q] Back"
-        menu_item 1 "Public boards"
-        menu_item 2 "Private boards"
+        menu_item 1 "Public boards" "" "$( (( UNREAD_PUB )) && echo '*')"
+        menu_item 2 "Private boards" "" "$( (( UNREAD_PRIV )) && echo '*')"
         echo
         keyline "Q) Back"
         menu_key "> " "12Qq" "1-2: pick a section
@@ -1021,13 +1046,15 @@ B M P W: jump   G: log out" || return
 board_menu() { # board_menu [public|private]
     local kind=${1:-public} boards b title=${1:-public}
     [[ $kind == private ]] && title="Private boards" || title="Public boards"
+    UNREAD_STALE=1
     while true; do
+        unread_refresh
         redraw
         screen_header "$title" "[Q] Back"
         board_order "$kind" boards
         local i=1
         for b in "${boards[@]}"; do
-            menu_item "$i" "$(board_label "$b")"
+            menu_item "$i" "$(board_label "$b")" "" "$( [[ -n ${UNREAD[$b]:-} ]] && echo '*')"
             i=$((i + 1))
         done
         echo
@@ -1049,6 +1076,7 @@ B M P W: jump   G: log out" || return
             *) continue ;;
         esac
         board_view "${boards[NUM - 1]}"
+        UNREAD_STALE=1   # reading may have moved the marks
         [[ -n $nav_req ]] && return
     done
 }
@@ -1218,7 +1246,7 @@ board_threads() { # board_threads <board> [since] [root-file]
         { file[++n] = $0; id[n] = ""; par[n] = ""; del[n] = 0; au[n] = ""
           while ((getline line < $0) > 0 && line != "" && line != "\r") {
               if (line ~ /^Msgid:/) id[n] = hdr(line)
-              else if (line ~ /^Author:/) au[n] = hdr(line)
+              else if (line ~ /^Author:/) { au[n] = hdr(line); sub(/^bbs-/, "", au[n]); sub(/@.*/, "", au[n]) }
               else if (line ~ /^Parent:/) par[n] = hdr(line)
               else if (line ~ /^Deleted:/) del[n] = 1
           }
@@ -1914,11 +1942,13 @@ mail_delete() { # mail_delete <file>
 # ---- Main menu --------------------------------------------------------------
 
 main_menu() {
+    UNREAD_STALE=1
     while true; do
+        unread_refresh
         redraw
         screen_header "BashBBS"
         local un; un=$(mail_unread)
-        menu_item 1 "Boards"
+        menu_item 1 "Boards" "" "$( (( UNREAD_PUB || UNREAD_PRIV )) && echo '*')"
         menu_item 2 "Wall"
         menu_item 3 "News"
         menu_item 4 "Fame & Glory"
