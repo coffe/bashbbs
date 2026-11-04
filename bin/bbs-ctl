@@ -1,0 +1,91 @@
+#!/bin/bash
+# bbs-ctl: read-only reports for the sysop and for LLM helpers. Always prints JSON.
+#   bbs-ctl status        health facts from bbs-health, as one JSON object
+#   bbs-ctl posts [N]     the N newest posts (default 20, max 200), no bodies, deleted ones skipped
+#   bbs-ctl apps          applications waiting in applications/incoming
+#   bbs-ctl users         bbs-* accounts with uid and login shell
+# Writes nothing and never calls sudo. A failure prints {"error": "..."} and exits 2.
+# Forced command for a future read-only account; see README before adding a write subcommand.
+set -uo pipefail
+export LC_ALL=C
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+HERE=$(cd "$(dirname "$0")" && pwd)
+HEALTH=${BBS_HEALTH:-$HERE/bbs-health}
+
+# jstr <text>: a JSON string literal. Escapes backslash, quote, tab and newline; drops CR.
+jstr() {
+    local s=$1
+    s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/\\t}; s=${s//$'\r'/}; s=${s//$'\n'/\\n}
+    printf '"%s"' "$s"
+}
+
+fail() { printf '{"error":%s}\n' "$(jstr "$1")"; exit 2; }
+
+# header <file> <Name>: the first value of a header in the header block (up to the first blank line).
+header() {
+    sed -n '/^\r\?$/q; p' "$1" | sed -n "s/^$2: //p" | head -n 1 | tr -d '\r'
+}
+
+cmd_status() {
+    local out k v sep=""
+    out=$("$HEALTH" 2>/dev/null) || fail "status: bbs-health failed"
+    printf '{'
+    while IFS='=' read -r k v; do
+        [[ -n $k ]] || continue
+        printf '%s%s:%s' "$sep" "$(jstr "$k")" "$(jstr "$v")"; sep=","
+    done <<< "$out"
+    printf '}\n'
+}
+
+cmd_posts() {
+    local n=${1:-20} file dir sep="" board msgid author date subject deleted count=0
+    [[ $n =~ ^[0-9]+$ ]] && (( n >= 1 && n <= 200 )) || fail "posts: N must be 1-200"
+    [[ -d $BBS_ROOT/boards ]] || fail "posts: cannot read $BBS_ROOT/boards"
+    printf '{"posts":['
+    # Deleted posts are skipped before counting, so N always means N visible posts.
+    while (( count < n )) && IFS=$'\t' read -r file dir; do
+        deleted=$(header "$dir/$file" Deleted)
+        [[ -z $deleted ]] || continue
+        board=$(basename "$dir")
+        msgid=$(header "$dir/$file" Msgid)
+        author=$(header "$dir/$file" Author)
+        date=$(header "$dir/$file" Date)
+        subject=$(header "$dir/$file" Subject)
+        printf '%s{"board":%s,"msgid":%s,"author":%s,"date":%s,"subject":%s}' \
+            "$sep" "$(jstr "$board")" "$(jstr "$msgid")" "$(jstr "$author")" "$(jstr "$date")" "$(jstr "$subject")"
+        sep=","; count=$((count + 1))
+    done < <(find "$BBS_ROOT/boards" -mindepth 2 -maxdepth 2 -type f -name '*.msg' -printf '%f\t%h\n' 2>/dev/null \
+        | sort -t$'\t' -k1,1nr)
+    printf ']}\n'
+}
+
+cmd_apps() {
+    local inc=$BBS_ROOT/applications/incoming f name sep=""
+    [[ -d $inc && -r $inc ]] || fail "apps: cannot read $inc"
+    printf '{"applications":['
+    while IFS= read -r f; do
+        name=$(sed -n 's/^name=//p' "$f" | head -n 1 | tr -d '\r')
+        printf '%s{"name":%s,"file":%s}' "$sep" "$(jstr "$name")" "$(jstr "$(basename "$f")")"
+        sep=","
+    done < <(find "$inc" -maxdepth 1 -name '*.app' -type f 2>/dev/null | sort)
+    printf ']}\n'
+}
+
+cmd_users() {
+    local name uid shell sep=""
+    printf '{"users":['
+    while IFS=: read -r name _ uid _ _ _ shell; do
+        printf '%s{"name":%s,"uid":%s,"shell":%s}' "$sep" "$(jstr "$name")" "$(jstr "$uid")" "$(jstr "$shell")"
+        sep=","
+    done < <(getent passwd | awk -F: '$1 ~ /^bbs-/')
+    printf ']}\n'
+}
+
+case ${1:-} in
+    status) cmd_status ;;
+    posts)  cmd_posts "${2:-20}" ;;
+    apps)   cmd_apps ;;
+    users)  cmd_users ;;
+    *)      echo "usage: bbs-ctl {status | posts [N] | apps | users}" >&2; exit 1 ;;
+esac
