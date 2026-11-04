@@ -1,0 +1,11 @@
+[Unit]
+Description=Run BashBBS upload sorter every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+# Without this systemd may wait a minute more; the menu promises about two minutes.
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

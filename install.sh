@@ -33,11 +33,13 @@ fi
 
 install -d -m 0755 /usr/local/lib/bashbbs
 install -m 0755 "$src/lib/menu.sh" /usr/local/lib/bashbbs/menu.sh
+install -m 0644 "$src/lib/upload-common.sh" /usr/local/lib/bashbbs/upload-common.sh
 install -m 0755 "$src/bin/bbs-shell" /usr/local/sbin/bbs-shell
 install -m 0755 "$src/sbin/bbs-provision" /usr/local/sbin/bbs-provision
 install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
 install -m 0755 "$src/bin/bbs-ingest" /usr/local/sbin/bbs-ingest
 install -m 0755 "$src/sbin/bbs-drop" /usr/local/sbin/bbs-drop
+install -m 0755 "$src/sbin/bbs-upload" /usr/local/sbin/bbs-upload
 install -m 0755 "$src/sbin/bbs-approve" /usr/local/sbin/bbs-approve
 install -m 0755 "$src/sbin/bbs-svara" /usr/local/sbin/bbs-svara
 install -m 0755 "$src/bin/bbs-news-status" /usr/local/sbin/bbs-news-status
@@ -109,6 +111,18 @@ install -d -m 0700 /srv/bashbbs/state/history /srv/bashbbs/state/admin-backup
 # are readable by the menu. Optional sysop config in etc/keys.conf.
 install -d -m 1733 /srv/bashbbs/queue/keys
 install -d -m 0700 /srv/bashbbs/state/keys-history
+
+# File areas. Each user has an inbox only they can read; bbs-upload (root) sorts it
+# into published/. The queues are write only and sticky: transfer records, the last
+# client address, and removal requests from the menu. Removed and old rejected files
+# end up in state/expired (root only). Accounts made before this get their inbox here.
+install -d -m 0711 /srv/bashbbs/incoming
+install -d -m 0700 /srv/bashbbs/incoming/rejected /srv/bashbbs/state/expired
+install -d -m 0755 /srv/bashbbs/published
+install -d -m 1733 /srv/bashbbs/queue/transfers /srv/bashbbs/queue/ip /srv/bashbbs/queue/filedel
+getent passwd | awk -F: '$1 ~ /^bbs-/ && $7 == "/usr/local/sbin/bbs-shell" { print $1 }' | while IFS= read -r acct; do
+    install -d -m 0700 -o "$acct" -g "$acct" "/srv/bashbbs/incoming/$acct"
+done
 install -d -m 0755 /srv/bashbbs/state/keys-results /srv/bashbbs/etc
 
 # Private boards: one meta file per board (owner, created). Sysops are listed
@@ -128,11 +142,11 @@ install -d -m 0750 -o root -g root /srv/bashbbs/drop/rejected
 
 # Timers: the publisher and the key handler every minute, the drop folder every
 # 5 minutes, history retention daily at 04:10.
-for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer; do
+for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer bbs-upload.service bbs-upload.timer; do
     install -m 0644 "$src/systemd/$u" "/etc/systemd/system/$u"
 done
 systemctl daemon-reload
-systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer
+systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer bbs-upload.timer
 
 # Application form. www-data writes new applications into incoming/ (write only,
 # no listing). The sysop moves them to done/ or rejected/ with bbs-approve.

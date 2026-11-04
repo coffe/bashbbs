@@ -44,6 +44,16 @@ ctl() { env BBS_ROOT="$root" BBS_HEALTH="$stub" "$here/bin/bbs-ctl" "$@"; }
 
 snapshot() { find "$root" -type f -exec md5sum {} + | sort; }
 
+# Transfer log (tab-separated, as sbin/bbs-upload writes it) and two published files.
+mkdir -p "$root/state" "$root/published"
+printf '2026-11-04T09:00:00Z\tbbs-alice\tup\t1500000001-aaaaaaaa\tfirst.zip\t100\t192.0.2.1\n' > "$root/state/transfers.log"
+printf '2026-11-04T09:05:00Z\tbbs-bob\tdown\t1500000001-aaaaaaaa\tfirst.zip\t100\t192.0.2.2\n' >> "$root/state/transfers.log"
+printf '2026-11-04T09:10:00Z\tbbs-bob\tup\t1500000002-bbbbbbbb\tsecond "x".lha\t200\t-\n' >> "$root/state/transfers.log"
+printf 'user=bbs-alice\nname=first.zip\nsize=100\nsha256=00\ndate=2026-11-04T09:00:00Z\nip=192.0.2.1\n' > "$root/published/1500000001-aaaaaaaa.meta"
+printf 'user=bbs-bob\nname=second "x".lha\nsize=200\nsha256=11\ndate=2026-11-04T09:10:00Z\nip=-\n' > "$root/published/1500000002-bbbbbbbb.meta"
+printf 'x' > "$root/published/1500000001-aaaaaaaa"
+printf 'y' > "$root/published/1500000002-bbbbbbbb"
+
 before=$(snapshot)
 
 out=$(ctl status); check "status: valid JSON" json_ok "$out"
@@ -62,6 +72,20 @@ check "posts: N out of range is refused" has "$(ctl posts 0)" '"error"'
 
 out=$(ctl apps); check "apps: valid JSON" json_ok "$out"
 check "apps: lists the applicant" has "$out" '"name":"alice"'
+
+out=$(ctl transfers); check "transfers: valid JSON" json_ok "$out"
+check "transfers: newest first" bash -c '[[ $1 == *"\"date\":\"2026-11-04T09:10:00Z\""*"\"date\":\"2026-11-04T09:00:00Z\""* ]]' _ "$out"
+check "transfers: direction and user included" has "$out" '"user":"bbs-bob","dir":"down"'
+check "transfers: IP included for the log" has "$out" '"ip":"192.0.2.1"'
+check "transfers: quotes escaped in names" has "$out" 'second \"x\".lha'
+check "transfers: N limits the count" bash -c '[[ $(grep -o "\"dir\"" <<< "$1" | wc -l) -eq 1 ]]' _ "$(ctl transfers 1)"
+check "transfers: N out of range is refused" has "$(ctl transfers 501)" '"error"'
+
+out=$(ctl files); check "files: valid JSON" json_ok "$out"
+check "files: newest first" bash -c '[[ $1 == *"\"id\":\"1500000002-bbbbbbbb\""*"\"id\":\"1500000001-aaaaaaaa\""* ]]' _ "$out"
+check "files: download count from the log" has "$out" '"id":"1500000001-aaaaaaaa","user":"bbs-alice","name":"first.zip","size":100,"date":"2026-11-04T09:00:00Z","downloads":1'
+check "files: uploader and size included" has "$out" '"user":"bbs-bob","name":"second \"x\".lha","size":200'
+check "files: data files and bodies never printed" not has "$out" "sha256"
 
 out=$(ctl users); check "users: valid JSON" json_ok "$out"
 check "users: unknown prefix is fine (empty or bbs- only)" bash -c 'grep -q "\"users\"" <<< "$1"' _ "$out"

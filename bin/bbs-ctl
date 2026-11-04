@@ -4,6 +4,8 @@
 #   bbs-ctl posts [N]     the N newest posts (default 20, max 200), no bodies, deleted ones skipped
 #   bbs-ctl apps          applications waiting in applications/incoming
 #   bbs-ctl users         bbs-* accounts with uid and login shell
+#   bbs-ctl transfers [N] the N newest file transfers (default 50, max 500) from state/transfers.log
+#   bbs-ctl files         published file areas: id, uploader, name, size, date, download count
 # Writes nothing and never calls sudo. A failure prints {"error": "..."} and exits 2.
 # Forced command for a future read-only account; see README before adding a write subcommand.
 set -uo pipefail
@@ -82,10 +84,49 @@ cmd_users() {
     printf ']}\n'
 }
 
+cmd_transfers() {
+    local n=${1:-50} log=$BBS_ROOT/state/transfers.log
+    local date user dir id name size ip sep=""
+    [[ $n =~ ^[0-9]+$ ]] && (( n >= 1 && n <= 500 )) || fail "transfers: N must be 1-500"
+    printf '{"transfers":['
+    if [[ -r $log ]]; then
+        # Newest first: the log is appended in time order, so reverse the tail.
+        while IFS=$'\t' read -r date user dir id name size ip; do
+            [[ $size =~ ^[0-9]+$ ]] || size=0
+            printf '%s{"date":%s,"user":%s,"dir":%s,"id":%s,"name":%s,"size":%s,"ip":%s}' "$sep" \
+                "$(jstr "$date")" "$(jstr "$user")" "$(jstr "$dir")" "$(jstr "$id")" \
+                "$(jstr "$name")" "$size" "$(jstr "${ip:--}")"
+            sep=","
+        done < <(tail -n "$n" -- "$log" | tac)
+    fi
+    printf ']}\n'
+}
+
+cmd_files() {
+    local pub=$BBS_ROOT/published log=$BBS_ROOT/state/transfers.log
+    local m id user name size date dls sep=""
+    [[ -d $pub && -r $pub ]] || fail "files: cannot read $pub"
+    printf '{"files":['
+    while IFS= read -r m; do
+        id=$(basename -- "$m" .meta)
+        user=$(sed -n 's/^user=//p' "$m" | head -n 1 | tr -d '\r')
+        name=$(sed -n 's/^name=//p' "$m" | head -n 1 | tr -d '\r')
+        size=$(sed -n 's/^size=//p' "$m" | head -n 1 | tr -cd '0-9'); size=${size:-0}
+        date=$(sed -n 's/^date=//p' "$m" | head -n 1 | tr -d '\r')
+        dls=$(awk -F'\t' -v id="$id" '$3 == "down" && $4 == id { n++ } END { print n + 0 }' "$log" 2>/dev/null)
+        printf '%s{"id":%s,"user":%s,"name":%s,"size":%s,"date":%s,"downloads":%s}' "$sep" \
+            "$(jstr "$id")" "$(jstr "$user")" "$(jstr "$name")" "$size" "$(jstr "$date")" "${dls:-0}"
+        sep=","
+    done < <(find "$pub" -maxdepth 1 -name '*.meta' -type f 2>/dev/null | sort -r)
+    printf ']}\n'
+}
+
 case ${1:-} in
-    status) cmd_status ;;
-    posts)  cmd_posts "${2:-20}" ;;
-    apps)   cmd_apps ;;
-    users)  cmd_users ;;
-    *)      echo "usage: bbs-ctl {status | posts [N] | apps | users}" >&2; exit 1 ;;
+    status)    cmd_status ;;
+    posts)     cmd_posts "${2:-20}" ;;
+    apps)      cmd_apps ;;
+    users)     cmd_users ;;
+    transfers) cmd_transfers "${2:-50}" ;;
+    files)     cmd_files ;;
+    *)         echo "usage: bbs-ctl {status | posts [N] | apps | users | transfers [N] | files}" >&2; exit 1 ;;
 esac

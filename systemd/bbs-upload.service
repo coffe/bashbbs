@@ -1,0 +1,6 @@
+[Unit]
+Description=BashBBS upload inbox sorter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbs-upload

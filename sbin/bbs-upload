@@ -1,0 +1,216 @@
+#!/bin/bash
+# Root-run every minute (bbs-upload.timer). Two jobs:
+#  1. Sorts files that users sent with scp -O (see bin/bbs-shell) from
+#     incoming/<user>/ into published/<id> (+ published/<id>.meta) or into
+#     incoming/rejected/.
+#  2. Writes the transfer log: uploads from here, downloads from the records
+#     bin/bbs-shell leaves in queue/transfers/. Everything lands in
+#     state/transfers.log, one tab-separated line per transfer:
+#     date user dir id name size ip   (dir is up, down or del)
+#  3. Carries out file removals asked for in the menu (queue/filedel/<id>.del).
+#
+# Rules per file:
+#  - bbs-shell moves a file into the inbox only after scp has finished, so what
+#    is there is complete. Transfers in progress are in .staging-* directories:
+#    locked ones are left alone, an unlocked one idle for IDLE_SECS was left behind
+#    by a lost connection or an over-size transfer, and its files are rejected.
+#  - Rejected: zero size, over the size limit, odd names (leading dot, control
+#    characters, over MAX_NAME bytes), not a regular file (symlinks, dirs),
+#    user quota, global quota or disk space. Rejected files go to
+#    incoming/rejected/<ts>-<user>-<n> with a reason on stderr (journal).
+#  - Accepted: moved to published/<id>, root-owned, mode 0644, with a sidecar
+#    .meta (user, name, size, sha256, date, ip). Visible to everyone at once.
+# Nothing is unpacked or executed.
+# BBS_ROOT can be set for tests; BBS_UPLOAD_NOCHOWN=1 skips chown (tests).
+set -uo pipefail
+umask 022
+export LC_ALL=C.UTF-8
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+HERE=$(cd "$(dirname "$0")" && pwd)
+# Installed next to menu.sh; in the repo it sits in ../lib.
+for lib in "$HERE/../lib/upload-common.sh" /usr/local/lib/bashbbs/upload-common.sh; do
+    [[ -r $lib ]] && { source "$lib"; break; }
+done
+declare -F ub_check >/dev/null || { echo "bbs-upload: upload-common.sh not found" >&2; exit 1; }
+
+INCOMING=$BBS_ROOT/incoming
+REJECTED=$INCOMING/rejected
+PUBLISHED=$BBS_ROOT/published
+QUEUE=$BBS_ROOT/queue
+LOG=$BBS_ROOT/state/transfers.log
+LOCK=$BBS_ROOT/state/upload.lock
+LOCK_WAIT=${BBS_LOCK_WAIT:-20}
+
+IDLE_SECS=${UPLOAD_IDLE_SECS:-60}                # a staging directory untouched this long and unlocked is abandoned
+MAX_NAME=${UPLOAD_MAX_NAME:-100}                 # bytes
+KEEP_DAYS=${UPLOAD_KEEP_DAYS:-14}                # rejected files kept this long
+
+reject() { # reject <file> <user> <reason>
+    local f=$1 u=$2 why=$3 n=1 dest
+    mkdir -p "$REJECTED"
+    while :; do
+        dest=$REJECTED/$(date +%s)-$u-$n
+        [[ -e $dest ]] || break
+        n=$((n + 1))
+    done
+    mv -f -- "$f" "$dest" || true
+    echo "bbs-upload: rejected '$(basename -- "$f" | tr -d '[:cntrl:]')' from $u: $why" >&2
+}
+
+# Spaces go too: bbs-shell splits the scp command on them, so a name with a space
+# could be uploaded but never fetched.
+sanitize_name() { # printable ASCII copy of the name for the meta file and log
+    printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# log_line <date> <user> <dir> <id> <name> <size> <ip>
+log_line() {
+    mkdir -p "$(dirname "$LOG")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >> "$LOG"
+}
+
+# client_ip <user>: the address the user last connected from (queue/ip/<user>,
+# written by bbs-shell), or "-".
+client_ip() {
+    local ip=-
+    [[ -r $QUEUE/ip/$1 ]] && ip=$(head -n 1 "$QUEUE/ip/$1" | tr -cd '0-9a-fA-F:.')
+    printf '%s' "${ip:--}"
+}
+
+handle() { # handle <file> <user>
+    local f=$1 u=$2 name size id sum why ip
+    name=$(basename -- "$f")
+    [[ -f $f && ! -L $f ]] || { reject "$f" "$u" "not a regular file"; return; }
+    if [[ $name == .* ]]; then reject "$f" "$u" "name starts with a dot"; return; fi
+    if [[ $name == *[[:cntrl:]]* ]]; then reject "$f" "$u" "control characters in name"; return; fi
+    if (( $(printf '%s' "$name" | wc -c) > MAX_NAME )); then
+        reject "$f" "$u" "name too long"; return
+    fi
+    size=$(stat -c %s -- "$f")
+    if (( size == 0 )); then reject "$f" "$u" "empty file"; return; fi
+    if (( size > UPLOAD_MAX_BYTES )); then reject "$f" "$u" "over size limit ($size bytes)"; return; fi
+    if why=$(ub_check "$u" "$size"); then :; else reject "$f" "$u" "$why"; return; fi
+
+    sum=$(sha256sum -- "$f" | cut -d' ' -f1)
+    ip=$(client_ip "$u")
+    id=$(date +%s)-$(cat /proc/sys/kernel/random/uuid | cut -c1-8)
+    mkdir -p "$PUBLISHED"
+    {
+        printf 'user=%s\n' "$u"
+        printf 'name=%s\n' "$(sanitize_name "$name")"
+        printf 'size=%s\n' "$size"
+        printf 'sha256=%s\n' "$sum"
+        printf 'date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'ip=%s\n' "$ip"
+    } > "$PUBLISHED/$id.meta.tmp"
+    if [[ -z ${BBS_UPLOAD_NOCHOWN:-} ]]; then
+        chown root:root "$f" "$PUBLISHED/$id.meta.tmp" || true
+    fi
+    chmod 0644 "$f" "$PUBLISHED/$id.meta.tmp"
+    # The data file first, then the meta: published/<id> without .meta is
+    # incomplete and ignored by readers.
+    mv -- "$f" "$PUBLISHED/$id" || { rm -f -- "$PUBLISHED/$id.meta.tmp"; return; }
+    mv -- "$PUBLISHED/$id.meta.tmp" "$PUBLISHED/$id.meta"
+    log_line "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$u" up "$id" "$(sanitize_name "$name")" "$size" "$ip"
+    echo "bbs-upload: accepted '$(sanitize_name "$name")' from $u as $id ($size bytes)"
+}
+
+# handle_stage <dir> <user>: an unfinished transfer. The idle time covers the moment
+# between bbs-shell creating the directory and locking it.
+handle_stage() {
+    local d=$1 u=$2 f
+    (( $(date +%s) - $(stat -c %Y -- "$d") < IDLE_SECS )) && return 0
+    flock -n "$d" true || return 0
+    while IFS= read -r -d '' f; do
+        reject "$f" "$u" "upload did not finish ($(stat -c %s -- "$f") bytes)"
+    done < <(find "$d" -mindepth 1 -maxdepth 1 -print0)
+    rmdir -- "$d" 2>/dev/null
+}
+
+# Download records: queue/transfers/<file> with key=value lines written by
+# bbs-shell after a successful scp -f. Values are checked, never sourced.
+log_downloads() {
+    local rec u id name size ip
+    [[ -d $QUEUE/transfers ]] || return 0
+    for rec in "$QUEUE"/transfers/*; do
+        [[ -f $rec && ! -L $rec ]] || continue
+        u=$(sed -n 's/^user=//p' "$rec" | head -n 1)
+        id=$(sed -n 's/^id=//p' "$rec" | head -n 1)
+        name=$(sed -n 's/^name=//p' "$rec" | head -n 1)
+        size=$(sed -n 's/^size=//p' "$rec" | head -n 1)
+        ip=$(sed -n 's/^ip=//p' "$rec" | head -n 1 | tr -cd '0-9a-fA-F:.')
+        if [[ $u =~ ^[A-Za-z0-9_-]+$ && $id =~ ^[0-9]+-[0-9a-f]{8}$ && $size =~ ^[0-9]+$ ]]; then
+            log_line "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$u" down "$id" "$(sanitize_name "$name")" "$size" "${ip:--}"
+        fi
+        rm -f -- "$rec"          # our own record, already logged
+    done
+}
+
+# Removal requests: queue/filedel/<id>.del, an empty file left by the menu. The
+# requester is the owner of that file (the directory is 1733), nothing it says.
+# Allowed for the uploader and for sysops. The file moves to state/expired/, which
+# frees the quota, because ub_used only counts published/.
+# BBS_UPLOAD_TEST_OWNER stands in for the owner in the tests.
+process_removals() {
+    local rec id owner up name size expired=$BBS_ROOT/state/expired
+    [[ -d $QUEUE/filedel ]] || return 0
+    # find, not a glob: anything a user drops here is handled, dot names too.
+    while IFS= read -r -d '' rec; do
+        id=$(basename -- "$rec" .del)
+        owner=$(stat -c %U -- "$rec")
+        [[ -n ${BBS_UPLOAD_TEST_OWNER:-} ]] && owner=$BBS_UPLOAD_TEST_OWNER
+        if [[ ! -f $rec || -L $rec ]] || [[ ! $id =~ ^[0-9]+-[0-9a-f]{8}$ ]] \
+            || [[ ! $owner =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || [[ ! -f $PUBLISHED/$id.meta ]]; then
+            rm -f -- "$rec"
+            continue
+        fi
+        up=$(sed -n 's/^user=//p' "$PUBLISHED/$id.meta" | head -n 1)
+        if [[ $owner != "$up" ]] && ! grep -qsx -- "${owner#bbs-}" "$BBS_ROOT/sysops"; then
+            echo "bbs-upload: $owner may not remove $id (uploader $up)" >&2
+            rm -f -- "$rec"
+            continue
+        fi
+        name=$(sed -n 's/^name=//p' "$PUBLISHED/$id.meta" | head -n 1)
+        size=$(sed -n 's/^size=//p' "$PUBLISHED/$id.meta" | head -n 1)
+        mkdir -p "$expired"
+        # The meta first: a data file without .meta is already ignored by readers.
+        if mv -n -- "$PUBLISHED/$id.meta" "$expired/$id.meta"; then
+            [[ -e $PUBLISHED/$id ]] && mv -n -- "$PUBLISHED/$id" "$expired/$id"
+            log_line "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$owner" del "$id" "$name" "${size:-0}" -
+            echo "bbs-upload: $owner removed $id"
+            rm -f -- "$rec"
+        fi
+    done < <(find "$QUEUE/filedel" -mindepth 1 -maxdepth 1 -print0)
+}
+
+mkdir -p "$BBS_ROOT/state" 2>/dev/null
+exec 9>>"$BBS_ROOT/state/upload.lock" || exit 1
+flock -w "$LOCK_WAIT" 9 || { echo "bbs-upload: lock busy" >&2; exit 1; }
+
+log_downloads
+process_removals      # before the sorting below, so a removal frees quota at once
+
+[[ -d $INCOMING ]] || exit 0
+for dir in "$INCOMING"/*/; do
+    dir=${dir%/}
+    u=$(basename -- "$dir")
+    [[ $u == rejected || -L $dir ]] && continue
+    [[ $u =~ ^[A-Za-z0-9_-]+$ ]] || continue
+    # find -print0 so odd names survive; top level only, no recursion.
+    while IFS= read -r -d '' f; do
+        if [[ ${f##*/} == .staging-* && -d $f && ! -L $f ]]; then
+            handle_stage "$f" "$u"
+        else
+            handle "$f" "$u"
+        fi
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
+done
+
+# Rejected files older than KEEP_DAYS are moved to state/expired/ (never deleted).
+EXPIRED=$BBS_ROOT/state/expired
+if [[ -d $REJECTED ]]; then
+    mkdir -p "$EXPIRED"
+    find "$REJECTED" -maxdepth 1 -type f -mtime "+$KEEP_DAYS" -exec mv -n -- {} "$EXPIRED"/ \;
+fi
+exit 0

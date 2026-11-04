@@ -63,10 +63,15 @@ check "sysop-menu=off: sysop_menu prints nothing" bash -c '[[ -z $("$@") ]]' _ l
 rm -f "$root/sysop-menu"
 check "sysop-menu missing: Sysop item shown (default on)" has "$(printf 'q' | lib main_menu)" "Sysop"
 
-# 2. The sysop screen has four read-only items and goes back on Q.
+# 2. The sysop screen has six read-only items and goes back on Q.
 out=$(printf 'q' | lib sysop_menu)
 check "sysop menu: lists Status, Applications, Recent posts, Users" bash -c \
     '[[ $1 == *Status* && $1 == *Applications* && $1 == *"Recent posts"* && $1 == *Users* ]]' _ "$out"
+check "sysop menu: lists Transfers and Quota" bash -c '[[ $1 == *Transfers* && $1 == *Quota* ]]' _ "$out"
+out=$(printf 'q' | lib main_menu)
+check "main menu: Files is 8 and Sysop is 9" bash -c '[[ $1 == *"8) Files"* && $1 == *"9) Sysop"* ]]' _ "$out"
+out=$(printf 'q' | lib_as bbs-bob main_menu)
+check "main menu: Files is shown to everybody" has "$out" "8) Files"
 
 # 3. Status: plain English, DOWN for the failed unit, counts shown.
 out=$(printf '\n' | lib sysop_status)

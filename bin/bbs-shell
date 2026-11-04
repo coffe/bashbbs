@@ -1,4 +1,140 @@
 #!/bin/bash
 # Login shell and ForceCommand target for bbs-<name> accounts.
-# Ignores any command sshd passes in, so only the menu can run.
+# Only three things can run: the menu, an upload (scp -t, scp -O) into the
+# user's own inbox, or a download (scp -f, one published file). Any other
+# command sshd passes in is refused. -r (recursive) is refused.
+#
+# Upload: the client's path is IGNORED; the target is always
+# $BBS_ROOT/incoming/<user>, with a file size limit (ulimit -f, in 1024-byte
+# blocks, one block above the real limit). Files arrive in a staging directory
+# inside the inbox and reach the inbox itself only when scp exits 0, so a lost
+# connection or an over-size transfer never looks like a finished file. The
+# staging directory stays locked while the transfer lives; when it is left behind,
+# sbin/bbs-upload moves what is in it to incoming/rejected. Several files in one
+# scp stand or fall together. Refused up front when the user is already over quota
+# or the disk is nearly full. The client address is written to queue/ip/<user> so
+# bbs-upload can log it.
+#
+# Download: the client's path is looked up as the name of a published file
+# (newest match wins). The file is sent through a temporary symlink with the
+# right name, so the stored file is never copied or moved. A record goes to
+# queue/transfers/ after a successful send; bbs-upload writes it to the log.
+if [[ -n ${BASHBBS_TEST:-} ]]; then
+    BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+else
+    BBS_ROOT=/srv/bashbbs
+fi
+HERE=$(cd "$(dirname "$0")" && pwd)
+for lib in "$HERE/../lib/upload-common.sh" /usr/local/lib/bashbbs/upload-common.sh; do
+    [[ -r $lib ]] && { source "$lib"; break; }
+done
+declare -F ub_check >/dev/null || { echo "upload support is not installed" >&2; exit 1; }
+UPLOAD_MAX_KB=${UPLOAD_MAX_KB:-$(( UPLOAD_MAX_BYTES / 1024 + 1 ))}
+
+# The account, not the name logged in with: USER holds the short alias after a
+# short login (sbin/bbs-alias), and the inbox and the log go by bbs-<name>.
+user=$(id -un)
+[[ -n ${BASHBBS_TEST:-} && -n ${BASHBBS_TEST_ID:-} ]] && user=$BASHBBS_TEST_ID
+ip=${SSH_CONNECTION%% *}
+
+# parse_scp: sets mode (sink|source|""), bad (1 = refused option) and name
+# (the source file name, when mode is source). Mirrors what scp sends.
+parse_scp() {
+    local i=1 n=${#words[@]} sink=0 source=0 bad=0
+    mode=""; name=""
+    while (( i < n )); do
+        case ${words[i]} in
+            -t) sink=1 ;;
+            -f) source=1 ;;
+            -p | -v) ;;
+            --) i=$((i + 1)); break ;;
+            -*) bad=1 ;;                  # -r, -d and anything unknown
+            *) break ;;
+        esac
+        i=$((i + 1))
+    done
+    if (( sink && source )); then bad=1; fi
+    if (( sink )); then mode=sink; fi
+    if (( source )); then
+        mode=source
+        if (( n - i == 1 )); then name=${words[i]}; else bad=1; fi
+    fi
+    (( bad )) && mode=""
+}
+
+if [[ -n ${SSH_ORIGINAL_COMMAND:-} ]]; then
+    read -r -a words <<< "$SSH_ORIGINAL_COMMAND"
+    mode=""; name=""
+    [[ ${words[0]:-} == scp ]] && parse_scp
+    if [[ -z $mode ]]; then
+        echo "Only uploads and downloads: scp -O file user@host:  or  scp -O user@host:file ." >&2
+        exit 1
+    fi
+    [[ $user =~ ^[A-Za-z0-9_-]+$ ]] || { echo "bad user" >&2; exit 1; }
+    if [[ -n $ip ]]; then
+        mkdir -p "$BBS_ROOT/queue/ip" 2>/dev/null
+        printf '%s\n' "$ip" > "$BBS_ROOT/queue/ip/$user" 2>/dev/null || true
+    fi
+
+    if [[ $mode == sink ]]; then
+        if why=$(ub_check "$user" 0); then :; else
+            echo "Upload refused: $why." >&2; exit 1
+        fi
+        ulimit -f "$UPLOAD_MAX_KB" || exit 1
+        inbox=$BBS_ROOT/incoming/$user
+        stage=$(mktemp -d "$inbox/.staging-XXXXXX") || { echo "Upload refused: try again later." >&2; exit 1; }
+        # Held by this shell and scp together; bbs-upload leaves a locked directory alone.
+        exec 8<"$stage"
+        flock -n 8
+        # scp -t needs a directory target; scp -O keeps the client file name.
+        # scp -t answers the client on stdout. The redirect hides the line bash prints,
+        # with this script's path in it, when the file size limit kills scp.
+        { scp -t "$stage"; } 2>/dev/null
+        rc=$?
+        if (( rc == 0 )); then
+            find "$stage" -mindepth 1 -maxdepth 1 -exec mv -f -t "$inbox" -- {} + || rc=1
+        fi
+        if (( rc == 0 )); then
+            rmdir -- "$stage"
+        else
+            echo "Upload did not finish. Nothing was saved. Files can be up to $(( UPLOAD_MAX_BYTES / 1048576 )) MB." >&2
+        fi
+        exit $rc
+    fi
+
+    # Download: find the newest published file with exactly this name.
+    if [[ -z $name || $name == */* || $name == .* ]]; then
+        echo "No such file." >&2; exit 1
+    fi
+    id=""
+    for m in "$BBS_ROOT"/published/*.meta; do
+        [[ -f $m ]] || continue
+        if [[ $(sed -n 's/^name=//p' "$m" | head -n 1) == "$name" ]]; then
+            cand=$(basename "$m" .meta)
+            [[ -f $BBS_ROOT/published/$cand ]] && id=$cand     # glob sorts oldest first
+        fi
+    done
+    if [[ -z $id ]]; then
+        echo "No such file: $name" >&2; exit 1
+    fi
+    size=$(stat -c %s "$BBS_ROOT/published/$id")
+    tmp=$(mktemp -d "$HOME/.dl.XXXXXX") || { echo "try again later" >&2; exit 1; }
+    ln -s "$BBS_ROOT/published/$id" "$tmp/$name"
+    scp -f "$tmp/$name"
+    rc=$?
+    rm -f -- "$tmp/$name"
+    rmdir -- "$tmp" 2>/dev/null
+    if (( rc == 0 )); then
+        mkdir -p "$BBS_ROOT/queue/transfers" 2>/dev/null
+        rec=$BBS_ROOT/queue/transfers/$(date +%s%N)-$user
+        {
+            printf 'user=%s\n' "$user"
+            printf 'id=%s\n' "$id"
+            printf 'name=%s\n' "$name"
+            printf 'size=%s\n' "$size"
+            printf 'ip=%s\n' "${ip:--}"
+        } > "$rec.tmp" 2>/dev/null && mv -f -- "$rec.tmp" "$rec" 2>/dev/null
+    fi
+    exit $rc
+fi
 exec /usr/local/lib/bashbbs/menu.sh

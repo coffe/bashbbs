@@ -27,6 +27,8 @@ SEEN_PREV=""
 
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
+# The same for tab-separated rows: the tab is the only control character kept.
+safe_rows() { LC_ALL=C.UTF-8 sed 's/[^[:print:]\t]//g'; }
 
 # ---- Colour -----------------------------------------------------------------
 # COLOR=1|0 is the user's choice, kept in ~/.bashbbs-prefs as color=1|0 (asked once at
@@ -441,6 +443,10 @@ confirm_logout() { read_confirm "Log out? [y/N] "; }
 # News reader (sections, article list, article view).
 # shellcheck source=news.sh
 source "$(dirname "${BASH_SOURCE[0]}")/news.sh"
+
+# Size limits for the Files section; the same file bbs-upload and bbs-shell read.
+# shellcheck source=upload-common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/upload-common.sh"
 
 # Accept a name only if it matches the naming rule and a profile exists.
 valid_user() {
@@ -1956,12 +1962,13 @@ main_menu() {
         menu_item 5 "Mail" "" "$( (( un > 0 )) && echo "($un unread)")"
         menu_item 6 "My Account"
         menu_item 7 "Games"
-        sysop_menu_on && menu_item 8 "Sysop" "Status, applications, posts, users"
+        menu_item 8 "Files" "" "$(files_any_new && echo '*')"
+        sysop_menu_on && menu_item 9 "Sysop" "Status, applications, posts, users"
         echo
         keyline "Q) Log out"
-        local keys="1234567Qq"; sysop_menu_on && keys+=8
-        menu_key "> " "$keys" "1-7: pick a section
-8: Sysop (sysops only)
+        local keys="12345678Qq"; sysop_menu_on && keys+=9
+        menu_key "> " "$keys" "1-8: pick a section
+9: Sysop (sysops only)
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }
         case $MKEY in
@@ -1976,7 +1983,164 @@ B M P W: jump" || { nav_req=quit; return; }
             5) nav_req=mail; return ;;
             6) my_account; [[ -n $nav_req ]] && return ;;
             7) games_menu; [[ -n $nav_req ]] && return ;;
-            8) sysop_menu; [[ -n $nav_req ]] && return ;;
+            8) files_menu; [[ -n $nav_req ]] && return ;;
+            9) sysop_menu; [[ -n $nav_req ]] && return ;;
+        esac
+    done
+}
+
+# ---- Files --------------------------------------------------------------------
+# Published uploads (sbin/bbs-upload puts them in published/<id> + <id>.meta, and
+# bin/bbs-shell serves them to scp -f by name). The directory belongs to root, so a
+# removal here is only a request: an empty queue/filedel/<id>.del. bbs-upload checks
+# the file's owner against the uploader and the sysops, then moves the file to
+# state/expired/. Nothing is deleted.
+FILES_PAGE=10
+BBS_PUBLIC_HOST=${BBS_PUBLIC_HOST:-bbs.piewpiew.se}
+BBS_PUBLIC_PORT=${BBS_PUBLIC_PORT:-6464}
+
+# Tab-separated, newest first: id, uploader (account name), size, date, downloads, name.
+# Only complete files: the data file and its .meta must both be there.
+files_rows() {
+    local pub=$BBS_ROOT/published id k v user size date name n
+    local -A dls=()
+    [[ -d $pub ]] || return 0
+    while read -r n id; do
+        dls[$id]=$n
+    done < <(awk -F'\t' '$3 == "down" { c[$4]++ } END { for (i in c) print c[i], i }' \
+                 "$BBS_ROOT/state/transfers.log" 2>/dev/null)
+    while IFS= read -r id; do
+        id=${id%.meta}
+        [[ $id =~ ^[0-9]+-[0-9a-f]{8}$ && -f $pub/$id ]] || continue
+        user="" size=0 date="" name=""
+        while IFS='=' read -r k v; do
+            case $k in
+                user) user=$v ;;
+                size) size=$v ;;
+                date) date=$v ;;
+                name) name=$v ;;
+            esac
+        done < "$pub/$id.meta"
+        [[ $size =~ ^[0-9]+$ ]] || size=0
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$user" "$size" "$date" "${dls[$id]:-0}" "$name"
+    done < <(find "$pub" -maxdepth 1 -type f -name '*.meta' -printf '%f\n' 2>/dev/null | sort -t- -k1,1nr -k2,2r) | safe_rows
+}
+
+# True when a file newer than the last login exists. First login: nothing counts as new.
+files_any_new() {
+    local newest
+    [[ -n $SEEN_PREV ]] || return 1
+    newest=$(find "$BBS_ROOT/published" -maxdepth 1 -type f -name '*.meta' -printf '%f\n' 2>/dev/null \
+        | sort -t- -k1,1nr | head -n 1)
+    newest=${newest%%-*}
+    [[ $newest =~ ^[0-9]+$ ]] && (( newest > SEEN_PREV ))
+}
+
+# Bytes as a short text: 512 B, 34 KB, 1.2 MB, 2.0 GB.
+files_size() {
+    local n=$1
+    if (( n < 1024 )); then printf '%d B' "$n"
+    elif (( n < 1048576 )); then printf '%d KB' $(( n / 1024 ))
+    elif (( n < 1073741824 )); then printf '%d.%d MB' $(( n / 1048576 )) $(( n * 10 / 1048576 % 10 ))
+    else printf '%d.%d GB' $(( n / 1073741824 )) $(( n * 10 / 1073741824 % 10 )); fi
+}
+
+files_menu() {
+    local rows=() total start=0 i row id user size date dls name w width isnew keys hint
+    while true; do
+        redraw
+        screen_header "Files" "[Q] Back"
+        mapfile -t rows < <(files_rows)
+        total=${#rows[@]}
+        (( start >= total )) && start=0
+        width=$(list_width)
+        w=$(( width - 40 ))
+        if (( total == 0 )); then
+            echo "No files yet. Be the first!"
+        fi
+        for (( i = start; i < total && i < start + FILES_PAGE; i++ )); do
+            IFS=$'\t' read -r id user size date dls name <<< "${rows[i]}"
+            isnew=0
+            [[ -n $SEEN_PREV ]] && (( ${id%%-*} > SEEN_PREV )) && isnew=1
+            printf '%s ' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")"
+            if (( w >= 12 )); then
+                printf '%-*s %8s %-10s %s %3s' "$w" "$(list_fit "$w" "$name")" "$(files_size "$size")" \
+                    "$(list_fit 10 "${user#bbs-}")" "${date:0:10}" "$dls"
+            else
+                printf '%-*s %8s' "$(( width - 15 ))" "$(list_fit $(( width - 15 )) "$name")" "$(files_size "$size")"
+            fi
+            (( isnew )) && printf ' %s' "$(paint ACC '*')"
+            echo
+        done
+        echo
+        echo "Upload:  scp -O -P $BBS_PUBLIC_PORT FILE $login@$BBS_PUBLIC_HOST:"
+        echo "Up to $(files_size "$UPLOAD_MAX_BYTES") a file, $(files_size "$UPLOAD_USER_QUOTA") per user. New files show up in about a minute."
+        echo
+        keys=Qq hint="Q: back"
+        if (( total > FILES_PAGE )); then
+            keyline "N) More   Q) Back"
+            keys+=Nn hint="N: next page   Q: back"
+        else
+            keyline "Q) Back"
+        fi
+        menu_key "> " "$keys$(digit_keys "$total")" \
+"Number: open a file (* = new)
+$hint
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
+            [Qq]) return ;;
+            [Nn]) (( total > FILES_PAGE )) && start=$(( start + FILES_PAGE )); continue ;;
+            [1-9]) read_num "$total" || continue ;;
+            *) continue ;;
+        esac
+        file_view "${rows[NUM - 1]}" || return
+    done
+}
+
+# One file: the facts, the exact download command, and R for the uploader or a sysop.
+# Returns 1 at end of input.
+file_view() { # file_view <row from files_rows>
+    local id user size date dls name keys=Qq can=0 pending=0 req
+    IFS=$'\t' read -r id user size date dls name <<< "$1"
+    req=$BBS_ROOT/queue/filedel/$id.del
+    [[ $login == "$user" ]] || is_sysop && can=1
+    while true; do
+        [[ -e $req ]] && pending=1
+        redraw
+        local_header "$name" "[Q] Back"
+        printf '%-11s %s\n' "Size:" "$(files_size "$size")"
+        printf '%-11s %s\n' "From:" "${user#bbs-}"
+        printf '%-11s %s\n' "Uploaded:" "${date:0:10}"
+        printf '%-11s %s\n' "Downloads:" "$dls"
+        echo
+        echo "Download:"
+        echo "scp -O -P $BBS_PUBLIC_PORT $login@$BBS_PUBLIC_HOST:$name ."
+        echo
+        keys=Qq
+        if (( pending )); then
+            echo "Removal requested. The file goes away within a minute."
+            keyline "Q) Back"
+        elif (( can )); then
+            keys+=Rr
+            keyline "R) Remove   Q) Back"
+        else
+            keyline "Q) Back"
+        fi
+        menu_key "> " "$keys" "Q: back
+R: remove the file (uploader and sysops)" local || return 1
+        case $MKEY in
+            [Qq]) return 0 ;;
+            [Rr])
+                echo
+                read_confirm "Remove this file? [y/N] " || continue
+                if { : > "$req"; } 2>/dev/null; then
+                    pending=1
+                else
+                    echo "Could not ask for that right now. Try again later."
+                    pause
+                fi
+                ;;
         esac
     done
 }
@@ -1996,9 +2160,11 @@ sysop_menu() {
         menu_item 2 "Applications" "Waiting for a yes or no"
         menu_item 3 "Recent posts" "The newest posts on all boards"
         menu_item 4 "Users" "Every account, sysops and hidden marked"
+        menu_item 5 "Transfers" "The newest uploads and downloads"
+        menu_item 6 "Quota" "Space used per user and in total"
         echo
         keyline "Q) Back"
-        menu_key "> " "1234Qq" "1-4: pick a screen
+        menu_key "> " "123456Qq" "1-6: pick a screen
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -2008,6 +2174,8 @@ B M P W: jump   G: log out" || return
             2) sysop_applications ;;
             3) sysop_posts ;;
             4) sysop_users ;;
+            5) sysop_transfers ;;
+            6) sysop_quota ;;
         esac
     done
 }
@@ -2016,7 +2184,7 @@ sysop_status() {
     local unit state
     redraw
     local_header "Status"
-    for unit in ssh lighttpd bbs-publish.timer bbs-drop.timer bbs-keys.timer; do
+    for unit in ssh lighttpd bbs-publish.timer bbs-drop.timer bbs-keys.timer bbs-upload.timer; do
         state=$(systemctl is-active "$unit" 2>/dev/null || true)
         printf '%-20s ' "$unit"
         if [[ $state == active ]]; then
@@ -2085,6 +2253,42 @@ sysop_users() {
     pause
 }
 
+# The newest transfers from state/transfers.log: up, down and del (a removed file).
+sysop_transfers() {
+    local date user dir id name size ip w width shown=0
+    redraw
+    local_header "Transfers"
+    width=$(list_width)
+    w=$(( width - 54 ))
+    while IFS=$'\t' read -r date user dir id name size ip; do
+        if (( w >= 10 )); then
+            printf '%-16s %-4s %-10s %-15s %8s %s\n' "${date:0:10} ${date:11:5}" "$dir" \
+                "$(list_fit 10 "${user#bbs-}")" "$(list_fit 15 "$ip")" "$(files_size "${size:-0}")" "$(list_fit "$w" "$name")"
+        else
+            printf '%-4s %-10s %s\n' "$dir" "$(list_fit 10 "${user#bbs-}")" "$(list_fit $(( width - 16 )) "$name")"
+        fi
+        shown=$(( shown + 1 ))
+    done < <(tail -n 15 -- "$BBS_ROOT/state/transfers.log" 2>/dev/null | tac | safe_rows)
+    (( shown )) || echo "No transfers yet."
+    pause
+}
+
+# Space per uploader, from the same .meta sums the quota check uses.
+sysop_quota() {
+    local bytes files user
+    redraw
+    local_header "Quota"
+    printf '%-16s %8s %5s\n' "User" "Used" "Files"
+    while read -r bytes files user; do
+        printf '%-16s %8s %5s\n' "$(list_fit 16 "${user#bbs-}")" "$(files_size "$bytes")" "$files"
+    done < <(files_rows | awk -F'\t' '{ b[$2] += $3; c[$2]++ } END { for (u in b) print b[u], c[u], u }' | sort -k1,1nr -k3,3)
+    echo
+    printf '%-22s %s\n' "Limit per user:" "$(files_size "$UPLOAD_USER_QUOTA")"
+    printf '%-22s %s of %s\n' "All uploads:" "$(files_size "$(ub_used)")" "$(files_size "$UPLOAD_GLOBAL_QUOTA")"
+    printf '%-22s %s\n' "Free on disk:" "$(files_size $(( $(ub_free_kb) * 1024 )))"
+    pause
+}
+
 # ---- Games --------------------------------------------------------------------
 # Games are the unmodified Debian package dopewars (GPL), shown under our own name.
 GAMES_DOPEWARS=/usr/games/dopewars
@@ -2149,7 +2353,6 @@ news_open() {
 }
 
 # ---- Fame & Glory -------------------------------------------------------------
-# Top Uploaders and Top Downloads join between these rows when file areas exist.
 FAME_SHOW=10
 
 fame_menu() {
@@ -2160,9 +2363,11 @@ fame_menu() {
         menu_item 2 "Last Callers"
         menu_item 3 "Most Active"
         menu_item 4 "BBS Records"
+        menu_item 5 "Top Uploaders"
+        menu_item 6 "Top Downloads"
         echo
         keyline "Q) Back"
-        menu_key "> " "1234Qq" "1-4: pick a list
+        menu_key "> " "123456Qq" "1-6: pick a list
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -2172,6 +2377,8 @@ B M P W: jump   G: log out" || return
             2) callers_view ;;
             3) most_active_view ;;
             4) records_view ;;
+            5) top_uploaders_view ;;
+            6) top_downloads_view ;;
         esac
     done
 }
@@ -2196,6 +2403,45 @@ most_active_view() {
     done < <(awk '$2 == "post" || $2 == "wall" { c[$3]++ } END { for (n in c) print c[n], n }' \
                  "$BBS_ROOT/state/activity.log" 2>/dev/null | sort -k1,1nr -k2,2)
     (( shown )) || echo "Nobody yet."
+    echo
+    pause
+}
+
+# Published files per uploader. Hidden accounts and sysops are left out.
+top_uploaders_view() {
+    local c n shown=0 width
+    redraw
+    local_header "Top Uploaders"
+    width=$(list_width)
+    echo "Files on the BBS right now."
+    echo
+    while read -r c n; do
+        n=${n#bbs-}
+        [[ $n =~ ^[A-Za-z0-9_-]+$ ]] || continue
+        grep -qsx 'hidden=yes' "$BBS_ROOT/users/$n/profile" && continue
+        grep -qsx -- "$n" "$BBS_ROOT/sysops" && continue
+        printf '%5d  %s\n' "$c" "$(list_fit $(( width - 7 )) "$n")"
+        shown=$(( shown + 1 ))
+        (( shown >= FAME_SHOW )) && break
+    done < <(files_rows | awk -F'\t' '{ c[$2]++ } END { for (n in c) print c[n], n }' | sort -k1,1nr -k2,2)
+    (( shown )) || echo "Nobody yet."
+    echo
+    pause
+}
+
+# Files still on the BBS, most downloaded first. Files nobody fetched are left out.
+top_downloads_view() {
+    local id user size date dls name shown=0 width
+    redraw
+    local_header "Top Downloads"
+    width=$(list_width)
+    while IFS=$'\t' read -r id user size date dls name; do
+        (( dls > 0 )) || continue
+        printf '%5d  %s\n' "$dls" "$(list_fit $(( width - 7 )) "$name")"
+        shown=$(( shown + 1 ))
+        (( shown >= FAME_SHOW )) && break
+    done < <(files_rows | sort -t$'\t' -k5,5nr -k1,1)
+    (( shown )) || echo "Nothing yet."
     echo
     pause
 }
