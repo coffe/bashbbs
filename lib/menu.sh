@@ -1117,6 +1117,29 @@ list_width() {
 # Display only: the stored text is never changed.
 list_fit() { # list_fit <width> <text>
     (( $1 < 1 )) && return
+    # Python takes a quarter of a second to start on a Pi, and a file list asks for this
+    # thirty times a page. Printable ASCII and U+00C0-U+00FF (bytes C3 80-BF: the Latin
+    # letters, å ä ö) are one column each, so they need no table. The check is on bytes,
+    # so broken UTF-8 can't pass. All else, or a missing locale, goes the long way.
+    local LC_ALL=C probe=å out rest=${2//$'\xc3'[$'\x80'-$'\xbf']/}
+    if [[ $rest != *[!\ -~]* ]]; then
+        LC_ALL=C.UTF-8
+        if (( ${#probe} == 1 )); then
+            if (( ${#2} <= $1 )); then
+                printf '%s' "$2"
+            elif (( $1 < 4 )); then
+                out=${2:0:$1}
+                printf '%s' "${out%"${out##*[! ]}"}"
+            else
+                out=${2:0:$1-3}
+                printf '%s...' "${out%"${out##*[! ]}"}"
+            fi
+            return 0
+        fi
+    fi
+    list_fit_py "$1" "$2"
+}
+list_fit_py() {
     printf '%s' "$2" | PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=UTF-8 \
         python3 -c '
 import sys

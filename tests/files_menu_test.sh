@@ -261,5 +261,19 @@ out=$(printf '14\nq' | bob file_areas)
 check "many areas: two digits" has 'Files: Area 14' "$out"
 rm -f "$root/etc/file-areas"
 
+# --- list_fit: the quick way gives the same text as the table in wrap.py ---
+fit_same() { # fit_same <width> <text>
+    local fast slow
+    fast=$(BBS_ROOT="$root" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb bash -c \
+        'source "$1/lib/menu.sh" </dev/null; list_fit "$2" "$3"; printf "\\001"; list_fit_py "$2" "$3" 2>/dev/null' _ "$here" "$1" "$2")
+    slow=${fast#*$'\001'}; fast=${fast%%$'\001'*}
+    [[ $fast == "$slow" ]]
+}
+for t in "plain name.zip" "räksmörgås på måndag" "ÅÄÖ åäö éèü ÿ À × ÷" "ab   cd   ef   gh" "          " \
+    "日本語のファイル名.zip" $'éxplain' "emoji 🎉 fil.zip" $'nbsp x' $'soft­hyphen' \
+    $'bad\xe5byte' $'\xc3' $'tab\tx' 'pct %s \n * ? [a]'; do
+    for w in 1 3 4 8 40; do check "list_fit same at $w: $t" fit_same "$w" "$t"; done
+done
+
 echo "files_menu_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]
