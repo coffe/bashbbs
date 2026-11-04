@@ -41,25 +41,26 @@ safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
 #   C_KEY  1;36 mint  navigation: only the key token (1) N) [B] [Space] [y/N] >)
 #   C_ACC  1;33 gold  news: the * marker, [P] Mail (N), "N new"
 #   C_SUBJ 0;33 orange the subject line of an open post or mail
+#   C_BAD  1;31 red   a problem the sysop must see (a service that is down)
 #   text   no code    body text and metadata stay in the terminal's own colour
 # Colour is added AFTER safe(), after wrapping and after width measuring, and every
 # coloured token ends with C_RST on the same line.
 COLOR=0 COLOR_ASK=0
 REPLYMAIL=1   # replymail=1|0 in the same file: mail me when someone replies to my post
-C_HEAD= C_KEY= C_ACC= C_SUBJ= C_RST=
+C_HEAD= C_KEY= C_ACC= C_SUBJ= C_BAD= C_RST=
 
 color_init() { # color_init: set the palette from COLOR
     if (( COLOR )); then
-        C_HEAD=$'\033[1;35m' C_KEY=$'\033[1;36m' C_ACC=$'\033[1;33m' C_SUBJ=$'\033[0;33m' C_RST=$'\033[0m'
+        C_HEAD=$'\033[1;35m' C_KEY=$'\033[1;36m' C_ACC=$'\033[1;33m' C_SUBJ=$'\033[0;33m' C_BAD=$'\033[1;31m' C_RST=$'\033[0m'
     else
-        C_HEAD= C_KEY= C_ACC= C_SUBJ= C_RST=
+        C_HEAD= C_KEY= C_ACC= C_SUBJ= C_BAD= C_RST=
     fi
 }
 
 # paint HEAD|KEY|ACC|SUBJ <text>: the text in a role colour, closed on the same line (no newline).
 paint() {
     local c
-    case $1 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; SUBJ) c=$C_SUBJ ;; *) c= ;; esac
+    case $1 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; SUBJ) c=$C_SUBJ ;; BAD) c=$C_BAD ;; *) c= ;; esac
     printf '%s%s%s' "$c" "$2" "$C_RST"
 }
 # key <token> [label]: the key token in mint, then the label in the default colour.
@@ -1955,9 +1956,12 @@ main_menu() {
         menu_item 5 "Mail" "" "$( (( un > 0 )) && echo "($un unread)")"
         menu_item 6 "My Account"
         menu_item 7 "Games"
+        sysop_menu_on && menu_item 8 "Sysop" "Status, applications, posts, users"
         echo
         keyline "Q) Log out"
-        menu_key "> " "1234567Qq" "1-7: pick a section
+        local keys="1234567Qq"; sysop_menu_on && keys+=8
+        menu_key "> " "$keys" "1-7: pick a section
+8: Sysop (sysops only)
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }
         case $MKEY in
@@ -1972,8 +1976,113 @@ B M P W: jump" || { nav_req=quit; return; }
             5) nav_req=mail; return ;;
             6) my_account; [[ -n $nav_req ]] && return ;;
             7) games_menu; [[ -n $nav_req ]] && return ;;
+            8) sysop_menu; [[ -n $nav_req ]] && return ;;
         esac
     done
+}
+
+# ---- Sysop --------------------------------------------------------------------
+# Read-only status screens for the names in the sysops file. Nothing here writes.
+# The menu item is hidden when $BBS_ROOT/sysop-menu says "off" (root writes that file).
+# A missing file means on. Shell access for scripts is a separate path (bin/bbs-ctl).
+sysop_menu_on() { is_sysop && [[ $(sed -n 1p "$BBS_ROOT/sysop-menu" 2>/dev/null) != off ]]; }
+
+sysop_menu() {
+    sysop_menu_on || return 0
+    while true; do
+        redraw
+        screen_header "Sysop" "[Q] Back"
+        menu_item 1 "Status" "Services, accounts and the last day"
+        menu_item 2 "Applications" "Waiting for a yes or no"
+        menu_item 3 "Recent posts" "The newest posts on all boards"
+        menu_item 4 "Users" "Every account, sysops and hidden marked"
+        echo
+        keyline "Q) Back"
+        menu_key "> " "1234Qq" "1-4: pick a screen
+Q: back
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
+            [Qq]) return ;;
+            1) sysop_status ;;
+            2) sysop_applications ;;
+            3) sysop_posts ;;
+            4) sysop_users ;;
+        esac
+    done
+}
+
+sysop_status() {
+    local unit state
+    redraw
+    local_header "Status"
+    for unit in ssh lighttpd bbs-publish.timer bbs-drop.timer bbs-keys.timer; do
+        state=$(systemctl is-active "$unit" 2>/dev/null || true)
+        printf '%-20s ' "$unit"
+        if [[ $state == active ]]; then
+            echo "running"
+        else
+            paint BAD "DOWN (${state:-unknown})"; echo
+        fi
+    done
+    echo
+    printf 'Accounts:             %s\n' "$(getent passwd | grep -c '^bbs-' || true)"
+    printf 'Posts, last day:      %s\n' "$(find "$BBS_ROOT/boards" -mindepth 2 -maxdepth 2 -name '*.msg' -mtime -1 2>/dev/null | wc -l)"
+    printf 'Applications waiting: %s\n' "$(find "$BBS_ROOT/applications/incoming" -maxdepth 1 -name '*.app' -type f 2>/dev/null | wc -l)"
+    pause
+}
+
+sysop_applications() {
+    local f name ts when any=0
+    redraw
+    local_header "Applications"
+    while IFS= read -r f; do
+        any=1
+        name=$(sed -n 's/^name=//p' "$f" | head -n 1 | safe)
+        ts=$(basename "$f" | sed -n 's/^\([0-9]*\)-.*/\1/p')
+        when=$( [[ -n $ts ]] && date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?" )
+        printf '%-16s %s\n' "$(list_fit 16 "$name")" "$when"
+    done < <(find "$BBS_ROOT/applications/incoming" -maxdepth 1 -name '*.app' -type f 2>/dev/null | sort)
+    (( any )) || echo "No applications waiting."
+    echo
+    echo "Approve or reject from the server for now."
+    pause
+}
+
+sysop_posts() {
+    local f b board author subject shown=0 w
+    redraw
+    local_header "Recent posts"
+    w=$(( $(list_width) - 32 ))
+    (( w < 10 )) && w=10
+    while IFS=$'\t' read -r f b; do
+        (( shown >= 15 )) && break
+        [[ -n $(post_hdr "$b/$f" Deleted) ]] && continue
+        board=$(basename "$b")
+        author=$(post_hdr "$b/$f" Author); author=${author#bbs-}; author=${author%%@*}
+        subject=$(post_hdr "$b/$f" Subject)
+        printf '%-12s %-16s %s\n' "$(list_fit 12 "$board")" "$(list_fit 16 "$author")" "$(list_fit "$w" "$subject")"
+        shown=$((shown + 1))
+    done < <(find "$BBS_ROOT/boards" -mindepth 2 -maxdepth 2 -type f -name '*.msg' -printf '%f\t%h\n' 2>/dev/null \
+        | sort -t$'\t' -k1,1nr)
+    (( shown )) || echo "No posts yet."
+    pause
+}
+
+sysop_users() {
+    local f dir name tag
+    redraw
+    local_header "Users"
+    for f in "$BBS_ROOT"/users/*/profile; do
+        [[ -f $f && ! -L $f ]] || continue
+        dir=$(basename "$(dirname "$f")")
+        name=$(sed -n 's/^name=//p' "$f" | safe)
+        tag=
+        grep -qx 'hidden=yes' "$f" && tag=hidden
+        grep -qx -- "$dir" "$BBS_ROOT/sysops" 2>/dev/null && tag="${tag:+$tag, }sysop"
+        printf '%-16s %s\n' "$(list_fit 16 "$name")" "$tag"
+    done
+    pause
 }
 
 # ---- Games --------------------------------------------------------------------
