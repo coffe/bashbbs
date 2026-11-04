@@ -447,6 +447,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/news.sh"
 # Size limits for the Files section; the same file bbs-upload and bbs-shell read.
 # shellcheck source=upload-common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/upload-common.sh"
+# Transfers through a browser link: U and D in the Files section.
+# shellcheck source=xfer.sh
+source "$(dirname "${BASH_SOURCE[0]}")/xfer.sh"
 
 # Accept a name only if it matches the naming rule and a profile exists.
 valid_user() {
@@ -2073,15 +2076,18 @@ files_menu() {
             echo
         done
         echo
-        echo "Upload:  scp -O -P $BBS_PUBLIC_PORT FILE $login@$BBS_PUBLIC_HOST:"
+        echo "Also works: scp -O -P $BBS_PUBLIC_PORT FILE $login@$BBS_PUBLIC_HOST:"
         echo "Up to $(files_size "$UPLOAD_MAX_BYTES") a file, $(files_size "$UPLOAD_USER_QUOTA") per user. New files show up in about a minute."
         echo
-        keys=Qq hint="Q: back"
+        keys=QqUu hint="U: upload   Q: back"
         if (( total > FILES_PAGE )); then
-            keyline "N) More   Q) Back"
-            keys+=Nn hint="N: next page   Q: back"
+            keyline "N) More   U) Upload   D) Download   Q) Back"
+            keys+=NnDd hint="N: next page   U: upload   D: download   Q: back"
+        elif (( total > 0 )); then
+            keyline "U) Upload   D) Download   Q) Back"
+            keys+=Dd hint="U: upload   D: download   Q: back"
         else
-            keyline "Q) Back"
+            keyline "U) Upload   Q) Back"
         fi
         menu_key "> " "$keys$(digit_keys "$total")" \
 "Number: open a file (* = new)
@@ -2091,6 +2097,17 @@ B M P W: jump   G: log out" || return
         case $MKEY in
             [Qq]) return ;;
             [Nn]) (( total > FILES_PAGE )) && start=$(( start + FILES_PAGE )); continue ;;
+            [Uu]) echo; xfer_upload || return; continue ;;
+            [Dd])
+                echo
+                printf 'Download which number? '
+                read_key_raw || return
+                [[ $MKEY == [1-9] ]] || continue
+                read_num "$total" || continue
+                IFS=$'\t' read -r id user size date dls name <<< "${rows[NUM - 1]}"
+                xfer_download "$id" "$name" || return
+                continue
+                ;;
             [1-9]) read_num "$total" || continue ;;
             *) continue ;;
         esac
@@ -2098,7 +2115,7 @@ B M P W: jump   G: log out" || return
     done
 }
 
-# One file: the facts, the exact download command, and R for the uploader or a sysop.
+# One file: the facts, D for a download link, and R for the uploader or a sysop.
 # Returns 1 at end of input.
 file_view() { # file_view <row from files_rows>
     local id user size date dls name keys=Qq can=0 pending=0 req
@@ -2114,7 +2131,7 @@ file_view() { # file_view <row from files_rows>
         printf '%-11s %s\n' "Uploaded:" "${date:0:10}"
         printf '%-11s %s\n' "Downloads:" "$dls"
         echo
-        echo "Download:"
+        echo "Also works:"
         echo "scp -O -P $BBS_PUBLIC_PORT $login@$BBS_PUBLIC_HOST:$name ."
         echo
         keys=Qq
@@ -2122,15 +2139,22 @@ file_view() { # file_view <row from files_rows>
             echo "Removal requested. The file goes away within a minute."
             keyline "Q) Back"
         elif (( can )); then
-            keys+=Rr
-            keyline "R) Remove   Q) Back"
+            keys+=DdRr
+            keyline "D) Download   R) Remove   Q) Back"
         else
-            keyline "Q) Back"
+            keys+=Dd
+            keyline "D) Download   Q) Back"
         fi
-        menu_key "> " "$keys" "Q: back
+        menu_key "> " "$keys" "D: download through your browser
+Q: back
 R: remove the file (uploader and sysops)" local || return 1
         case $MKEY in
             [Qq]) return 0 ;;
+            [Dd])
+                echo
+                xfer_download "$id" "$name" || return 1
+                [[ $XFER_OUTCOME == done ]] && dls=$(( dls + 1 ))
+                ;;
             [Rr])
                 echo
                 read_confirm "Remove this file? [y/N] " || continue

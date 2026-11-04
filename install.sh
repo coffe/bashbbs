@@ -34,6 +34,7 @@ fi
 install -d -m 0755 /usr/local/lib/bashbbs
 install -m 0755 "$src/lib/menu.sh" /usr/local/lib/bashbbs/menu.sh
 install -m 0644 "$src/lib/upload-common.sh" /usr/local/lib/bashbbs/upload-common.sh
+install -m 0644 "$src/lib/xfer.sh" /usr/local/lib/bashbbs/xfer.sh
 install -m 0755 "$src/bin/bbs-shell" /usr/local/sbin/bbs-shell
 install -m 0755 "$src/sbin/bbs-provision" /usr/local/sbin/bbs-provision
 install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
