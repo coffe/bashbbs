@@ -17,6 +17,7 @@ check() { # check <description> <command...>
     else fail=$((fail + 1)); echo "FAIL $d" | tee -a "$log"; fi
 }
 eq() { [[ $1 == "$2" ]]; }
+not_grep() { ! grep -q -- "$1" "$2"; }
 
 root=$(mktemp -d "$scratch/upload.XXXXXX")
 mkdir -p "$root/incoming/alice" "$root/fakebin"
@@ -146,6 +147,132 @@ rej=$(ls "$root/incoming/rejected" | wc -l)
 printf x > "$inbox/.staging-file"
 up
 check "regular file with a staging name: rejected as a dot name" eq "$(ls "$root/incoming/rejected" | wc -l)" "$((rej + 1))"
+
+# --- FILE_ID.DIZ, read without unpacking anything ---
+mkzip() { # mkzip <file> <entry name> <text, printf style>; no entry name: an empty zip
+    python3 -I - "$@" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("readme.txt", "hello " + sys.argv[1])
+    if sys.argv[2]:
+        z.writestr(sys.argv[2], sys.argv[3].encode("utf-8").decode("unicode_escape").encode("latin-1"))
+EOF
+}
+meta_of() { grep -lx "name=$1" "$root"/published/*.meta | head -n 1; }
+mkzip "$inbox/diz.zip" file_id.DIZ 'First line\r\n\x1b[31mRed\x1b[0m line\r\nsize=999\r\n'
+up
+m=$(meta_of diz.zip)
+check "diz: zip accepted" test -n "$m"
+check "diz: first line" grep -qx 'desc=First line' "$m"
+check "diz: ANSI gone" grep -qx 'desc=Red line' "$m"
+check "diz: cannot pass for a size line" grep -qx 'desc=size=999' "$m"
+check "diz: the real size stays first" bash -c '[[ $(sed -n "s/^size=//p" "$1" | head -n 1) != 999 && $(grep -c "^size=" "$1") == 1 ]]' _ "$m"
+mkzip "$inbox/nodiz.zip" ""
+up
+m=$(meta_of nodiz.zip)
+check "diz: zip without one is accepted" test -n "$m"
+check "diz: zip without one has no description" not_grep '^desc=' "$m"
+mkzip "$inbox/deep.zip" sub/FILE_ID.DIZ 'not in the root'
+up
+check "diz: not from a sub directory" not_grep '^desc=' "$(meta_of deep.zip)"
+python3 -I - "$inbox/long.zip" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("FILE_ID.DIZ", "\n".join("line %d" % i for i in range(5000)))
+EOF
+up
+m=$(meta_of long.zip)
+check "diz: at most 10 lines" eq "$(grep -c '^desc=' "$m")" 10
+python3 -I - "$inbox/wide.zip" <<'EOT'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("FILE_ID.DIZ", "x" * 900)
+EOT
+up
+check "diz: at most 60 wide" eq "$(sed -n 's/^desc=//p' "$(meta_of wide.zip)" | awk '{ print length }' | sort -n | tail -n 1)" 60
+printf 'this is no archive' > "$inbox/junk.zip"
+up
+check "diz: broken zip rejected" test -z "$(meta_of junk.zip)"
+check "diz: broken zip, reason in the journal" grep -q "rejected 'junk.zip' from alice: archive cannot be read" "$log"
+printf 'plain text' > "$inbox/plain.txt"
+up
+check "diz: other files are not looked into" test -n "$(meta_of plain.txt)"
+if command -v lha >/dev/null; then
+    printf 'this is no lha' > "$inbox/junk.lha"
+    up
+    check "diz: broken lha rejected" test -z "$(meta_of junk.lha)"
+else
+    # Without the tool nothing is known about the file, and it is not held against it.
+    printf 'this is no lha' > "$inbox/nolha.LHA"
+    up
+    check "diz: no lha tool, the file still goes up" test -n "$(meta_of nolha.LHA)"
+    check "diz: no lha tool, the journal says so" grep -q "could not look inside 'nolha.LHA'" "$log"
+fi
+
+# The result line tells the session whether the archive opened.
+T=ABCDEFGHIJKLMNOPQRSTUV
+mkdir -p "$root/queue/xfer" "$root/webup/$T"
+: > "$root/queue/xfer/$T"
+mkzip "$root/webup/$T/up1.zip" FILE_ID.DIZ 'From the link'
+mkzip "$root/webup/$T/up2.zip" ""
+printf 'just text' > "$root/webup/$T/up3.txt"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+r=$root/state/xfer-results/$T
+check "result: zip with a description" grep -qP '^ok\tup1\.zip\t[0-9]+-[0-9a-f]{8}\tarchive\+diz$' "$r"
+check "result: zip without one" grep -qP '^ok\tup2\.zip\t[0-9]+-[0-9a-f]{8}\tarchive$' "$r"
+check "result: no note on other files" grep -qP '^ok\tup3\.txt\t[0-9]+-[0-9a-f]{8}$' "$r"
+
+# --- description requests ---
+mkdir -p "$root/queue/filedesc"
+D=1500000900-dddddddd
+printf 'data' > "$root/published/$D"
+printf 'user=bbs-alice\nname=d.lha\nsize=4\nsha256=0\ndate=2026-11-04T09:00:00Z\nip=-\ndesc=old\n' > "$root/published/$D.meta"
+dm=$root/published/$D.meta
+req=$root/queue/filedesc/$D.desc
+printf 'New text\nsize=7\nline three\nline four\n' > "$req"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "desc: uploader may change it" grep -qx 'desc=New text' "$dm"
+check "desc: the old one is gone" not_grep '^desc=old$' "$dm"
+check "desc: at most 3 lines" eq "$(grep -c '^desc=' "$dm")" 3
+check "desc: no new size line" eq "$(grep -c '^size=' "$dm")" 1
+check "desc: request gone" test ! -e "$req"
+check "desc: meta mode" eq "$(stat -c %a "$dm")" 644
+printf 'Sneaky' > "$req"
+up BBS_UPLOAD_TEST_OWNER=bbs-mallory
+check "desc: someone else may not" not_grep '^desc=Sneaky$' "$dm"
+check "desc: refused request gone" test ! -e "$req"
+printf 'mallory\n' > "$root/sysops"
+printf 'From sysop' > "$req"
+up BBS_UPLOAD_TEST_OWNER=bbs-mallory
+check "desc: a sysop may" grep -qx 'desc=From sysop' "$dm"
+mv "$root/sysops" "$root/sysops.off"
+printf 'top secret\n' > "$root/secret"
+ln -s "$root/secret" "$req"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "desc: a link is not followed" not_grep 'top secret' "$dm"
+check "desc: link gone" test ! -L "$req"
+mkfifo "$req"
+timeout 20 env BBS_ROOT="$root" BBS_UPLOAD_NOCHOWN=1 BBS_UPLOAD_TEST_OWNER=bbs-alice bash "$here/sbin/bbs-upload" >>"$log" 2>&1; rc=$?
+check "desc: a pipe does not hold up the sorter" eq "$rc" 0
+check "desc: pipe gone" test ! -e "$req"
+printf 'bad' > "$root/queue/filedesc/..evil.desc"
+printf 'bad' > "$root/queue/filedesc/1500000901-00000000.desc"
+printf 'being written' > "$root/queue/filedesc/.tmp.fresh"
+printf 'left behind' > "$root/queue/filedesc/.tmp.stale"
+touch -d '2 hours ago' "$root/queue/filedesc/.tmp.stale"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "desc: odd name dropped" test ! -e "$root/queue/filedesc/..evil.desc"
+check "desc: missing file dropped" test ! -e "$root/queue/filedesc/1500000901-00000000.desc"
+check "desc: a file being written is left alone" test -e "$root/queue/filedesc/.tmp.fresh"
+check "desc: a file left behind goes" test ! -e "$root/queue/filedesc/.tmp.stale"
+rm -f "$root/queue/filedesc/.tmp.fresh"
+printf '\033[31mColour\033[0m \xe2\x80\xaeflipped\xc2\x85\n' > "$req"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "desc: ANSI and hidden characters cleaned" grep -qx 'desc=Colour flipped' "$dm"
+: > "$req"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "desc: empty text removes it" not_grep '^desc=' "$dm"
+check "desc: the rest of the meta stays" grep -qx 'name=d.lha' "$dm"
 
 echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

@@ -12,6 +12,7 @@
 #  4. Sorts files sent through a transfer link (web/x.cgi) from webup/<token>/, for
 #     the owner of the ticket queue/xfer/<token>, and writes what happened to each
 #     file to state/xfer-results/<token>, where the session and the page can read it.
+#  5. Carries out description changes asked for in the menu (queue/filedesc/<id>.desc).
 #
 # Rules per file:
 #  - bbs-shell moves a file into the inbox only after scp has finished, so what
@@ -20,12 +21,14 @@
 #    by a lost connection or an over-size transfer, and its files are rejected.
 #  - Rejected: zero size, over the size limit, odd names (leading dot, control
 #    characters, over MAX_NAME bytes), not a regular file (symlinks, dirs),
-#    user quota, global quota, disk space, or the same content (sha256) as a
-#    file already published. Rejected files go to
+#    user quota, global quota, disk space, the same content (sha256) as a
+#    file already published, or a .zip/.lha/.lzh that does not open. Rejected files go to
 #    incoming/rejected/<ts>-<user>-<n> with a reason on stderr (journal).
 #  - Accepted: moved to published/<id>, root-owned, mode 0644, with a sidecar
-#    .meta (user, name, size, sha256, date, ip). Visible to everyone at once.
-# Nothing is unpacked or executed.
+#    .meta (user, name, size, sha256, date, ip, desc). Visible to everyone at once.
+# Nothing is unpacked to disk or executed. The one exception to "the sorter does not
+# look inside": lib/diz.py reads FILE_ID.DIZ from a .zip/.lha/.lzh as nobody, with
+# limits, the archive as stdin and only that entry read. See read_diz.
 # BBS_ROOT can be set for tests; BBS_UPLOAD_NOCHOWN=1 skips chown (tests).
 set -uo pipefail
 umask 022
@@ -38,6 +41,10 @@ for lib in "$HERE/../lib/upload-common.sh" /usr/local/lib/bashbbs/upload-common.
     [[ -r $lib ]] && { source "$lib"; break; }
 done
 declare -F ub_check >/dev/null || { echo "bbs-upload: upload-common.sh not found" >&2; exit 1; }
+DIZ=""
+for lib in "$HERE/../lib/diz.py" /usr/local/lib/bashbbs/diz.py; do
+    [[ -r $lib ]] && { DIZ=$lib; break; }
+done
 
 INCOMING=$BBS_ROOT/incoming
 REJECTED=$INCOMING/rejected
@@ -100,8 +107,34 @@ client_ip() {
     printf '%s' "${ip:--}"
 }
 
+# clean_desc <max lines>: stdin to safe description lines. Empty if it cannot be done.
+clean_desc() {
+    [[ -n $DIZ ]] && python3 -I "$DIZ" clean "$1" 2>/dev/null
+}
+
+# desc_lines: description lines from stdin as the desc= lines of a meta file.
+desc_lines() {
+    local line
+    while IFS= read -r line; do
+        [[ -n $line ]] && printf 'desc=%s\n' "$line"
+    done
+    return 0
+}
+
+# read_diz <file> <zip|lha>: runs diz.py on the archive without root. The shell opens the
+# file, so nobody needs no way to the upload area. Prints the text, returns diz.py's status.
+read_diz() {
+    local run=(env -i PATH=/usr/bin:/bin timeout -k 2 10 bash -c
+        'cd /; ulimit -f 0 -t 5 -v 200000; exec python3 -I "$0" "$1"' "$DIZ" "$2")
+    if (( EUID == 0 )); then
+        run=(setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs "${run[@]}")
+    fi
+    "${run[@]}" < "$1" 2>/dev/null | head -c 4096
+    return "${PIPESTATUS[0]}"
+}
+
 handle() { # handle <file> <user>
-    local f=$1 u=$2 name size id sum why ip
+    local f=$1 u=$2 name size id sum why ip desc="" note="" kind="" rc
     name=$(basename -- "$f")
     [[ -f $f && ! -L $f ]] || { reject "$f" "$u" "not a regular file"; return; }
     if [[ $name == .* ]]; then reject "$f" "$u" "name starts with a dot"; return; fi
@@ -122,6 +155,23 @@ handle() { # handle <file> <user>
         reject "$f" "$u" "already on the BBS as $(sed -n 's/^name=//p' "$same" | head -n 1)"
         return
     fi
+    case ${name,,} in
+        *.zip) kind=zip ;;
+        *.lha|*.lzh) kind=lha ;;
+    esac
+    if [[ -n $kind && -n $DIZ ]]; then
+        desc=$(read_diz "$f" "$kind"); rc=$?
+        case $rc in
+            0)  desc=$(clean_desc 10 <<< "$desc")
+                note=archive
+                [[ -n $desc ]] && note=archive+diz
+                ;;
+            3)  reject "$f" "$u" "archive cannot be read"; return ;;
+            *)  desc=""
+                echo "bbs-upload: could not look inside '$(sanitize_name "$name")' (status $rc)" >&2
+                ;;
+        esac
+    fi
     ip=$(client_ip "$u")
     id=$(date +%s)-$(cat /proc/sys/kernel/random/uuid | cut -c1-8)
     mkdir -p "$PUBLISHED"
@@ -132,6 +182,7 @@ handle() { # handle <file> <user>
         printf 'sha256=%s\n' "$sum"
         printf 'date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'ip=%s\n' "$ip"
+        desc_lines <<< "$desc"
     } > "$PUBLISHED/$id.meta.tmp"
     if [[ -z ${BBS_UPLOAD_NOCHOWN:-} ]]; then
         chown root:root "$f" "$PUBLISHED/$id.meta.tmp" || true
@@ -142,8 +193,8 @@ handle() { # handle <file> <user>
     mv -- "$f" "$PUBLISHED/$id" || { rm -f -- "$PUBLISHED/$id.meta.tmp"; return; }
     mv -- "$PUBLISHED/$id.meta.tmp" "$PUBLISHED/$id.meta"
     log_line "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$u" up "$id" "$(sanitize_name "$name")" "$size" "$ip"
-    result_line ok "$(sanitize_name "$name")" "$id"
-    echo "bbs-upload: accepted '$(sanitize_name "$name")' from $u as $id ($size bytes)"
+    result_line ok "$(sanitize_name "$name")" "$id" ${note:+"$note"}
+    echo "bbs-upload: accepted '$(sanitize_name "$name")' from $u as $id ($size bytes)${note:+, $note}"
 }
 
 # handle_stage <dir> <user>: an unfinished transfer. The idle time covers the moment
@@ -219,6 +270,56 @@ process_removals() {
             rm -f -- "$rec"
         fi
     done < <(find "$QUEUE/filedel" -mindepth 1 -maxdepth 1 -print0)
+}
+
+# Description changes: queue/filedesc/<id>.desc, text written by the menu. The same
+# rules as removals: the owner of the file is who asks, for the uploader and for sysops.
+# The text is read as that owner, so a link cannot show us a file only root may read,
+# and through a timeout, so a pipe cannot hold us up. Empty text removes the description.
+# A .tmp.* is a file the menu is still writing; an old one was left behind.
+process_filedesc() {
+    local rec base id owner up uid gid text meta
+    # Without the cleaner the requests wait, so no description is wiped by mistake.
+    [[ -d $QUEUE/filedesc && -n $DIZ ]] || return 0
+    while IFS= read -r -d '' rec; do
+        base=${rec##*/}
+        if [[ $base == .tmp.* && -f $rec && ! -L $rec ]] \
+            && (( $(date +%s) - $(stat -c %Y -- "$rec") < 3600 )); then
+            continue
+        fi
+        id=${base%.desc}
+        owner=$(stat -c %U -- "$rec")
+        [[ -n ${BBS_UPLOAD_TEST_OWNER:-} ]] && owner=$BBS_UPLOAD_TEST_OWNER
+        meta=$PUBLISHED/$id.meta
+        if [[ ! -f $rec || -L $rec || $base != *.desc ]] || [[ ! $id =~ ^[0-9]+-[0-9a-f]{8}$ ]] \
+            || [[ ! $owner =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || [[ ! -f $meta ]]; then
+            find "$rec" -delete
+            continue
+        fi
+        up=$(sed -n 's/^user=//p' "$meta" | head -n 1)
+        if [[ $owner != "$up" ]] && ! grep -qsx -- "${owner#bbs-}" "$BBS_ROOT/sysops"; then
+            echo "bbs-upload: $owner may not describe $id (uploader $up)" >&2
+            find "$rec" -delete
+            continue
+        fi
+        if (( EUID == 0 )); then
+            uid=$(id -u -- "$owner") && gid=$(id -g -- "$owner") || { find "$rec" -delete; continue; }
+            text=$(setpriv --reuid="$uid" --regid="$gid" --clear-groups --no-new-privs \
+                timeout -k 2 5 head -c 1024 -- "$rec" 2>/dev/null | clean_desc 3) \
+                || { find "$rec" -delete; continue; }
+        else
+            text=$(timeout -k 2 5 head -c 1024 -- "$rec" 2>/dev/null | clean_desc 3) \
+                || { find "$rec" -delete; continue; }
+        fi
+        if grep -v '^desc=' "$meta" > "$meta.tmp" && desc_lines <<< "$text" >> "$meta.tmp"; then
+            chmod 0644 "$meta.tmp"
+            mv -f -- "$meta.tmp" "$meta"
+            echo "bbs-upload: $owner changed the description of $id"
+        else
+            rm -f -- "$meta.tmp"
+        fi
+        find "$rec" -delete
+    done < <(find "$QUEUE/filedesc" -mindepth 1 -maxdepth 1 -print0)
 }
 
 # ticket_owner <token>: prints the account a ticket belongs to, by the file's owner.
@@ -308,6 +409,7 @@ flock -w "$LOCK_WAIT" 9 || { echo "bbs-upload: lock busy" >&2; exit 1; }
 
 log_downloads
 process_removals      # before the sorting below, so a removal frees quota at once
+process_filedesc
 process_webup
 expire_xfer
 

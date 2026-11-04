@@ -11,6 +11,8 @@ BASHBBS_DEPS=(
     "openssh-server|required|command -v sshd"
     "postfix|optional|command -v postconf"
     "lighttpd|optional|command -v lighttpd"
+    # Reads FILE_ID.DIZ from uploaded .lha and .lzh files; without it they get no description.
+    "lhasa|optional|command -v lha"
     "fail2ban|optional|command -v fail2ban-client"
     # The jail bans through nft, so nftables is needed whenever fail2ban is installed.
     "nftables|optional|! command -v fail2ban-client >/dev/null || command -v nft >/dev/null"

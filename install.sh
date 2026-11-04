@@ -35,6 +35,7 @@ install -d -m 0755 /usr/local/lib/bashbbs
 install -m 0755 "$src/lib/menu.sh" /usr/local/lib/bashbbs/menu.sh
 install -m 0644 "$src/lib/upload-common.sh" /usr/local/lib/bashbbs/upload-common.sh
 install -m 0644 "$src/lib/xfer.sh" /usr/local/lib/bashbbs/xfer.sh
+install -m 0644 "$src/lib/diz.py" /usr/local/lib/bashbbs/diz.py
 install -m 0755 "$src/bin/bbs-shell" /usr/local/sbin/bbs-shell
 install -m 0755 "$src/sbin/bbs-provision" /usr/local/sbin/bbs-provision
 install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
@@ -123,7 +124,7 @@ install -d -m 0755 /srv/bashbbs/published
 install -d -m 1733 /srv/bashbbs/queue/transfers /srv/bashbbs/queue/ip /srv/bashbbs/queue/filedel
 # Transfer links: tickets and wake-up requests for the sorter, same write-only pattern.
 # Results may be read by whoever knows the token, but the directory cannot be listed.
-install -d -m 1733 /srv/bashbbs/queue/xfer /srv/bashbbs/queue/kick
+install -d -m 1733 /srv/bashbbs/queue/xfer /srv/bashbbs/queue/kick /srv/bashbbs/queue/filedesc
 install -d -m 0711 /srv/bashbbs/state/xfer-results
 getent passwd | awk -F: '$1 ~ /^bbs-/ && $7 == "/usr/local/sbin/bbs-shell" { print $1 }' | while IFS= read -r acct; do
     install -d -m 0700 -o "$acct" -g "$acct" "/srv/bashbbs/incoming/$acct"

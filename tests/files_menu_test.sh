@@ -176,5 +176,20 @@ check "quota: per user, largest first" before "$out" alice ghost
 check "quota: sum per user" bash -c 'grep -Eq "^alice +3.0 MB +2$" <<< "$1"' _ "$out"
 check "quota: limit and total shown" bash -c '[[ $1 == *"200.0 MB"* && $1 == *"of 2.0 GB"* ]]' _ "$out"
 
+
+# A description is a seventh column, and must not end up in the name.
+d=1500000700-77777777
+printf 'x' > "$root/published/$d"
+printf 'user=bbs-alice\nname=told.zip\nsize=1\ndate=2026-11-03T09:00:00Z\nsha256=0\ndesc=First of it\ndesc=Second of it\n' > "$root/published/$d.meta"
+printf '2026-11-03T10:00:00Z\tbbs-bob\tdown\t%s\ttold.zip\t1\t192.0.2.1\n' "$d" >> "$root/state/transfers.log"
+line=$(bob files_rows | grep -F "$d")
+check "rows: description is the first line" test "$(cut -f7 <<< "$line")" = "First of it"
+check "rows: name stays the name" test "$(cut -f6 <<< "$line")" = "told.zip"
+out=$(printf 'q' | bob top_downloads_view)
+check "top downloads: the name" grep -q 'told.zip' <<< "$out"
+check "top downloads: no description in it" not grep -q 'First of it' <<< "$out"
+out=$(printf 'q' | bob file_view "$line")
+check "view: the description, every line" grep -q 'Second of it' <<< "$out"
+
 echo "files_menu_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

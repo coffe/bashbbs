@@ -345,9 +345,10 @@ rline() {
 # One key, no draining, so keys typed on purpose a moment ago are not lost.
 read_key_raw() {
     local c o
-    MKEY=
+    MKEY= MESC=
     IFS= read -rsn1 c || return 1
     if [[ $c == $'\e' ]]; then
+        MESC=1  # MKEY is empty for this and for Enter
         # Arrow keys are ESC [ A or ESC O A, longer ones ESC [ 1 ; 5 C. Read to the
         # final byte (64..126). 0.2 s so the rest survives a slow link.
         if IFS= read -rsn1 -t 0.2 c && [[ $c == '[' || $c == O ]]; then
@@ -2002,10 +2003,11 @@ FILES_PAGE=10
 BBS_PUBLIC_HOST=${BBS_PUBLIC_HOST:-bbs.piewpiew.se}
 BBS_PUBLIC_PORT=${BBS_PUBLIC_PORT:-6464}
 
-# Tab-separated, newest first: id, uploader (account name), size, date, downloads, name.
+# Tab-separated, newest first: id, uploader (account name), size, date, downloads, name,
+# the first line of the description.
 # Only complete files: the data file and its .meta must both be there.
 files_rows() {
-    local pub=$BBS_ROOT/published id k v user size date name n
+    local pub=$BBS_ROOT/published id k v user size date name desc n
     local -A dls=()
     [[ -d $pub ]] || return 0
     while read -r n id; do
@@ -2015,17 +2017,18 @@ files_rows() {
     while IFS= read -r id; do
         id=${id%.meta}
         [[ $id =~ ^[0-9]+-[0-9a-f]{8}$ && -f $pub/$id ]] || continue
-        user="" size=0 date="" name=""
+        user="" size=0 date="" name="" desc=""
         while IFS='=' read -r k v; do
             case $k in
                 user) user=$v ;;
                 size) size=$v ;;
                 date) date=$v ;;
                 name) name=$v ;;
+                desc) [[ -n $desc ]] || desc=$v ;;
             esac
         done < "$pub/$id.meta"
         [[ $size =~ ^[0-9]+$ ]] || size=0
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$user" "$size" "$date" "${dls[$id]:-0}" "$name"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$user" "$size" "$date" "${dls[$id]:-0}" "$name" "$desc"
     done < <(find "$pub" -maxdepth 1 -type f -name '*.meta' -printf '%f\n' 2>/dev/null | sort -t- -k1,1nr -k2,2r) | safe_rows
 }
 
@@ -2049,23 +2052,38 @@ files_size() {
 }
 
 files_menu() {
-    local rows=() total start=0 i row id user size date dls name w width isnew keys hint
+    local rows=() total start=0 next i row id user size date dls name desc w width isnew keys hint
+    local height room used need mark
     while true; do
         redraw
         screen_header "Files" "[Q] Back"
+        flags_load
         mapfile -t rows < <(files_rows)
         total=${#rows[@]}
         (( start >= total )) && start=0
         width=$(list_width)
         w=$(( width - 40 ))
+        # Ten files always; a description takes a line more, so fewer may fit. The rest of
+        # the screen is 10 lines: top 3, foot 6, and one for the flag count.
+        height=$(stty size 2>/dev/null | awk '{print $1}')
+        [[ $height =~ ^[0-9]+$ ]] || height=24
+        room=$(( height - 10 ))
+        (( room < FILES_PAGE )) && room=$FILES_PAGE
+        used=0
         if (( total == 0 )); then
             echo "No files yet. Be the first!"
         fi
         for (( i = start; i < total && i < start + FILES_PAGE; i++ )); do
-            IFS=$'\t' read -r id user size date dls name <<< "${rows[i]}"
+            IFS=$'\t' read -r id user size date dls name desc <<< "${rows[i]}"
+            need=1
+            [[ -n $desc ]] && need=2
+            (( i > start && used + need > room )) && break
+            used=$(( used + need ))
             isnew=0
             [[ -n $SEEN_PREV ]] && (( ${id%%-*} > SEEN_PREV )) && isnew=1
-            printf '%s ' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")"
+            mark=' '
+            flag_has "$id" && mark=$(paint ACC '+')
+            printf '%s%s' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")" "$mark"
             if (( w >= 12 )); then
                 printf '%-*s %8s %-10s %s %3s' "$w" "$(list_fit "$w" "$name")" "$(files_size "$size")" \
                     "$(list_fit 10 "${user#bbs-}")" "${date:0:10}" "$dls"
@@ -2074,38 +2092,58 @@ files_menu() {
             fi
             (( isnew )) && printf ' %s' "$(paint ACC '*')"
             echo
+            [[ -n $desc ]] && printf '     %s\n' "$(list_fit $(( width - 5 )) "$desc")"
         done
+        next=$i
+        if (( ${#FLAGS[@]} )); then
+            echo "Flagged: $(count_text "${#FLAGS[@]}" file files). D takes them."
+        fi
         echo
         echo "Also works: scp -O -P $BBS_PUBLIC_PORT FILE $login@$BBS_PUBLIC_HOST:"
         echo "Up to $(files_size "$UPLOAD_MAX_BYTES") a file, $(files_size "$UPLOAD_USER_QUOTA") per user. New files show up in about a minute."
         echo
-        keys=QqUu hint="U: upload   Q: back"
-        if (( total > FILES_PAGE )); then
-            keyline "N) More   U) Upload   D) Download   Q) Back"
-            keys+=NnDd hint="N: next page   U: upload   D: download   Q: back"
+        keys=QqUuOo hint="U: upload   O: options   Q: back"
+        if (( start > 0 || next < total )); then
+            keyline "N) More   U) Upload   D) Download   A) Flag   O) Options   Q) Back"
+            keys+=NnDdAa hint="N: next page   U: upload   D: download   A: flag   O: options   Q: back"
         elif (( total > 0 )); then
-            keyline "U) Upload   D) Download   Q) Back"
-            keys+=Dd hint="U: upload   D: download   Q: back"
+            keyline "U) Upload   D) Download   A) Flag   O) Options   Q) Back"
+            keys+=DdAa hint="U: upload   D: download   A: flag   O: options   Q: back"
         else
-            keyline "U) Upload   Q) Back"
+            keyline "U) Upload   O) Options   Q) Back"
         fi
         menu_key "> " "$keys$(digit_keys "$total")" \
-"Number: open a file (* = new)
+"Number: open a file (* = new, + = flagged)
 $hint
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return ;;
-            [Nn]) (( total > FILES_PAGE )) && start=$(( start + FILES_PAGE )); continue ;;
+            [Nn]) start=$next; continue ;;
             [Uu]) echo; xfer_upload || return; continue ;;
+            [Oo]) echo; xfer_options; continue ;;
+            [Aa])
+                echo
+                printf 'Flag which number? (C) clears all: '
+                read_key_raw || return
+                case $MKEY in
+                    [Cc]) echo; flags_clear ;;
+                    [1-9]) read_num "$total" && { echo; flag_toggle "${rows[NUM - 1]%%$'\t'*}"; } ;;
+                esac
+                continue
+                ;;
             [Dd])
                 echo
+                # Flagged files go without asking; the summary still gives a way out.
+                if (( ${#FLAGS[@]} )); then
+                    xfer_download "${FLAGS[@]}" || return
+                    continue
+                fi
                 printf 'Download which number? '
                 read_key_raw || return
                 [[ $MKEY == [1-9] ]] || continue
                 read_num "$total" || continue
-                IFS=$'\t' read -r id user size date dls name <<< "${rows[NUM - 1]}"
-                xfer_download "$id" "$name" || return
+                xfer_download "${rows[NUM - 1]%%$'\t'*}" || return
                 continue
                 ;;
             [1-9]) read_num "$total" || continue ;;
@@ -2115,15 +2153,20 @@ B M P W: jump   G: log out" || return
     done
 }
 
-# One file: the facts, D for a download link, and R for the uploader or a sysop.
+# One file: the facts, D for a download link, F to flag it, and E and R for the
+# uploader or a sysop.
 # Returns 1 at end of input.
 file_view() { # file_view <row from files_rows>
-    local id user size date dls name keys=Qq can=0 pending=0 req
-    IFS=$'\t' read -r id user size date dls name <<< "$1"
+    local id user size date dls name desc keys=Qq can=0 pending=0 req flagword line descs=()
+    IFS=$'\t' read -r id user size date dls name desc <<< "$1"
     req=$BBS_ROOT/queue/filedel/$id.del
     [[ $login == "$user" ]] || is_sysop && can=1
     while true; do
         [[ -e $req ]] && pending=1
+        flags_load
+        flagword=Flag
+        flag_has "$id" && flagword=Unflag
+        mapfile -t descs < <(sed -n 's/^desc=//p' "$BBS_ROOT/published/$id.meta" 2>/dev/null | head -n 10 | safe)
         redraw
         local_header "$name" "[Q] Back"
         printf '%-11s %s\n' "Size:" "$(files_size "$size")"
@@ -2131,6 +2174,10 @@ file_view() { # file_view <row from files_rows>
         printf '%-11s %s\n' "Uploaded:" "${date:0:10}"
         printf '%-11s %s\n' "Downloads:" "$dls"
         echo
+        if (( ${#descs[@]} )); then
+            for line in "${descs[@]}"; do printf '  %s\n' "$line"; done
+            echo
+        fi
         echo "Also works:"
         echo "scp -O -P $BBS_PUBLIC_PORT $login@$BBS_PUBLIC_HOST:$name ."
         echo
@@ -2139,21 +2186,34 @@ file_view() { # file_view <row from files_rows>
             echo "Removal requested. The file goes away within a minute."
             keyline "Q) Back"
         elif (( can )); then
-            keys+=DdRr
-            keyline "D) Download   R) Remove   Q) Back"
+            keys+=DdFfEeRr
+            keyline "D) Download   F) $flagword   E) Describe   R) Remove   Q) Back"
         else
-            keys+=Dd
-            keyline "D) Download   Q) Back"
+            keys+=DdFf
+            keyline "D) Download   F) $flagword   Q) Back"
         fi
         menu_key "> " "$keys" "D: download through your browser
-Q: back
-R: remove the file (uploader and sysops)" local || return 1
+F: flag it, so a D in the list takes it   Q: back
+E: describe   R: remove (uploader and sysops)" local || return 1
         case $MKEY in
             [Qq]) return 0 ;;
             [Dd])
                 echo
-                xfer_download "$id" "$name" || return 1
+                xfer_download "$id" || return 1
                 [[ $XFER_OUTCOME == done ]] && dls=$(( dls + 1 ))
+                ;;
+            [Ff]) echo; flag_toggle "$id" ;;
+            [Ee])
+                echo
+                xfer_ask_desc "$name" || return 1
+                # Nothing typed and nothing there: nothing to do.
+                [[ -n $XFER_DESC || ${#descs[@]} -gt 0 ]] || continue
+                if xfer_send_desc "$id" "$XFER_DESC"; then
+                    echo "Saved. It shows within a minute."
+                else
+                    echo "Could not save that right now. Try again later."
+                fi
+                pause
                 ;;
             [Rr])
                 echo
@@ -2459,7 +2519,7 @@ top_downloads_view() {
     redraw
     local_header "Top Downloads"
     width=$(list_width)
-    while IFS=$'\t' read -r id user size date dls name; do
+    while IFS=$'\t' read -r id user size date dls name _; do
         (( dls > 0 )) || continue
         printf '%5d  %s\n' "$dls" "$(list_fit $(( width - 7 )) "$name")"
         shown=$(( shown + 1 ))
@@ -2662,7 +2722,8 @@ EOF
 # The whole logout: Goodbye art, then an ad if any, and "Bye." after the last art.
 logout_screen() {
     goodbye
-    ad_run
+    # Nobody may be there after (G)oodbye after transfer, and the ad waits for Space.
+    (( ${LOGOUT_QUIET:-0} )) || ad_run
     printf '%s\n' "${C_RST}Bye."
 }
 
@@ -2928,6 +2989,11 @@ welcome_screen() {
             echo "First visit. Welcome to BashBBS."
             echo
             echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
+        fi
+        flags_load
+        if (( ${#FLAGS[@]} )); then
+            echo
+            echo "** Flagged File(s) Exist **"
         fi
         echo
         paint_bar "[Any key] Main"; echo

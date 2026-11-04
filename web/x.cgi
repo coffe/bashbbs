@@ -501,7 +501,7 @@ async function check(names) {
     const lines = (await r.text()).split('\\n').map(l => l.split('\\t'));
     for (const [row, n] of names) {
       const hit = lines.filter(l => l[1] === n).pop();
-      if (hit) row.textContent = hit[0] === 'ok' ? 'Tested OK. It is on the BBS now.' : 'Not accepted: ' + hit[2];
+      if (hit) row.textContent = hit[0] === 'ok' ? 'Accepted. It is on the BBS now.' : 'Not accepted: ' + hit[2];
     }
     if (lines.some(l => l[0] === 'done')) { state.textContent = 'All done. You can close this page.'; return; }
     await new Promise(w => setTimeout(w, 2000));
