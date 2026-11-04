@@ -274,5 +274,91 @@ up BBS_UPLOAD_TEST_OWNER=bbs-alice
 check "desc: empty text removes it" not_grep '^desc=' "$dm"
 check "desc: the rest of the meta stays" grep -qx 'name=d.lha' "$dm"
 
+# --- file areas ---
+area_of() { sed -n 's/^area=//p' "$1"; }
+printf 'no area file' > "$inbox/noareas.txt"
+up
+check "area: no list, the one area" eq "$(area_of "$(meta_of noareas.txt)")" general
+mkdir -p "$root/etc" "$root/queue/filearea"
+printf '# comment\nmisc|Misc|Default\ndemos|Demos|Demo text\nmusic|Music|Tunes\n' > "$root/etc/file-areas"
+printf 'plain upload' > "$inbox/scp.txt"
+up
+check "area: scp goes to the first area" eq "$(area_of "$(meta_of scp.txt)")" misc
+check "area: only one line" eq "$(grep -c '^area=' "$(meta_of scp.txt)")" 1
+webup_area() { # webup_area <ticket body> <file name>: one file through a link
+    mkdir -p "$root/webup/$T"
+    printf '%b' "$1" > "$root/queue/xfer/$T"
+    printf 'from the link: %s' "$2" > "$root/webup/$T/$2"
+    up BBS_UPLOAD_TEST_OWNER=bbs-alice
+}
+webup_area 'dir=up\narea=demos\n' w1.txt
+check "area: the ticket's area" eq "$(area_of "$(meta_of w1.txt)")" demos
+webup_area 'dir=up\n' w2.txt
+check "area: ticket without one" eq "$(area_of "$(meta_of w2.txt)")" misc
+webup_area 'dir=up\narea=nosuch\n' w3.txt
+check "area: unknown in the ticket" eq "$(area_of "$(meta_of w3.txt)")" misc
+webup_area 'dir=up\narea=demos\\nsize=9\n' w4.txt
+check "area: odd text in the ticket" eq "$(area_of "$(meta_of w4.txt)")" misc
+check "area: no extra size line" eq "$(grep -c '^size=' "$(meta_of w4.txt)")" 1
+webup_area 'dir=up\narea=../../etc\n' w5.txt
+check "area: a path in the ticket" eq "$(area_of "$(meta_of w5.txt)")" misc
+printf 'after a link' > "$inbox/after.txt"
+up
+check "area: the ticket's area is not kept for the next file" eq "$(area_of "$(meta_of after.txt)")" misc
+
+A=$(basename "$(meta_of w1.txt)" .meta)
+am=$root/published/$A.meta
+areq=$root/queue/filearea/$A.area
+printf 'music' > "$areq"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "move: the uploader may" eq "$(area_of "$am")" music
+check "move: one line" eq "$(grep -c '^area=' "$am")" 1
+check "move: request gone" test ! -e "$areq"
+check "move: the rest stays" grep -qx 'name=w1.txt' "$am"
+check "move: meta mode" eq "$(stat -c %a "$am")" 644
+check "move: said in the journal" grep -q "bbs-alice moved $A to the area music" "$log"
+printf 'demos' > "$areq"
+up BBS_UPLOAD_TEST_OWNER=bbs-mallory
+check "move: someone else may not" eq "$(area_of "$am")" music
+check "move: refused request gone" test ! -e "$areq"
+printf 'mallory\n' > "$root/sysops"
+printf 'demos\n' > "$areq"
+up BBS_UPLOAD_TEST_OWNER=bbs-mallory
+check "move: a sysop may" eq "$(area_of "$am")" demos
+rm -f "$root/sysops"
+printf 'nosuch' > "$areq"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "move: unknown area, stays" eq "$(area_of "$am")" demos
+check "move: unknown request gone" test ! -e "$areq"
+printf 'music\nsize=999\ndesc=sneaky\n' > "$areq"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "move: only the first line counts" eq "$(area_of "$am")" music
+check "move: no injected size" eq "$(grep -c '^size=' "$am")" 1
+check "move: no injected description" not_grep '^desc=sneaky' "$am"
+printf 'demos\n' > "$root/secret"
+ln -s "$root/secret" "$areq"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "move: a link is not followed" eq "$(area_of "$am")" music
+check "move: link gone" test ! -L "$areq"
+mkfifo "$areq"
+timeout 20 env BBS_ROOT="$root" BBS_UPLOAD_NOCHOWN=1 BBS_UPLOAD_TEST_OWNER=bbs-alice bash "$here/sbin/bbs-upload" >>"$log" 2>&1; rc=$?
+check "move: a pipe does not hold up the sorter" eq "$rc" 0
+check "move: pipe gone" test ! -e "$areq"
+printf 'being written' > "$root/queue/filearea/.tmp.fresh"
+printf 'bad' > "$root/queue/filearea/..evil.area"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "move: a file being written is left alone" test -e "$root/queue/filearea/.tmp.fresh"
+check "move: odd name dropped" test ! -e "$root/queue/filearea/..evil.area"
+rm -f "$root/queue/filearea/.tmp.fresh"
+# Taking an area away changes no file, and it can come back.
+printf 'misc|Misc|Default\ndemos|Demos|Demo text\n' > "$root/etc/file-areas"
+before=$(cat "$am")
+up
+check "area removed: the .meta is not rewritten" eq "$(cat "$am")" "$before"
+printf 'music' > "$areq"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "area removed: nothing moves there" eq "$(area_of "$am")" music
+check "area removed: request gone" test ! -e "$areq"
+
 echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

@@ -38,7 +38,7 @@ in a separate private repository. This repository has only the Pi side.
 | `lib/news-categories.conf` | News categories. |
 | `lib/goodbye-art.txt` | Logout banner. Not used by the current code. |
 | `web/index.html`, `web/apply.cgi` | Public web page and application form (served by lighttpd). |
-| `etc/` | Config fragments: fail2ban jail, sshd `Match` block, lighttpd site. |
+| `etc/` | Config fragments: fail2ban jail, sshd `Match` block, lighttpd site. Also `file-areas`, the default list of file areas. |
 | `systemd/` | `bbs-publish`, `bbs-drop`, `bbs-history-expire` and `bbs-keys` service and timer units, lighttpd drop-in. |
 | `install.sh` | Installer, run as root. |
 | `tests/` | Shell and Python tests (see below). |
@@ -129,6 +129,19 @@ session scratchpad). Set `SCRATCH` to choose another location. The `stage-*` and
 | `BBS_NOW` | current time | Fixed epoch time, for tests. |
 | `BBS_COLS`, `BBS_ROWS` | terminal size | Terminal size, used for wrapping and Wall layout. |
 | `BASHBBS_TEST=1` | unset | Enables test-only hooks. |
+
+### File areas
+
+The areas in the Files section are listed in `$BBS_ROOT/etc/file-areas`, one per line, in menu
+order: `slug|Title|Short text`. The installer never overwrites an existing list. Changes take
+effect at once.
+
+- **To add an area,** add a line.
+- **To remove an area,** remove its line. No file is deleted: its files show under the first
+  area, which is the default, and return if the line comes back.
+- `scp -O` uploads go to the default area. In the menu, `U` uses the area you are in, and `M`
+  in an open file moves it (uploader and sysops).
+- With one area, or no list at all, the area menu is skipped.
 
 ## Hardcoded values to change before reuse
 

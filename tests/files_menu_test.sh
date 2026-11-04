@@ -12,6 +12,7 @@ pass=0; fail=0
 check() { local d=$1; shift
     if "$@" >>"$log" 2>&1; then pass=$((pass + 1)); echo "ok   $d" >>"$log"
     else fail=$((fail + 1)); echo "FAIL $d" | tee -a "$log"; fi; }
+eq() { [[ $1 == "$2" ]]; }
 has() { grep -qF -- "$2" <<< "$1"; }
 not() { ! "$@"; }
 before() { [[ $1 == *"$2"*"$3"* ]]; }
@@ -177,19 +178,88 @@ check "quota: sum per user" bash -c 'grep -Eq "^alice +3.0 MB +2$" <<< "$1"' _ "
 check "quota: limit and total shown" bash -c '[[ $1 == *"200.0 MB"* && $1 == *"of 2.0 GB"* ]]' _ "$out"
 
 
-# A description is a seventh column, and must not end up in the name.
+# A description is the last column, and must not end up in the name.
 d=1500000700-77777777
 printf 'x' > "$root/published/$d"
 printf 'user=bbs-alice\nname=told.zip\nsize=1\ndate=2026-11-03T09:00:00Z\nsha256=0\ndesc=First of it\ndesc=Second of it\n' > "$root/published/$d.meta"
 printf '2026-11-03T10:00:00Z\tbbs-bob\tdown\t%s\ttold.zip\t1\t192.0.2.1\n' "$d" >> "$root/state/transfers.log"
 line=$(bob files_rows | grep -F "$d")
-check "rows: description is the first line" test "$(cut -f7 <<< "$line")" = "First of it"
+check "rows: description is the first line" test "$(cut -f8 <<< "$line")" = "First of it"
 check "rows: name stays the name" test "$(cut -f6 <<< "$line")" = "told.zip"
 out=$(printf 'q' | bob top_downloads_view)
 check "top downloads: the name" grep -q 'told.zip' <<< "$out"
 check "top downloads: no description in it" not grep -q 'First of it' <<< "$out"
 out=$(printf 'q' | bob file_view "$line")
 check "view: the description, every line" grep -q 'Second of it' <<< "$out"
+
+# --- File areas
+areas() { fa_load; local i; for (( i = 0; i < ${#FA_SLUGS[@]}; i++ )); do printf '%s=%s=%s\n' "${FA_SLUGS[i]}" "${FA_TITLES[i]}" "${FA_TEXTS[i]}"; done; printf 'default=%s\n' "$FA_DEFAULT"; }
+aof() { sed -n 's/^area=//p' "$root/published/$1.meta"; }
+O=1500000100-aaaaaaaa M=1500000200-bbbbbbbb B=1500000400-dddddddd
+out=$(bob areas)
+check "areas: no file, one area" eq "$out" $'general=General=All files\ndefault=general'
+out=$(printf 'q' | bob file_areas)
+check "areas: one area, straight to the list" has 'boss.mod' "$out"
+check "areas: one area, no title on the header" not grep -q 'Files: ' <<< "$out"
+mkdir -p "$root/etc"
+: > "$root/etc/file-areas"
+check "areas: empty file, one area" eq "$(bob areas | tail -n 1)" default=general
+printf '# a comment\n\nBad Slug|No|No\n../x|No|No\ndemos|Demos|Demo text\ndemos|Twice|No\nmusic| Music |  Tunes \nbare\nesc|Bad\033[31mTitle|x\033]0;own\007y\n\nlast|Last line|No newline at the end' > "$root/etc/file-areas"
+out=$(bob areas)
+check "areas: first usable line is the default" grep -qx 'default=demos' <<< "$out"
+check "areas: junk, comments and doubles left out" eq "$(grep -c = <<< "$out")" 6
+check "areas: spaces trimmed" grep -qx 'music=Music=Tunes' <<< "$out"
+check "areas: no title, the slug" grep -qx 'bare=bare=' <<< "$out"
+check "areas: escape codes gone" not grep -q $'\033\|\007' <<< "$out"
+check "areas: last line without a newline" grep -qx 'last=Last line=No newline at the end' <<< "$out"
+printf 'general|General|Other things\ndemos|Demos|Demo text\nmusic|Music|Tunes\n' > "$root/etc/file-areas"
+printf 'area=music\n' >> "$root/published/$O.meta"
+printf 'area=demos\n' >> "$root/published/$M.meta"
+printf 'area=demos\ndesc=About boss\n' >> "$root/published/$B.meta"
+check "rows: only the area" eq "$(bob files_rows demos | cut -f6 | sort | tr '\n' ' ')" "boss.mod mid.lha "
+check "rows: no file in it" eq "$(bob files_rows nosuch | wc -l)" 0
+check "rows: all without an area given" eq "$(bob files_rows | cut -f7 | sort -u | wc -l)" 3
+check "rows: the area column" eq "$(bob files_rows music | cut -f7)" music
+check "rows: an empty description stays empty" eq "$(bob files_rows music | cut -f8)" ""
+check "rows: the description column" eq "$(bob files_rows demos | head -n 1 | cut -f8)" "About boss"
+check "rows: no area in .meta, the default" has "$(bob files_rows general | cut -f6)" secret.txt
+out=$(printf 'q' | bob file_areas)
+check "area menu: names and text" grep -q 'Demo text' <<< "$out"
+check "area menu: counts" grep -q 'Demos.*2 files' <<< "$out"
+check "area menu: one file" grep -q 'Music.*1 file' <<< "$out"
+check "area menu: no files listed yet" not grep -q 'boss.mod' <<< "$out"
+out=$(printf '2q' | bob file_areas; printf 'q' >/dev/null)
+check "area menu: the number opens it" has 'Files: Demos' "$out"
+check "area menu: its files" has 'boss.mod' "$out"
+check "area menu: not the others" not grep -q 'old.zip' <<< "$out"
+out=$(printf '2qq' | bob file_areas)
+check "area menu: Q in an area comes back to the areas" eq "$(grep -c 'Demo text' <<< "$out")" 2
+out=$(printf 'q' | run_as bbs-bob 1500000350 file_areas)
+check "area menu: new files marked" grep -q 'Demos.*2 files \*' <<< "$out"
+check "area menu: no mark without" not grep -q 'Music.*1 file \*' <<< "$out"
+# Taken away and put back: the files go to the default area and return.
+keep=$(cat "$root/published/$O.meta")
+printf 'general|General|Other things\ndemos|Demos|Demo text\n' > "$root/etc/file-areas"
+check "area removed: its file shows in the default" has old.zip "$(bob files_rows general | cut -f6)"
+check "area removed: the column says the default" eq "$(bob files_rows general | grep -F "$O" | cut -f7)" general
+check "area removed: the .meta is untouched" eq "$(cat "$root/published/$O.meta")" "$keep"
+printf 'general|General|Other things\ndemos|Demos|Demo text\nmusic|Music|Tunes\n' > "$root/etc/file-areas"
+check "area back: the file is back" eq "$(bob files_rows music | cut -f6)" old.zip
+out=$(printf 'q' | bob files_menu nosuch)
+check "list: unknown area, the default" has 'Files: General' "$out"
+out=$(printf 'q' | run_as bbs-bob "" file_view "$(bob files_rows music)")
+check "view: the area" grep -q 'Area: *Music' <<< "$out"
+check "view: not the uploader, no move" not grep -q 'M) Move' <<< "$out"
+{ for n in $(seq 1 14); do printf 'a%s|Area %s|Text %s\n' "$n" "$n" "$n"; done; } > "$root/etc/file-areas"
+out=$(printf 'q' | bob file_areas)
+check "many areas: a page" has 'Area 12' "$out"
+check "many areas: not the rest" not grep -q 'Area 13' <<< "$out"
+check "many areas: more" has 'N) More' "$out"
+out=$(printf 'nq' | bob file_areas)
+check "many areas: next page" has 'Area 14' "$out"
+out=$(printf '14\nq' | bob file_areas)
+check "many areas: two digits" has 'Files: Area 14' "$out"
+rm -f "$root/etc/file-areas"
 
 echo "files_menu_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

@@ -166,6 +166,9 @@ check "all slots taken: HEAD still answers" eq "$(status)" 200
 kill "$holder"; wait "$holder" 2>/dev/null; holder=""
 
 # --- Upload
+ticket "$TU" dir=up area=demos
+cgi GET "$TU" ""
+check "upload page: an area line is no problem" eq "$(status)" 200
 ticket "$TU" dir=up
 ok=$root/.file; printf 'upload one\n' > "$ok"
 cgi GET "$TU" ""

@@ -124,12 +124,13 @@ install -d -m 0755 /srv/bashbbs/published
 install -d -m 1733 /srv/bashbbs/queue/transfers /srv/bashbbs/queue/ip /srv/bashbbs/queue/filedel
 # Transfer links: tickets and wake-up requests for the sorter, same write-only pattern.
 # Results may be read by whoever knows the token, but the directory cannot be listed.
-install -d -m 1733 /srv/bashbbs/queue/xfer /srv/bashbbs/queue/kick /srv/bashbbs/queue/filedesc
+install -d -m 1733 /srv/bashbbs/queue/xfer /srv/bashbbs/queue/kick /srv/bashbbs/queue/filedesc /srv/bashbbs/queue/filearea
 install -d -m 0711 /srv/bashbbs/state/xfer-results
 getent passwd | awk -F: '$1 ~ /^bbs-/ && $7 == "/usr/local/sbin/bbs-shell" { print $1 }' | while IFS= read -r acct; do
     install -d -m 0700 -o "$acct" -g "$acct" "/srv/bashbbs/incoming/$acct"
 done
 install -d -m 0755 /srv/bashbbs/state/keys-results /srv/bashbbs/etc
+keep_or_note "$src/etc/file-areas" /srv/bashbbs/etc/file-areas
 
 # Private boards: one meta file per board (owner, created). Sysops are listed
 # one name per line, without the bbs- prefix, and are added to every private board.

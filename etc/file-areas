@@ -1,0 +1,16 @@
+# The file areas of the BBS. One area per line, in menu order:
+#
+#   slug|Title|Short text
+#
+# The slug is what a file's .meta remembers: a-z, 0-9 and dashes, at most 20 characters.
+# Do not change the slug of an area that has files; change its title instead.
+# The first area is the default: scp -O uploads land there, and so does anything without
+# a known area.
+#
+# To add an area, add a line. To remove one, remove its line: no file is deleted, its files
+# show under the default area, and putting the line back returns them to where they were.
+# It takes effect at once, with no restart.
+general|General|Anything that fits nowhere else
+demos|Demos|Demos, intros and cracktros
+music|Music|Modules, tunes and samples
+utilities|Utilities|Tools and useful programs

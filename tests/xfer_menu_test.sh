@@ -17,7 +17,7 @@ not() { ! "$@"; }
 [[ $(id -u) -ne 0 ]] || { echo "Run as a normal user, not root." >&2; exit 2; }
 
 root=$(mktemp -d "$scratch/xfermenu.XXXXXX")
-mkdir -p "$root"/{published,state/xfer-results,queue/xfer,queue/filedel,queue/filedesc,queue/kick,users/alice,home}
+mkdir -p "$root"/{published,state/xfer-results,queue/xfer,queue/filedel,queue/filedesc,queue/filearea,queue/kick,users/alice,home}
 printf 'name=Alice\n' > "$root/users/alice/profile"
 : > "$root/state/transfers.log"
 ID=1500000100-aaaaaaaa
@@ -35,9 +35,10 @@ start() {
     exec 7<>"$fifo"
     ( export BBS_ROOT="$root" HOME="$root/home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb \
           BASHBBS_COLOR=0 COLUMNS=100 XFER_POLL=0.1 "$@"
-      source "$here/lib/menu.sh"; files_menu; echo "END nav_req=${nav_req:-}"; echo "QUIET=${LOGOUT_QUIET:-0}" ) <"$fifo" >"$out" 2>&1 7>&- &
+      source "$here/lib/menu.sh"; "${BBS_START:-files_menu}"; echo "END nav_req=${nav_req:-}"; echo "QUIET=${LOGOUT_QUIET:-0}" ) <"$fifo" >"$out" 2>&1 7>&- &
     menu_pid=$!
 }
+eq() { [[ $1 == "$2" ]]; }
 keys() { printf '%s' "$1" >&7; }
 # Close our end: end of input for the menu. It has to stop by itself.
 finish() {
@@ -515,6 +516,89 @@ logout_with() { ( BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb BASHBBS_COL
 check "logout: the ad as usual" grep -q AD-SHOWN <<< "$(logout_with 0)"
 check "logout: quiet, no ad" not grep -q AD-SHOWN <<< "$(logout_with 1)"
 check "logout: quiet still says bye" grep -q 'Bye\.' <<< "$(logout_with 1)"
+
+# --- File areas
+find "$root/published" -type f -delete
+clear_tickets
+find "$root/queue/kick" -type f -delete
+A1=1500000700-a1a1a1a1 A2=1500000701-a2a2a2a2
+printf 'x' > "$root/published/$A1"
+printf 'y' > "$root/published/$A2"
+printf 'user=bbs-alice\nname=mine.mod\nsize=1\ndate=2026-11-04T09:00:00Z\nsha256=1\narea=music\n' > "$root/published/$A1.meta"
+printf 'user=bbs-bob\nname=theirs.mod\nsize=1\ndate=2026-11-04T09:00:00Z\nsha256=2\narea=music\n' > "$root/published/$A2.meta"
+mkdir -p "$root/etc"
+printf 'general|General|Other things\ndemos|Demos|Demo text\nmusic|Music|Tunes\n' > "$root/etc/file-areas"
+start BBS_START=file_areas
+check "areas: the menu" seen "Demo text"
+keys 3
+check "areas: into one" seen "Files: Music"
+keys u
+check "areas: U says where it goes" seen "Area:"
+check "areas: U names it" grep -q 'Area: *Music' "$out"
+seen "x.cgi/" >/dev/null
+check "areas: the ticket has the area" grep -qx 'area=music' "$root/queue/xfer/$(newest_ticket)"
+check "areas: and says it is an upload" grep -qx 'dir=up' "$root/queue/xfer/$(newest_ticket)"
+keys q; sleep 0.3
+: > "$out"
+keys 2
+check "move: the key on my own file" seen "M) Move"
+check "move: the view says the area" grep -q 'Area: *Music' "$out"
+req=$root/queue/filearea/$A1.area
+keys m
+check "move: asks where" seen "Move it to which area?"
+check "move: says where it is" seen "(it is here)"
+keys x
+sleep 0.4
+check "move: any other key, nothing" test ! -e "$req"
+keys m; sleep 0.3; keys 3
+sleep 0.4
+check "move: to where it is, nothing" test ! -e "$req"
+: > "$out"
+keys m; seen "Move it to which area?" >/dev/null; keys 2
+check "move: says what happens" seen "It moves to Demos within a minute."
+check "move: the request" eq "$(cat "$req" 2>/dev/null)" demos
+check "move: the sorter is woken" bash -c 'compgen -G "$1/queue/kick/*" >/dev/null' _ "$root"
+keys x; sleep 0.3
+rm -f "$req"
+mv "$root/queue/filearea" "$root/queue/filearea.away"
+keys m; seen "Move it" >/dev/null; keys 2
+check "move: no queue, says so" seen "Could not ask for that right now."
+mv "$root/queue/filearea.away" "$root/queue/filearea"
+keys x; sleep 0.3
+: > "$out"
+keys f; sleep 0.3; keys q; sleep 0.3; keys q
+check "areas: flags show across the areas" seen "Flagged: 1 file. D takes them."
+check "areas: D is offered" seen "D) Download"
+keys q; finish
+rm -f "$root/home/.bashbbs-flags"
+start BBS_START=file_areas
+seen "Demo text" >/dev/null; keys 3; seen "Files: Music" >/dev/null; keys 1
+seen "theirs.mod" >/dev/null; sleep 0.4
+check "move: not on someone else's file" not grep -q 'M) Move' "$out"
+keys m; sleep 0.4
+check "move: the key does nothing there" not grep -q 'Move it to which' "$out"
+keys q; sleep 0.3; keys q; sleep 0.3; keys q; finish
+printf 'alice\n' > "$root/sysops"
+start BBS_START=file_areas
+seen "Demo text" >/dev/null; keys 3; seen "Files: Music" >/dev/null; keys 1
+check "move: a sysop gets the key" seen "M) Move"
+keys q; sleep 0.3; keys q; sleep 0.3; keys q; finish
+rm -f "$root/sysops"
+printf 'general|General|Only this\n' > "$root/etc/file-areas"
+start BBS_START=file_areas
+check "one area: straight to the list" seen "mine.mod"
+check "one area: plain header" not grep -q 'Files: ' "$out"
+keys 2
+check "one area: a file" seen "mine.mod"
+sleep 0.4
+check "one area: no move" not grep -q 'M) Move' "$out"
+check "one area: no area line" not grep -q 'Area:' "$out"
+keys q; sleep 0.3
+: > "$out"
+keys u; seen "x.cgi/" >/dev/null
+check "one area: no area on the upload" not grep -q 'Area:' "$out"
+keys q; sleep 0.3; keys q; finish
+rm -rf "$root/etc"
 
 echo "xfer_menu_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

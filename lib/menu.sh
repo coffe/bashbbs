@@ -1987,7 +1987,7 @@ B M P W: jump" || { nav_req=quit; return; }
             5) nav_req=mail; return ;;
             6) my_account; [[ -n $nav_req ]] && return ;;
             7) games_menu; [[ -n $nav_req ]] && return ;;
-            8) files_menu; [[ -n $nav_req ]] && return ;;
+            8) file_areas; [[ -n $nav_req ]] && return ;;
             9) sysop_menu; [[ -n $nav_req ]] && return ;;
         esac
     done
@@ -2000,16 +2000,20 @@ B M P W: jump" || { nav_req=quit; return; }
 # the file's owner against the uploader and the sysops, then moves the file to
 # state/expired/. Nothing is deleted.
 FILES_PAGE=10
+AREAS_PAGE=${AREAS_PAGE:-12}
 BBS_PUBLIC_HOST=${BBS_PUBLIC_HOST:-bbs.piewpiew.se}
 BBS_PUBLIC_PORT=${BBS_PUBLIC_PORT:-6464}
 
 # Tab-separated, newest first: id, uploader (account name), size, date, downloads, name,
-# the first line of the description.
+# area, the first line of the description. The area is never empty and the description can
+# be, so it has to stay last: read with IFS=tab, an empty field in the middle would vanish.
 # Only complete files: the data file and its .meta must both be there.
-files_rows() {
-    local pub=$BBS_ROOT/published id k v user size date name desc n
+# With an area: only the files in it. A file whose area is not listed is in the default one.
+files_rows() { # files_rows [area]
+    local want=${1:-} pub=$BBS_ROOT/published id k v user size date name area desc n
     local -A dls=()
     [[ -d $pub ]] || return 0
+    fa_load
     while read -r n id; do
         dls[$id]=$n
     done < <(awk -F'\t' '$3 == "down" { c[$4]++ } END { for (i in c) print c[i], i }' \
@@ -2017,18 +2021,21 @@ files_rows() {
     while IFS= read -r id; do
         id=${id%.meta}
         [[ $id =~ ^[0-9]+-[0-9a-f]{8}$ && -f $pub/$id ]] || continue
-        user="" size=0 date="" name="" desc=""
+        user="" size=0 date="" name="" area="" desc=""
         while IFS='=' read -r k v; do
             case $k in
                 user) user=$v ;;
                 size) size=$v ;;
                 date) date=$v ;;
                 name) name=$v ;;
+                area) area=$v ;;
                 desc) [[ -n $desc ]] || desc=$v ;;
             esac
         done < "$pub/$id.meta"
         [[ $size =~ ^[0-9]+$ ]] || size=0
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$user" "$size" "$date" "${dls[$id]:-0}" "$name" "$desc"
+        fa_known "$area" || area=$FA_DEFAULT
+        [[ -z $want || $area == "$want" ]] || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$user" "$size" "$date" "${dls[$id]:-0}" "$name" "$area" "$desc"
     done < <(find "$pub" -maxdepth 1 -type f -name '*.meta' -printf '%f\n' 2>/dev/null | sort -t- -k1,1nr -k2,2r) | safe_rows
 }
 
@@ -2051,14 +2058,80 @@ files_size() {
     else printf '%d.%d GB' $(( n / 1073741824 )) $(( n * 10 / 1073741824 % 10 )); fi
 }
 
-files_menu() {
-    local rows=() total start=0 next i row id user size date dls name desc w width isnew keys hint
-    local height room used need mark
+# The areas, with the number of files in each. One area: straight to its list.
+# Returns 1 at end of input.
+file_areas() {
+    local start=0 next i total id area suffix keys hint
+    local -A count=() fresh=()
     while true; do
+        fa_load
+        total=${#FA_SLUGS[@]}
+        if (( total == 1 )); then
+            files_menu "$FA_DEFAULT"
+            return
+        fi
+        count=() fresh=()
+        while IFS=$'\t' read -r id _ _ _ _ _ area _; do
+            count[$area]=$(( ${count[$area]:-0} + 1 ))
+            [[ -n $SEEN_PREV ]] && (( ${id%%-*} > SEEN_PREV )) && fresh[$area]=1
+        done < <(files_rows)
+        (( start >= total )) && start=0
         redraw
         screen_header "Files" "[Q] Back"
         flags_load
-        mapfile -t rows < <(files_rows)
+        for (( i = start; i < total && i < start + AREAS_PAGE; i++ )); do
+            area=${FA_SLUGS[i]}
+            suffix=$(count_text "${count[$area]:-0}" file files)
+            [[ -n ${fresh[$area]:-} ]] && suffix+=' *'
+            menu_item "$(( i + 1 ))" "$(list_fit 18 "${FA_TITLES[i]}")" "${FA_TEXTS[i]}" "$suffix"
+        done
+        next=$i
+        echo
+        if (( ${#FLAGS[@]} )); then
+            echo "Flagged: $(count_text "${#FLAGS[@]}" file files). D takes them."
+            echo
+        fi
+        keys=Qq hint="Q: back"
+        local more="" down=""
+        if (( start > 0 || next < total )); then
+            more="N) More   " keys+=Nn hint="N: next page   $hint"
+        fi
+        if (( ${#FLAGS[@]} )); then
+            down="D) Download   " keys+=Dd hint="D: download what is flagged   $hint"
+        fi
+        keyline "$more${down}Q) Back"
+        menu_key "> " "$keys$(digit_keys "$total")" \
+"Number: open an area (* = new files)
+$hint
+B M P W: jump   G: log out" || return
+        nav_key "$MKEY" && return
+        case $MKEY in
+            [Qq]) return 0 ;;
+            [Nn]) start=$next ;;
+            [Dd]) echo; xfer_download "${FLAGS[@]}" || return ;;
+            [1-9])
+                read_num "$total" || continue
+                files_menu "${FA_SLUGS[NUM - 1]}" || return
+                [[ -n $nav_req ]] && return
+                ;;
+        esac
+    done
+}
+
+# The files of one area, the default area when none is given.
+files_menu() { # files_menu [area]
+    local area=${1:-} title
+    local rows=() total start=0 next i row id user size date dls name desc w width isnew keys hint
+    local height room used need mark
+    while true; do
+        fa_load
+        fa_known "$area" || area=$FA_DEFAULT
+        title=Files
+        (( ${#FA_SLUGS[@]} > 1 )) && title="Files: $(fa_title "$area")"
+        redraw
+        screen_header "$title" "[Q] Back"
+        flags_load
+        mapfile -t rows < <(files_rows "$area")
         total=${#rows[@]}
         (( start >= total )) && start=0
         width=$(list_width)
@@ -2074,7 +2147,7 @@ files_menu() {
             echo "No files yet. Be the first!"
         fi
         for (( i = start; i < total && i < start + FILES_PAGE; i++ )); do
-            IFS=$'\t' read -r id user size date dls name desc <<< "${rows[i]}"
+            IFS=$'\t' read -r id user size date dls name _ desc <<< "${rows[i]}"
             need=1
             [[ -n $desc ]] && need=2
             (( i > start && used + need > room )) && break
@@ -2118,9 +2191,9 @@ $hint
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
-            [Qq]) return ;;
+            [Qq]) return 0 ;;
             [Nn]) start=$next; continue ;;
-            [Uu]) echo; xfer_upload || return; continue ;;
+            [Uu]) echo; xfer_upload "$area" || return; continue ;;
             [Oo]) echo; xfer_options; continue ;;
             [Aa])
                 echo
@@ -2153,12 +2226,13 @@ B M P W: jump   G: log out" || return
     done
 }
 
-# One file: the facts, D for a download link, F to flag it, and E and R for the
+# One file: the facts, D for a download link, F to flag it, and E, M and R for the
 # uploader or a sysop.
 # Returns 1 at end of input.
 file_view() { # file_view <row from files_rows>
-    local id user size date dls name desc keys=Qq can=0 pending=0 req flagword line descs=()
-    IFS=$'\t' read -r id user size date dls name desc <<< "$1"
+    local id user size date dls name area desc keys=Qq can=0 pending=0 req flagword line descs=()
+    local mover areas
+    IFS=$'\t' read -r id user size date dls name area desc <<< "$1"
     req=$BBS_ROOT/queue/filedel/$id.del
     [[ $login == "$user" ]] || is_sysop && can=1
     while true; do
@@ -2167,12 +2241,18 @@ file_view() { # file_view <row from files_rows>
         flagword=Flag
         flag_has "$id" && flagword=Unflag
         mapfile -t descs < <(sed -n 's/^desc=//p' "$BBS_ROOT/published/$id.meta" 2>/dev/null | head -n 10 | safe)
+        fa_load
+        areas=${#FA_SLUGS[@]}
+        # A move is carried out while this screen is open, so the area comes from the .meta.
+        area=$(sed -n 's/^area=//p' "$BBS_ROOT/published/$id.meta" 2>/dev/null | head -n 1)
+        area=$(fa_pick "$area")
         redraw
         local_header "$name" "[Q] Back"
         printf '%-11s %s\n' "Size:" "$(files_size "$size")"
         printf '%-11s %s\n' "From:" "${user#bbs-}"
         printf '%-11s %s\n' "Uploaded:" "${date:0:10}"
         printf '%-11s %s\n' "Downloads:" "$dls"
+        (( areas > 1 )) && printf '%-11s %s\n' "Area:" "$(fa_title "$area")"
         echo
         if (( ${#descs[@]} )); then
             for line in "${descs[@]}"; do printf '  %s\n' "$line"; done
@@ -2186,15 +2266,18 @@ file_view() { # file_view <row from files_rows>
             echo "Removal requested. The file goes away within a minute."
             keyline "Q) Back"
         elif (( can )); then
-            keys+=DdFfEeRr
-            keyline "D) Download   F) $flagword   E) Describe   R) Remove   Q) Back"
+            keys+=DdFfEeRr mover=""
+            if (( areas > 1 )); then
+                keys+=Mm mover="M) Move   "
+            fi
+            keyline "D) Download   F) $flagword   E) Describe   ${mover}R) Remove   Q) Back"
         else
             keys+=DdFf
             keyline "D) Download   F) $flagword   Q) Back"
         fi
         menu_key "> " "$keys" "D: download through your browser
 F: flag it, so a D in the list takes it   Q: back
-E: describe   R: remove (uploader and sysops)" local || return 1
+E: describe   M: move to another area   R: remove (uploader and sysops)" local || return 1
         case $MKEY in
             [Qq]) return 0 ;;
             [Dd])
@@ -2212,6 +2295,18 @@ E: describe   R: remove (uploader and sysops)" local || return 1
                     echo "Saved. It shows within a minute."
                 else
                     echo "Could not save that right now. Try again later."
+                fi
+                pause
+                ;;
+            [Mm])
+                echo
+                xfer_ask_area "$area" || return 1
+                echo
+                [[ -n $XFER_AREA && $XFER_AREA != "$area" ]] || continue
+                if xfer_send_area "$id" "$XFER_AREA"; then
+                    echo "It moves to $(fa_title "$XFER_AREA") within a minute."
+                else
+                    echo "Could not ask for that right now. Try again later."
                 fi
                 pause
                 ;;

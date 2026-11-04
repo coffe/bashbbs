@@ -4,7 +4,8 @@
 # The menu creates a ticket, queue/xfer/<token>, and shows the user the link
 # /x.cgi/<token>. The directory is mode 1733: nobody can list it, but anyone who
 # knows a token can open that file. The ticket's OWNER says who it belongs to;
-# its lines (dir=up|down, id=<file id>) are checked and never run as code.
+# its lines (dir=up|down, id=<file id>) are checked and never run as code. An area= line
+# is for the sorter, and not read here.
 # A ticket expires by its ctime. Its owner can refresh that by changing the file
 # but cannot backdate it, and it only ever carries the owner's own rights.
 #

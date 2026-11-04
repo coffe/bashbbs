@@ -6,14 +6,15 @@
 XFER_POLL=${XFER_POLL:-2}       # seconds between looks at the results while waiting
 XFER_OUTCOME=                   # how the last wait ended: done, left or expired
 
-# xfer_ticket <up|down> [id...]: prints the new token. Only the owner of the file
+# xfer_ticket <up|down> [line...]: prints the new token. The lines are id=<file id> for a
+# download, area=<slug> for an upload. Only the owner of the file
 # counts for who the ticket is for, so it has to be readable for www-data.
 xfer_ticket() {
-    local dir=$1 token id body; shift
+    local dir=$1 token line body; shift
     token=$(head -c 16 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
     [[ $token =~ ^[A-Za-z0-9_-]{22}$ ]] || return 1
     body="dir=$dir"$'\n'
-    for id in "$@"; do body+="id=$id"$'\n'; done
+    for line in "$@"; do body+="$line"$'\n'; done
     ( umask 022; set -C; printf '%s' "$body" > "$BBS_ROOT/queue/xfer/$token" ) 2>/dev/null || return 1
     printf '%s' "$token"
 }
@@ -210,11 +211,15 @@ xfer_show_link() { # xfer_show_link <token> <minutes>
     echo
 }
 
-# U: what there is room for, then the link. Returns 1 at end of input.
-xfer_upload() {
-    local why token
+# U: what there is room for, then the link. Files go to the area given, or the default.
+# Returns 1 at end of input.
+xfer_upload() { # xfer_upload [area]
+    local why token area=${1:-}
     redraw
     local_header "Upload" "[Q] Back"
+    if [[ -n $area ]] && (( ${#FA_SLUGS[@]} > 1 )); then
+        printf '%-11s %s\n' "Area:" "$(fa_title "$area")"
+    fi
     printf '%-11s %s\n' "Per file:" "up to $(files_size "$UPLOAD_MAX_BYTES")"
     printf '%-11s %s of %s\n' "Your files:" "$(files_size "$(ub_used "$login")")" "$(files_size "$UPLOAD_USER_QUOTA")"
     echo
@@ -223,7 +228,7 @@ xfer_upload() {
         pause
         return 0
     fi
-    token=$(xfer_ticket up) || { xfer_no_link; return 0; }
+    token=$(xfer_ticket up ${area:+"area=$area"}) || { xfer_no_link; return 0; }
     xfer_show_link "$token" "$(( XFER_TTL_UP / 60 ))"
     echo "Each file is tested for name, size, your quota and duplicates, and zip and"
     echo "lha archives for whether they open. This is not a virus scan."
@@ -259,10 +264,32 @@ xfer_ask_desc() { # xfer_ask_desc <name>
 
 # Hands the text to the sorter, which alone can write the .meta: written beside the
 # final name first, so it never reads half a request. Empty text removes the description.
-xfer_send_desc() { # xfer_send_desc <id> <text>
-    local dir=$BBS_ROOT/queue/filedesc tmp
+xfer_send_desc() { xfer_request filedesc "$1.desc" "$2"; } # xfer_send_desc <id> <text>
+xfer_send_area() { xfer_request filearea "$1.area" "$2"; } # xfer_send_area <id> <slug>
+
+# M in a file's view: sets XFER_AREA, empty when nothing was picked. Needs fa_load.
+# Returns 1 at end of input.
+xfer_ask_area() { # xfer_ask_area <the area it is in>
+    local i mark
+    XFER_AREA=""
+    echo "Move it to which area?"
+    for (( i = 0; i < ${#FA_SLUGS[@]}; i++ )); do
+        mark=""
+        [[ ${FA_SLUGS[i]} == "$1" ]] && mark=" (it is here)"
+        printf '%s %s%s\n' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")" "${FA_TITLES[i]}" "$mark"
+    done
+    printf 'Number, or anything else to leave it: '
+    read_key_raw || return 1
+    [[ $MKEY == [1-9] ]] || return 0
+    read_num "${#FA_SLUGS[@]}" || return 0
+    XFER_AREA=${FA_SLUGS[NUM - 1]}
+}
+
+# A request to the sorter: the file appears whole, and the sorter is woken.
+xfer_request() { # xfer_request <queue> <file name> <text>
+    local dir=$BBS_ROOT/queue/$1 tmp
     tmp=$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null) || return 1
-    if ! printf '%s' "$2" > "$tmp" 2>/dev/null || ! mv -f "$tmp" "$dir/$1.desc" 2>/dev/null; then
+    if ! printf '%s' "$3" > "$tmp" 2>/dev/null || ! mv -f "$tmp" "$dir/$2" 2>/dev/null; then
         rm -f "$tmp"
         return 1
     fi
@@ -320,7 +347,7 @@ xfer_download() { # xfer_download <id>...
     echo
     XFER_IDS=("${ids[@]}") XFER_BASE=() XFER_GOT=()
     while read -r rc id; do XFER_BASE[$id]=$rc; done < <(xfer_down_counts)
-    token=$(xfer_ticket down "${ids[@]}") || { xfer_no_link; return 0; }
+    token=$(xfer_ticket down "${ids[@]/#/id=}") || { xfer_no_link; return 0; }
     xfer_show_link "$token" "$(( XFER_TTL_DOWN / 60 ))"
     if (( goodbye )); then
         echo "You will be logged out when it is done. (Q) stays logged in."

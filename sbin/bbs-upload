@@ -13,6 +13,7 @@
 #     the owner of the ticket queue/xfer/<token>, and writes what happened to each
 #     file to state/xfer-results/<token>, where the session and the page can read it.
 #  5. Carries out description changes asked for in the menu (queue/filedesc/<id>.desc).
+#  6. Moves files between areas when asked in the menu (queue/filearea/<id>.area).
 #
 # Rules per file:
 #  - bbs-shell moves a file into the inbox only after scp has finished, so what
@@ -25,7 +26,7 @@
 #    file already published, or a .zip/.lha/.lzh that does not open. Rejected files go to
 #    incoming/rejected/<ts>-<user>-<n> with a reason on stderr (journal).
 #  - Accepted: moved to published/<id>, root-owned, mode 0644, with a sidecar
-#    .meta (user, name, size, sha256, date, ip, desc). Visible to everyone at once.
+#    .meta (user, name, size, sha256, date, ip, area, desc). Visible to everyone at once.
 # Nothing is unpacked to disk or executed. The one exception to "the sorter does not
 # look inside": lib/diz.py reads FILE_ID.DIZ from a .zip/.lha/.lzh as nobody, with
 # limits, the archive as stdin and only that entry read. See read_diz.
@@ -182,6 +183,7 @@ handle() { # handle <file> <user>
         printf 'sha256=%s\n' "$sum"
         printf 'date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'ip=%s\n' "$ip"
+        printf 'area=%s\n' "$(fa_pick "$UPLOAD_AREA")"
         desc_lines <<< "$desc"
     } > "$PUBLISHED/$id.meta.tmp"
     if [[ -z ${BBS_UPLOAD_NOCHOWN:-} ]]; then
@@ -272,54 +274,82 @@ process_removals() {
     done < <(find "$QUEUE/filedel" -mindepth 1 -maxdepth 1 -print0)
 }
 
-# Description changes: queue/filedesc/<id>.desc, text written by the menu. The same
-# rules as removals: the owner of the file is who asks, for the uploader and for sysops.
-# The text is read as that owner, so a link cannot show us a file only root may read,
-# and through a timeout, so a pipe cannot hold us up. Empty text removes the description.
-# A .tmp.* is a file the menu is still writing; an old one was left behind.
-process_filedesc() {
-    local rec base id owner up uid gid text meta
-    # Without the cleaner the requests wait, so no description is wiped by mistake.
-    [[ -d $QUEUE/filedesc && -n $DIZ ]] || return 0
+# Text a user wrote in a file, read with that user's rights and a time limit, so that a
+# link gives nothing the user could not read anyway and a pipe holds nothing up.
+read_as_user() { # read_as_user <file> <account> <max bytes>
+    local uid gid
+    if (( EUID == 0 )); then
+        uid=$(id -u -- "$2") && gid=$(id -g -- "$2") || return 1
+        setpriv --reuid="$uid" --regid="$gid" --clear-groups --no-new-privs \
+            timeout -k 2 5 head -c "$3" -- "$1" 2>/dev/null
+    else
+        timeout -k 2 5 head -c "$3" -- "$1" 2>/dev/null
+    fi
+}
+
+# Replace the <key>= lines of a .meta. An empty text only takes them away.
+meta_replace() { # meta_replace <meta> <key> <new lines>
+    if grep -v "^$2=" "$1" > "$1.tmp" && { [[ -z $3 ]] || printf '%s\n' "$3" >> "$1.tmp"; }; then
+        chmod 0644 "$1.tmp"
+        mv -f -- "$1.tmp" "$1"
+    else
+        rm -f -- "$1.tmp"
+        return 1
+    fi
+}
+
+apply_desc() { # apply_desc <request> <account> <id> <meta>
+    local text lines
+    text=$(read_as_user "$1" "$2" 1024 | clean_desc 3) || return 1
+    lines=$(desc_lines <<< "$text") || return 1
+    meta_replace "$4" desc "$lines" && echo "bbs-upload: $2 changed the description of $3"
+}
+
+apply_area() { # apply_area <request> <account> <id> <meta>
+    local area
+    area=$(read_as_user "$1" "$2" 64 | tr -d '\0') || return 1
+    area=${area%%$'\n'*}
+    if ! fa_known "$area"; then
+        echo "bbs-upload: $2 asked for an unknown area for $3" >&2
+        return 1
+    fi
+    meta_replace "$4" area "area=$area" && echo "bbs-upload: $2 moved $3 to the area $area"
+}
+
+# Changes to a published file asked for in the menu: queue/<dir>/<id>.<ext>, one file per
+# change, for the uploader and the sysops. The owner of the request says who is asking,
+# and the queue is open to all accounts, so what is there may not be a plain file. Every
+# request goes when it has been looked at, carried out or not.
+process_requests() { # process_requests <dir> <ext> <apply function>
+    local dir=$QUEUE/$1 ext=$2 apply=$3 rec base id owner up meta
+    [[ -d $dir ]] || return 0
     while IFS= read -r -d '' rec; do
         base=${rec##*/}
+        # The menu writes to a .tmp.* and renames it, so a fresh one is still being written.
         if [[ $base == .tmp.* && -f $rec && ! -L $rec ]] \
             && (( $(date +%s) - $(stat -c %Y -- "$rec") < 3600 )); then
             continue
         fi
-        id=${base%.desc}
+        id=${base%."$ext"}
         owner=$(stat -c %U -- "$rec")
         [[ -n ${BBS_UPLOAD_TEST_OWNER:-} ]] && owner=$BBS_UPLOAD_TEST_OWNER
         meta=$PUBLISHED/$id.meta
-        if [[ ! -f $rec || -L $rec || $base != *.desc ]] || [[ ! $id =~ ^[0-9]+-[0-9a-f]{8}$ ]] \
+        if [[ ! -f $rec || -L $rec || $base != *."$ext" ]] || [[ ! $id =~ ^[0-9]+-[0-9a-f]{8}$ ]] \
             || [[ ! $owner =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || [[ ! -f $meta ]]; then
             find "$rec" -delete
             continue
         fi
         up=$(sed -n 's/^user=//p' "$meta" | head -n 1)
         if [[ $owner != "$up" ]] && ! grep -qsx -- "${owner#bbs-}" "$BBS_ROOT/sysops"; then
-            echo "bbs-upload: $owner may not describe $id (uploader $up)" >&2
+            echo "bbs-upload: $owner may not change $id (uploader $up)" >&2
             find "$rec" -delete
             continue
         fi
-        if (( EUID == 0 )); then
-            uid=$(id -u -- "$owner") && gid=$(id -g -- "$owner") || { find "$rec" -delete; continue; }
-            text=$(setpriv --reuid="$uid" --regid="$gid" --clear-groups --no-new-privs \
-                timeout -k 2 5 head -c 1024 -- "$rec" 2>/dev/null | clean_desc 3) \
-                || { find "$rec" -delete; continue; }
-        else
-            text=$(timeout -k 2 5 head -c 1024 -- "$rec" 2>/dev/null | clean_desc 3) \
-                || { find "$rec" -delete; continue; }
-        fi
-        if grep -v '^desc=' "$meta" > "$meta.tmp" && desc_lines <<< "$text" >> "$meta.tmp"; then
-            chmod 0644 "$meta.tmp"
-            mv -f -- "$meta.tmp" "$meta"
-            echo "bbs-upload: $owner changed the description of $id"
-        else
-            rm -f -- "$meta.tmp"
+        if (( EUID != 0 )) || id -u -- "$owner" >/dev/null 2>&1; then
+            "$apply" "$rec" "$owner" "$id" "$meta" || true
         fi
         find "$rec" -delete
-    done < <(find "$QUEUE/filedesc" -mindepth 1 -maxdepth 1 -print0)
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
 }
 
 # ticket_owner <token>: prints the account a ticket belongs to, by the file's owner.
@@ -331,6 +361,13 @@ ticket_owner() {
     [[ -n ${BBS_UPLOAD_TEST_OWNER:-} ]] && owner=$BBS_UPLOAD_TEST_OWNER
     [[ $owner =~ ^bbs-[a-z][a-z0-9]{2,8}$ ]] || return 1
     printf '%s' "$owner"
+}
+
+# The area= line of an upload ticket. The file is the user's and they can change it at any
+# time, which is harmless: handle() takes only a listed area, and the default for anything else.
+ticket_area() { # ticket_area <token> <account>
+    read_as_user "$XFER/$1" "$2" 4096 | tr -d '\0' | sed -n 's/^area=//p' | head -n 1
+    return 0
 }
 
 # Link uploads: webup/<token>/<name> is complete; .part-* is being written, and x.cgi
@@ -346,6 +383,7 @@ process_webup() {
         pending=0
         if owner=$(ticket_owner "$token"); then
             RESULTS_FILE=$XFER_RESULTS/$token
+            UPLOAD_AREA=$(ticket_area "$token" "$owner")
         else
             owner=webup
             RESULTS_FILE=""
@@ -375,7 +413,7 @@ process_webup() {
             result_line done
             rm -f -- "$d/.done"
         fi
-        RESULTS_FILE=""
+        RESULTS_FILE="" UPLOAD_AREA=""
         # The folder goes when its ticket does; x.cgi makes a new one if it needs to.
         [[ -e $XFER/$token ]] || rmdir -- "$d" 2>/dev/null
     done < <(find "$WEBUP" -mindepth 1 -maxdepth 1 -type d -print0)
@@ -407,9 +445,13 @@ flock -w "$LOCK_WAIT" 9 || { echo "bbs-upload: lock busy" >&2; exit 1; }
 # Empty the kick queue before the work, so a kick that arrives during it runs us again.
 [[ -d $QUEUE/kick ]] && find "$QUEUE/kick" -mindepth 1 -delete
 
+fa_load
+UPLOAD_AREA=""        # the area of what handle() takes next; empty means the default
 log_downloads
 process_removals      # before the sorting below, so a removal frees quota at once
-process_filedesc
+# Without the cleaner the description requests wait, so none is wiped by mistake.
+[[ -n $DIZ ]] && process_requests filedesc desc apply_desc
+process_requests filearea area apply_area
 process_webup
 expire_xfer
 
