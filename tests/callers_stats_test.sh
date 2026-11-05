@@ -95,7 +95,12 @@ check "stats: lines fit 76" bash -c '! awk "length(\$0) > 76 { bad = 1 } END { e
 out=$(printf 'q' | sys sysop_callers_export 2>&1)
 tok=$(grep -o 'x.cgi/[A-Za-z0-9_-]\{22\}' <<< "$out" | head -n 1 | cut -d/ -f2)
 check "export: link shown" bash -c '[[ -n $1 ]]' _ "$tok"
-check "export: ticket and snapshot removed after leaving" bash -c '[[ -z $(ls -A "$1/queue/xfer") ]]' _ "$root"
+check "export: link still works after leaving (ticket + snapshot kept)" \
+    bash -c '[[ -f $1/queue/xfer/$2 && -f $1/queue/xfer/$2.snap ]]' _ "$root" "$tok"
+check "export: a sleeper removes them once the link has run out" \
+    bash -c 'pgrep -f "sleep.*$1/queue/xfer/$2" > /dev/null' _ "$root" "$tok"
+pkill -f "sleep.*$root/queue/xfer/" 2>/dev/null
+rm -f "$root/queue/xfer/$tok" "$root/queue/xfer/$tok.snap"
 # Make a live pair by hand for the cgi tests.
 T=AAAAAAAAAAAAAAAAAAAAA1
 mk() { printf 'dir=down\nexport=callers\n' > "$root/queue/xfer/$1"; cp "$root/state/callers.log" "$root/queue/xfer/$1.snap"; }

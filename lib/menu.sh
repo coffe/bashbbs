@@ -3342,7 +3342,14 @@ sysop_callers_export() {
     xfer_show_link "$token" "$(( XFER_TTL_DOWN / 60 ))"
     xfer_wait "$XFER_TTL_DOWN" test -e "$BBS_ROOT/queue/xfer/$token.sent"
     rc=$?
-    rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
+    # Leaving the screen (Q, or the call dropping) keeps the link alive until it
+    # expires, like any other download link; a detached sleeper tidies up after that.
+    if (( rc == 0 )) && [[ $XFER_OUTCOME != left ]]; then
+        rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
+    else
+        setsid sh -c 'sleep "$1"; rm -f "$2" "$3"' sh "$(( XFER_TTL_DOWN + 60 ))" \
+            "$BBS_ROOT/queue/xfer/$token" "$snap" </dev/null >/dev/null 2>&1 &
+    fi
     (( rc == 0 )) || return 1
     case $XFER_OUTCOME in
         done) echo "Downloaded." ;;
