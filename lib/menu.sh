@@ -2449,9 +2449,11 @@ sysop_menu() {
         menu_item 5 "Transfers" "The newest uploads and downloads"
         menu_item 6 "Quota" "Space used per user and in total"
         menu_item 7 "Mail all" "One message to every active account"
+        menu_item 8 "Caller stats" "Calls per user, weekday and hour"
+        menu_item 9 "Export callers" "A browser link to callers.log"
         echo
         keyline "Q) Back"
-        menu_key "> " "1234567Qq" "1-7: pick a screen
+        menu_key "> " "123456789Qq" "1-9: pick a screen
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -2464,6 +2466,8 @@ B M P W: jump   G: log out" || return
             5) sysop_transfers ;;
             6) sysop_quota ;;
             7) sysop_mail_all ;;
+            8) sysop_callers_stats ;;
+            9) sysop_callers_export ;;
         esac
     done
 }
@@ -3012,9 +3016,10 @@ fame_menu() {
         menu_item 4 "BBS Records"
         menu_item 5 "Top Uploaders"
         menu_item 6 "Top Downloads"
+        menu_item 7 "Who's Online"
         echo
         keyline "Q) Back"
-        menu_key "> " "123456Qq" "1-6: pick a list
+        menu_key "> " "1234567Qq" "1-7: pick a list
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -3026,6 +3031,7 @@ B M P W: jump   G: log out" || return
             4) records_view ;;
             5) top_uploaders_view ;;
             6) top_downloads_view ;;
+            7) online_view ;;
         esac
     done
 }
@@ -3162,6 +3168,187 @@ callers_view() {
     fi
     (( shown )) || echo "Nobody yet."
     echo
+    pause
+}
+
+# Who's Online: the BBS accounts in utmp, one line each. One `who -u` and one awk,
+# no per-user forks. utmp may cut names short, so a cut name is matched back to the
+# one account in users/ it starts. Several sessions of one account show once, with a
+# count. Time is when the first session came in (local, as who prints it); idle is the
+# shortest idle of its sessions. Accounts with hidden=yes stay off, as in the user list.
+online_view() {
+    local names=() d n hid cnt since idle line shown=0
+    redraw
+    local_header "Who's online"
+    for d in "$BBS_ROOT"/users/*/; do d=${d%/}; names+=("${d##*/}"); done
+    local rows=()
+    mapfile -t rows < <(who -u 2>/dev/null | awk -v names="${names[*]}" '
+        BEGIN { k = split(names, nm, " ") }
+        $1 ~ /^bbs-/ {
+            u = substr($1, 5); full = ""
+            for (i = 1; i <= k; i++) {
+                if (nm[i] == u) { full = u; break }
+                if (length($1) >= 8 && index("bbs-" nm[i], $1) == 1) {
+                    if (full != "") { full = "?"; break }
+                    full = nm[i]
+                }
+            }
+            if (full == "" || full == "?") full = u
+            id = $5; m = 99999
+            if (id == ".") m = 0
+            else if (id ~ /^[0-9]+:[0-9][0-9]$/) { split(id, p, ":"); m = p[1] * 60 + p[2] }
+            c[full]++
+            t = substr($4, 1, 5)
+            if (!(full in s) || $3 " " t < s[full]) s[full] = $3 " " t
+            if (!(full in im) || m < im[full]) im[full] = m
+        }
+        END { for (f in c) printf "%s\t%d\t%s\t%d\n", f, c[f], s[f], im[f] }' | sort)
+    for line in "${rows[@]}"; do
+        IFS=$'\t' read -r n cnt since idle <<< "$line"
+        hid=
+        [[ -f $BBS_ROOT/users/$n/profile ]] && while IFS= read -r d; do
+            [[ $d == hidden=yes ]] && { hid=1; break; }
+        done < "$BBS_ROOT/users/$n/profile"
+        [[ -n $hid ]] && continue
+        if (( idle >= 99999 )); then idle=old
+        elif (( idle < 1 )); then idle=-
+        elif (( idle < 60 )); then idle="${idle}m"
+        else idle="$(( idle / 60 ))h$(( idle % 60 ))m"; fi
+        n=$(printf '%s' "$n" | safe)
+        (( cnt > 1 )) && idle="$idle  x$cnt"
+        printf '%s  %5s  %s\n' "$(list_fit 12 "$n")" "${since#* }" "$idle"
+        shown=$(( shown + 1 ))
+    done
+    (( shown )) || echo "Nobody else is here right now."
+    echo
+    pause
+}
+
+# Caller statistics from state/callers.log ("YYYY-MM-DDTHH:MMZ name", UTC), in local
+# time, in one awk pass. The host's UTC offset is read once (winter and summer: two
+# date calls). When they differ, the EU rule is used for daylight saving (last Sunday of
+# March to last Sunday of October, 01:00 UTC); other rules, and the southern hemisphere,
+# are not handled. Sysops count like everyone else.
+sysop_callers_stats() {
+    local log=$BBS_ROOT/state/callers.log w off_w off_s page
+    redraw
+    local_header "Caller statistics" "[Q] Back"
+    if [[ ! -s $log ]]; then
+        echo "No calls logged yet."
+        pause
+        return
+    fi
+    w=$(list_width)
+    (( w > 76 )) && w=76
+    off_w=$(date -d 'Jan 15' +%z 2>/dev/null) off_s=$(date -d 'Jul 15' +%z 2>/dev/null)
+    for page in 1 2; do
+        if [[ $page == 2 ]]; then redraw; local_header "Caller statistics" "[Q] Back"; fi
+        awk -v w="$w" -v page="$page" -v offw="${off_w:-+0000}" -v offs="${off_s:-+0000}" '
+        function secs(z) { return (substr(z, 1, 1) == "-" ? -1 : 1) * (substr(z, 2, 2) * 3600 + substr(z, 4, 2) * 60) }
+        function days(y, m, d,   a) {      # days since 1970-01-01
+            y -= (m <= 2); a = int((y >= 0 ? y : y - 399) / 400)
+            yoe = y - a * 400; doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
+            return a * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy - 719468
+        }
+        function lastsun(y, m,   d) { d = days(y, m, 31); return d - ((d + 4) % 7) }
+        function civil(z,   a, e, yy, mp, dd, mm) {
+            z += 719468; a = int((z >= 0 ? z : z - 146096) / 146097); e = z - a * 146097
+            yy = int((e - int(e / 1460) + int(e / 36524) - int(e / 146096)) / 365)
+            doy2 = e - (365 * yy + int(yy / 4) - int(yy / 100)); mp = int((5 * doy2 + 2) / 153)
+            dd = doy2 - int((153 * mp + 2) / 5) + 1; mm = mp + (mp < 10 ? 3 : -9)
+            return sprintf("%04d-%02d-%02d", yy + a * 400 + (mm <= 2), mm, dd)
+        }
+        function bar(n, mx,   l) { l = (mx ? int(n * bw / mx + 0.5) : 0); if (n && !l) l = 1; return substr(B, 1, l) }
+        BEGIN { ow = secs(offw); os = secs(offs); dst = (ow != os); bw = w - 26; if (bw < 5) bw = 5
+                B = sprintf("%80s", ""); gsub(/ /, "#", B)
+                split("Sun Mon Tue Wed Thu Fri Sat", WD, " ") }
+        NF >= 2 && $1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]Z$/ {
+            y = substr($1, 1, 4) + 0; mo = substr($1, 6, 2) + 0; dd = substr($1, 9, 2) + 0
+            e = days(y, mo, dd) * 86400 + substr($1, 12, 2) * 3600 + substr($1, 15, 2) * 60
+            off = ow
+            if (dst) {
+                if (!(y in ds)) { ds[y] = lastsun(y, 3) * 86400 + 3600; de[y] = lastsun(y, 10) * 86400 + 3600 }
+                if (e >= ds[y] && e < de[y]) off = os
+            }
+            l = e + off; ld = int(l / 86400); sec = l - ld * 86400
+            hr = int(sec / 3600); wd = (ld + 4) % 7
+            if (!n++ || l < lo) lo = l
+            if (l > hi) hi = l
+            cu[$2]++; cw[wd]++; ch[hr]++
+            if (!($2 in first) || l < first[$2]) first[$2] = l
+        }
+        END {
+            if (!n) { print "No calls logged yet."; exit }
+            if (page == 1) {
+                printf "%d calls, %d callers, %s to %s\n\n", n, length(cu), civil(int(lo / 86400)), civil(int(hi / 86400))
+                print "Calls per caller (top 10)"
+                for (r = 1; r <= 10; r++) {
+                    best = ""; bn = 0
+                    for (u in cu) if (cu[u] > bn || (cu[u] == bn && best != "" && u < best)) { best = u; bn = cu[u] }
+                    if (best == "") break
+                    if (r == 1) mx = bn
+                    printf "%-12.12s %5d %s\n", best, bn, bar(bn, mx)
+                    delete cu[best]
+                }
+                print ""; print "Calls per weekday"
+                for (i = 0; i < 7; i++) if (cw[i] > mw) mw = cw[i]
+                for (k = 1; k <= 7; k++) { i = k % 7; printf "%-12s %5d %s\n", WD[i + 1], cw[i], bar(cw[i], mw) }
+            } else {
+                print "Calls per hour (local time)"
+                for (i = 0; i < 24; i++) if (ch[i] > mh) mh = ch[i]
+                for (i = 0; i < 24; i++) printf "%02d:00        %5d %s\n", i, ch[i], bar(ch[i], mh)
+                print ""; print "New callers per week (first call, week of Monday)"
+                for (u in first) { ld = int(first[u] / 86400); nw[ld - ((ld + 3) % 7)]++ }
+                for (k in nw) { cnt++; wk[cnt] = k + 0 }
+                for (i = 1; i <= cnt; i++) for (j = i + 1; j <= cnt; j++) if (wk[j] < wk[i]) { t = wk[i]; wk[i] = wk[j]; wk[j] = t }
+                from = (cnt > 12 ? cnt - 11 : 1)
+                for (i = from; i <= cnt; i++) if (nw[wk[i]] > mn) mn = nw[wk[i]]
+                for (i = from; i <= cnt; i++) printf "%-12s %5d %s\n", civil(wk[i]), nw[wk[i]], bar(nw[wk[i]], mn)
+            }
+        }' "$log"
+        echo
+        if [[ $page == 1 ]]; then
+            read_key "$(paint_bar "[Any key] more, Q back")" || return
+            echo
+            [[ $MKEY == [Qq] ]] && return
+        fi
+    done
+    pause
+}
+
+# Export of the callers log as a browser link, for sysops. The ticket says export=callers
+# and a snapshot of the log sits beside it as <token>.snap; web/x.cgi checks the owner
+# against the sysops file again and serves nothing else. See
+# thoughts/kristofer/callers-export-design.md. Ticket and snapshot are removed afterwards.
+sysop_callers_export() {
+    local log=$BBS_ROOT/state/callers.log token snap rc
+    is_sysop || return 0
+    redraw
+    local_header "Export callers log" "[Q] Back"
+    if [[ ! -s $log ]]; then
+        echo "No calls logged yet."
+        pause
+        return
+    fi
+    token=$(xfer_ticket down export=callers) || { xfer_no_link; return 0; }
+    snap=$BBS_ROOT/queue/xfer/$token.snap
+    if ! ( umask 022; set -C; head -c 4194304 "$log" > "$snap" ) 2>/dev/null; then
+        rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
+        xfer_no_link
+        return 0
+    fi
+    echo "$(count_text "$(wc -l < "$snap")" line lines) of callers.log, UTC times."
+    echo
+    xfer_show_link "$token" "$(( XFER_TTL_DOWN / 60 ))"
+    xfer_wait "$XFER_TTL_DOWN" test -e "$BBS_ROOT/queue/xfer/$token.sent"
+    rc=$?
+    rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
+    (( rc == 0 )) || return 1
+    case $XFER_OUTCOME in
+        done) echo "Downloaded." ;;
+        expired) echo "The link has run out." ;;
+        *) return 0 ;;
+    esac
     pause
 }
 
