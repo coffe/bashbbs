@@ -1,0 +1,11 @@
+[Unit]
+Description=Wake the BashBBS admin sorter when a sysop request lands
+
+[Path]
+# A glob, not PathChanged: a request left here starts the sorter again. The sorter
+# removes every request it handles (or moves it to drop/rejected).
+PathExistsGlob=/srv/bashbbs/queue/admin/*.req
+Unit=bbs-admin-apply.service
+
+[Install]
+WantedBy=paths.target

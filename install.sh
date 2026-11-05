@@ -50,6 +50,7 @@ install -m 0755 "$src/sbin/bbs-history-expire" /usr/local/sbin/bbs-history-expir
 install -m 0755 "$src/sbin/bbs-maildir" /usr/local/sbin/bbs-maildir
 install -m 0755 "$src/sbin/bbs-alias" /usr/local/sbin/bbs-alias
 install -m 0755 "$src/sbin/bbs-admin" /usr/local/sbin/bbs-admin
+install -m 0755 "$src/sbin/bbs-admin-apply" /usr/local/sbin/bbs-admin-apply
 install -m 0755 "$src/bin/bbs-health" /usr/local/sbin/bbs-health
 # Multiplayer Hisingen Hustle: a private dopewars server on this host, reached only through the menu.
 install -m 0644 "$src/etc/dopewars.nft" /usr/local/lib/bashbbs/dopewars.nft
@@ -130,6 +131,12 @@ getent passwd | awk -F: '$1 ~ /^bbs-/ && $7 == "/usr/local/sbin/bbs-shell" { pri
     install -d -m 0700 -o "$acct" -g "$acct" "/srv/bashbbs/incoming/$acct"
 done
 install -d -m 0755 /srv/bashbbs/state/keys-results /srv/bashbbs/etc
+
+# Sysop requests from the menu: the sysop's bbs-<name> session drops .req files into
+# queue/admin (write only, sticky), bbs-admin-apply (root) runs bbs-admin for them.
+# Each result is owned by its sender (0400); the directory cannot be listed.
+install -d -m 1733 /srv/bashbbs/queue/admin
+install -d -m 0711 /srv/bashbbs/state/admin-results
 keep_or_note "$src/etc/file-areas" /srv/bashbbs/etc/file-areas
 
 # Private boards: one meta file per board (owner, created). Sysops are listed
@@ -152,8 +159,12 @@ install -d -m 0750 -o root -g root /srv/bashbbs/drop/rejected
 for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer bbs-upload.service bbs-upload.timer bbs-upload.path; do
     install -m 0644 "$src/systemd/$u" "/etc/systemd/system/$u"
 done
+# Admin sorter units, one line each so bbs-deploy can find them.
+install -m 0644 "$src/systemd/bbs-admin-apply.path" /etc/systemd/system/bbs-admin-apply.path
+install -m 0644 "$src/systemd/bbs-admin-apply.service" /etc/systemd/system/bbs-admin-apply.service
+install -m 0644 "$src/systemd/bbs-admin-apply.timer" /etc/systemd/system/bbs-admin-apply.timer
 systemctl daemon-reload
-systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer bbs-upload.timer bbs-upload.path
+systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer bbs-upload.timer bbs-upload.path bbs-admin-apply.timer bbs-admin-apply.path
 
 # Application form. www-data writes new applications into incoming/ (write only,
 # no listing). The sysop moves them to done/ or rejected/ with bbs-approve.

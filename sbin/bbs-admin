@@ -17,6 +17,8 @@
 #   bbs-admin users list
 #   bbs-admin users disable|enable <name> [--ja]
 #   bbs-admin users remove <name> [--ja]
+#   bbs-admin alias check <name>              may <name> become a short login name (read-only)
+#   bbs-admin alias add|remove <name> [--ja]  short name for bbs-<name> (bbs-alias)
 #
 # Without --ja every change only prints what it would do and exits 0.
 # Nothing is deleted: a removed home dir and key file are moved to
@@ -27,10 +29,17 @@
 # sysops. Requests are written as the sysop's own bbs-<name> account, so the
 # publisher applies the same rules as for a request from the menu.
 #
+# --as <sysop>: only for root itself (EUID 0 and SUDO_USER not set), i.e. the
+# admin queue sorter bbs-admin-apply. It names the sysop who sent the request.
+# Through sudo it is refused. The name must still be listed in sysops.
+#
+# Guard: users disable|remove and alias remove refuse the acting sysop, every
+# name in sysops and the system accounts (news, newsstatus).
+#
 # Test mode (BASHBBS_TEST set): BBS_ROOT moves the tree (/srv/bashbbs is refused),
 # root is not required, and BBS_SBIN, BBS_ADMIN_USER, BBS_GETENT, BBS_USERMOD,
 # BBS_USERDEL, BBS_PKILL and BBS_CHOWN replace the system tools. Outside test
-# mode none of these are read.
+# mode none of these are read. BBS_TEST_EUID stands in for EUID in the --as check.
 set -uo pipefail
 umask 077
 export LC_ALL=C.UTF-8
@@ -53,12 +62,14 @@ usage: bbs-admin status
                    | remove <name> <fingerprint> [--force] [--ja] | restore <name> <historyfile> [--ja]
        bbs-admin mod list [n] | delete <board> <msgid> [--ja]
        bbs-admin users list | disable|enable <name> [--ja] | remove <name> [--ja]
+       bbs-admin alias check <name> | add|remove <name> [--ja]
+       (root only, no sudo: --as <sysop>)
 EOF
     exit 64
 }
 
 # Parse flags anywhere on the line; everything else is positional.
-ja=0; force=0; legacy=0; label=""
+ja=0; force=0; legacy=0; label=""; as_user=""; as_set=0
 args=()
 while (( $# )); do
     case $1 in
@@ -66,6 +77,7 @@ while (( $# )); do
         --force) force=1 ;;
         --legacy) legacy=1 ;;
         --label) (( $# >= 2 )) || usage; label=$2; shift ;;
+        --as) (( $# >= 2 )) || usage; as_user=$2; as_set=1; shift ;;
         --*) die "unknown option $1" ;;
         *) args+=("$1") ;;
     esac
@@ -86,6 +98,7 @@ if [[ -n ${BASHBBS_TEST:-} ]]; then
     USERDEL=${BBS_USERDEL:-/usr/sbin/userdel}
     PKILL=${BBS_PKILL:-/usr/bin/pkill}
     CHOWN=${BBS_CHOWN:-/usr/bin/chown}
+    REAL_EUID=${BBS_TEST_EUID:-$EUID}
 else
     BBS_ROOT=/srv/bashbbs
     SBIN=/usr/local/sbin
@@ -96,6 +109,14 @@ else
     USERDEL=/usr/sbin/userdel
     PKILL=/usr/bin/pkill
     CHOWN=/usr/bin/chown
+    REAL_EUID=$EUID
+fi
+
+if (( as_set )); then
+    # Only root itself (the sorter run by systemd). Through sudo SUDO_USER is set.
+    [[ $REAL_EUID -eq 0 && -z ${SUDO_USER+x} ]] \
+        || die "--as is only for root without sudo (the admin queue sorter)"
+    WHO=$as_user
 fi
 
 [[ $WHO =~ ^[a-z][a-z0-9]{0,30}$ ]] && grep -qx -- "$WHO" "$BBS_ROOT/sysops" \
@@ -123,6 +144,18 @@ valid_name() { [[ $1 =~ $NAME_RE && $1 != news ]] || die "bad account name '$1'"
 account_exists() { "$GETENT" passwd "bbs-$1" >/dev/null 2>&1 || die "no account bbs-$1"; }
 
 refuse_self() { [[ $1 != "$WHO" ]] || die "refusing to change your own account"; }
+
+SYSTEM_NAMES=(news newsstatus)
+# refuse_protected <name>: not yourself, not another sysop, not a system account.
+refuse_protected() {
+    local s
+    refuse_self "$1"
+    grep -qxF -- "$1" "$BBS_ROOT/sysops" && die "refusing to change the sysop account $1"
+    for s in "${SYSTEM_NAMES[@]}"; do
+        [[ $1 != "$s" ]] || die "refusing to change the system account bbs-$1"
+    done
+    return 0
+}
 
 hdr() { # hdr <file> <Name>: header value, headers end at the first empty line
     sed '/^$/q' "$1" | sed -n "s/^$2: *//p" | head -n 1
@@ -240,7 +273,7 @@ case $cmd in
             disable|enable)
                 name=${args[2]:-}
                 valid_name "$name"
-                refuse_self "$name"
+                if [[ $sub == disable ]]; then refuse_protected "$name"; else refuse_self "$name"; fi
                 account_exists "$name"
                 if [[ $sub == disable ]]; then shell=$NOLOGIN; else shell=$BBS_SHELL; fi
                 need_ja "$sub bbs-$name (login shell $shell)"
@@ -256,7 +289,7 @@ case $cmd in
             remove)
                 name=${args[2]:-}
                 valid_name "$name"
-                refuse_self "$name"
+                refuse_protected "$name"
                 account_exists "$name"
                 home=$("$GETENT" passwd "bbs-$name" | cut -d: -f6)
                 [[ $home == "$BBS_ROOT/home/"* ]] || die "home of bbs-$name is outside $BBS_ROOT/home"
@@ -273,6 +306,31 @@ case $cmd in
                 [[ -d $home ]] && mv -- "$home" "$kar/home"
                 [[ -f $BBS_ROOT/keys/bbs-$name ]] && mv -- "$BBS_ROOT/keys/bbs-$name" "$kar/keys"
                 echo "bbs-$name removed; quarantine: $kar"
+                ;;
+            *) usage ;;
+        esac
+        ;;
+
+    alias)
+        name=${args[2]:-}
+        case $sub in
+            check)
+                valid_name "$name"
+                exec "$SBIN/bbs-alias" check "$name"
+                ;;
+            add)
+                valid_name "$name"
+                account_exists "$name"
+                need_ja "add the short login name $name for bbs-$name"
+                log_admin "alias add $name"
+                exec "$SBIN/bbs-alias" add "$name"
+                ;;
+            remove)
+                valid_name "$name"
+                refuse_protected "$name"
+                need_ja "remove the short login name $name (bbs-$name stays)"
+                log_admin "alias remove $name"
+                exec "$SBIN/bbs-alias" remove "$name"
                 ;;
             *) usage ;;
         esac

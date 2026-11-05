@@ -163,5 +163,75 @@ check "users remove never uses userdel -r" not_has "$calls" "userdel -r"
 check "users remove moves the home to quarantine" test -f "$kar/home/.mail"
 check "users remove moves the key file to quarantine" test -f "$kar/keys"
 
+# 7. --as: only for root itself (the sorter), never through sudo or as a user
+echo carol >> "$root/sysops"
+: > "$calls"
+asrun() { # asrun <env...> -- <args...>
+    local e=()
+    while [[ $1 != -- ]]; do e+=("$1"); shift; done; shift
+    env -u SUDO_USER "${e[@]}" BASHBBS_TEST=1 BBS_ROOT=$root BBS_SBIN=$sbin \
+        BBS_GETENT=$sbin/getent BBS_USERMOD=$sbin/usermod BBS_USERDEL=$sbin/userdel \
+        BBS_PKILL=$sbin/pkill BBS_CHOWN=$sbin/chown \
+        "$here/sbin/bbs-admin" "$@" >"$out" 2>&1; rc=$?; cat "$out" >>"$log"; }
+asrun -- apps accept 77aa --as carol --ja
+check "--as refused when not root" rc_is "$rc" 1
+asrun BBS_TEST_EUID=0 SUDO_USER=coffe -- apps accept 77aa --as carol --ja
+check "--as refused through sudo (SUDO_USER set)" rc_is "$rc" 1
+asrun BBS_TEST_EUID=0 SUDO_USER= -- apps accept 77aa --as carol --ja
+check "--as refused with SUDO_USER set but empty" rc_is "$rc" 1
+check "refused --as ran nothing" empty "$calls"
+asrun BBS_TEST_EUID=0 -- apps accept 77aa --as mallory --ja
+check "--as refuses a name not in sysops" rc_is "$rc" 1
+asrun BBS_TEST_EUID=0 -- apps accept 77aa --as carol --ja
+check "--as accepted for root without sudo" rc_is "$rc" 0
+check "--as runs the command" has "$calls" "bbs-svara accept 77aa"
+check "--as logs the named sysop" grep -qP '\tcarol\tapps accept 77aa$' "$root/state/admin.log"
+asrun BBS_TEST_EUID=0 -- users disable carol --as carol --ja
+check "--as still refuses your own account" rc_is "$rc" 1
+
+# 8. Guard: other sysops and system accounts
+: > "$calls"
+run users disable carol --ja
+check "users disable refuses another sysop" rc_is "$rc" 1
+run users remove carol --ja
+check "users remove refuses another sysop" rc_is "$rc" 1
+run users disable news --ja
+check "users disable refuses bbs-news" rc_is "$rc" 1
+run users remove newsstatus --ja
+check "users remove refuses bbs-newsstatus" rc_is "$rc" 1
+run alias remove carol --ja
+check "alias remove refuses another sysop" rc_is "$rc" 1
+run alias remove coffe --ja
+check "alias remove refuses yourself" rc_is "$rc" 1
+check "guards ran no tool" not_has "$calls" "usermod"
+check "guards ran no alias change" not_has "$calls" "bbs-alias"
+run users enable carol --ja
+check "users enable is allowed for another sysop" rc_is "$rc" 0
+
+# 9. alias subcommands
+: > "$calls"
+run alias check bob
+check "alias check runs bbs-alias check" has "$calls" "bbs-alias check bob"
+run alias check "Bad;x"
+check "alias check refuses a bad name" rc_is "$rc" 1
+: > "$calls"
+run alias add bob
+check "alias add without --ja is a dry run" rc_is "$rc" 0
+check "alias add dry run calls nothing" not_has "$calls" "bbs-alias add"
+run alias add ghost --ja
+check "alias add refuses an unknown account" rc_is "$rc" 1
+run alias add bob --ja
+check "alias add --ja calls bbs-alias add" has "$calls" "bbs-alias add bob"
+check "alias add is logged" has "$root/state/admin.log" "alias add bob"
+run alias remove bob
+check "alias remove without --ja is a dry run" not_has "$calls" "bbs-alias remove bob"
+run alias remove bob --ja
+check "alias remove --ja calls bbs-alias remove" has "$calls" "bbs-alias remove bob"
+check "alias remove is logged" has "$root/state/admin.log" "alias remove bob"
+run alias frob bob
+check "unknown alias subcommand prints usage" rc_is "$rc" 64
+run alias add bob --as carol --ja
+check "--as refused for a non-root caller" rc_is "$rc" 1
+
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

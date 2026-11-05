@@ -1,0 +1,10 @@
+[Unit]
+Description=BashBBS sysop requests from the menu (runs bbs-admin as root)
+# Several requests in a row each wake the sorter. The default limit would stop it, and
+# the path unit with it, until someone reset them.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbs-admin-apply
+PrivateTmp=yes

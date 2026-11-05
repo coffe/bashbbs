@@ -1,0 +1,267 @@
+#!/bin/bash
+# Root-run sorter for sysop requests from the menu. The BBS session runs as
+# bbs-<sysop>, which has no sudo, so the menu drops a request file into
+# queue/admin (1733: write only, sticky) and this script runs bbs-admin for it.
+# Started by bbs-admin-apply.path when a request lands, and by
+# bbs-admin-apply.timer every 60 s as a fallback.
+# Plan: thoughts/kristofer/plan-sysop-useradmin.md ("Behörighetsmodell").
+#
+# Request file queue/admin/<anything>.req, fixed key=value lines, each key at
+# most once, printable ASCII only, <= 8 kB:
+#   id=<digits>-<alnum>      result name, required
+#   action=<whitelisted>     required
+#   name= code= fingerprint= key=   only the fields the action needs
+#
+# Sender binding: the sender is ONLY the owner of the file, read with fstat on a
+# descriptor opened with O_NOFOLLOW (regular file, nlink 1, size cap). uid ->
+# passwd entry -> must be bbs-<n> with shell bbs-shell, and <n> must be listed in
+# sysops. Nothing in the text can name the sender. Every field is checked by
+# regex, nothing is eval'd, and bbs-admin gets a fixed argv plus --ja --as <n>
+# (alias-check without --ja). bbs-admin keeps its own guards and admin.log row.
+#
+# Result: state/admin-results/<id> = "status=<rc>" plus the bbs-admin output
+# (capped), owned by the sender, mode 0400. The directory is 0711 root, so a
+# result can only be read by a sender who knows its id.
+#
+# Queue files: a handled request (a result was written) is unlinked; a file that
+# fails the binding checks is moved to drop/rejected. Both rejections and
+# malformed requests get a row in state/admin.log. No errexit: one bad request
+# never stops the loop.
+#
+# Test hooks (only when BASHBBS_TEST is set, never with BBS_ROOT=/srv/bashbbs):
+#   BBS_TEST_OWNER=bbs-<name>  stands in for the owner of files owned by the
+#                              running user (no passwd/shell lookup for it)
+#   BBS_ADMIN=<path>           replaces /usr/local/sbin/bbs-admin
+#   BBS_CHOWN=<path>           replaces chown for the result file
+# The bbs-admin test hooks (BBS_SBIN, BBS_GETENT, BBS_TEST_EUID, ...) pass
+# through the environment.
+set -uo pipefail
+umask 077
+export LC_ALL=C.UTF-8
+
+BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
+ADMIN_TEST=0
+[[ -n ${BASHBBS_TEST:-} ]] && ADMIN_TEST=1
+if (( ADMIN_TEST )); then
+    case $(readlink -m -- "$BBS_ROOT") in
+        /srv/bashbbs|/srv/bashbbs/*) echo "bbs-admin-apply: test mode refuses /srv/bashbbs" >&2; exit 1 ;;
+    esac
+    ADMIN=${BBS_ADMIN:-$(dirname "$(readlink -f "$0")")/bbs-admin}
+    CHOWN=${BBS_CHOWN:-/usr/bin/chown}
+else
+    BBS_ROOT=/srv/bashbbs
+    [[ $EUID -eq 0 ]] || { echo "bbs-admin-apply: must run as root" >&2; exit 1; }
+    ADMIN=/usr/local/sbin/bbs-admin
+    CHOWN=/usr/bin/chown
+    # The sorter is root itself; never pass a sudo identity on to bbs-admin --as.
+    unset SUDO_USER SUDO_UID SUDO_GID SUDO_COMMAND
+fi
+
+QUEUE=$BBS_ROOT/queue/admin
+RESULTS=$BBS_ROOT/state/admin-results
+REJECTED=$BBS_ROOT/drop/rejected
+ADMIN_LOG=$BBS_ROOT/state/admin.log
+SHELL_PATH=/usr/local/sbin/bbs-shell
+MAX_REQ_BYTES=8192
+MAX_OUT_BYTES=16384
+MAX_PER_RUN=50
+ADMIN_TIMEOUT=120
+
+ID_RE='^[0-9]{1,20}-[A-Za-z0-9]{1,32}$'
+NAME_RE='^[a-z][a-z0-9]{2,8}$'
+KOD_RE='^[0-9a-f]{4,36}$'
+FP_RE='^[A-Za-z0-9+/:=._-]{8,100}$'
+KEY_RE='^[a-z0-9@.-]{3,40} [A-Za-z0-9+/]{16,8000}={0,3}( [A-Za-z0-9 ._@+-]{1,80})?$'
+SYSTEM_NAMES=" news newsstatus "
+
+# Same binder as bbs-keys-apply: opens without following links, checks with
+# fstat, copies into the root-private file argv[2] (O_EXCL). Prints "uid dev ino",
+# or a reason word with exit 3.
+BIND_PY='
+import os, stat, sys
+src, dst, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+def no(why):
+    print(why); sys.exit(3)
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
+except OSError:
+    no("open")
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode): no("not-regular")
+if st.st_nlink != 1: no("hardlink")
+if st.st_size > limit: no("too-large")
+data = b""
+while len(data) <= limit:
+    chunk = os.read(fd, limit + 1 - len(data))
+    if not chunk: break
+    data += chunk
+os.close(fd)
+if len(data) > limit: no("too-large")
+out = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+os.write(out, data); os.close(out)
+print(st.st_uid, st.st_dev, st.st_ino)
+'
+
+TMPD=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$TMPD"' EXIT
+
+log_row() { # log_row <sender or -> <text>: same columns as bbs-admin
+    [[ -e $ADMIN_LOG ]] || install -m 0600 /dev/null "$ADMIN_LOG" 2>/dev/null
+    printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "admin-apply $2" >> "$ADMIN_LOG"
+}
+
+reject_file() { # reject_file <file> <why>: binding failed, no result can be written
+    mkdir -p -m 0750 "$REJECTED" 2>/dev/null
+    mv -f -- "$1" "$REJECTED/admin-$(date +%s)-$RANDOM" 2>/dev/null || rm -f -- "$1"
+    log_row - "rejected $2"
+}
+
+# sender_of_uid <uid> -> sysop name without bbs-, or return 1.
+sender_of_uid() {
+    local uid=$1 ent acct shell n
+    if (( ADMIN_TEST )) && [[ -n ${BBS_TEST_OWNER:-} && $uid == "$EUID" ]]; then
+        acct=$BBS_TEST_OWNER
+    else
+        ent=$(getent passwd "$uid") || return 1
+        IFS=: read -r acct _ _ _ _ _ shell <<< "$ent"
+        [[ $shell == "$SHELL_PATH" ]] || return 1
+    fi
+    [[ $acct == bbs-* ]] || return 1
+    n=${acct#bbs-}
+    [[ $n =~ $NAME_RE ]] || return 1
+    grep -qxF -- "$n" "$BBS_ROOT/sysops" 2>/dev/null || return 1
+    printf '%s\n' "$n"
+}
+
+# Request fields, set by parse_request.
+R_id= R_action= R_name= R_code= R_fingerprint= R_key=
+
+parse_request() { # parse_request <copy>: strict key=value lines, each key once
+    local line k seen=" "
+    R_id= R_action= R_name= R_code= R_fingerprint= R_key=
+    [[ -z $(LC_ALL=C tr -d '\n -~' < "$1" | head -c 1 | od -An -c) ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line ]] && continue
+        [[ $line =~ ^(id|action|name|code|fingerprint|key)=(.*)$ ]] || return 1
+        k=${BASH_REMATCH[1]}
+        [[ $seen != *" $k "* ]] || return 1
+        seen+="$k "
+        printf -v "R_$k" '%s' "${BASH_REMATCH[2]}"
+    done < "$1"
+    [[ $R_id =~ $ID_RE ]]
+}
+
+# only_fields <wanted...>: every other field must be empty.
+only_fields() {
+    local f want=" $* "
+    for f in name code fingerprint key; do
+        [[ $want == *" $f "* ]] && continue
+        local v="R_$f"
+        [[ -z ${!v} ]] || return 1
+    done
+}
+
+ok_name() { [[ $R_name =~ $NAME_RE && $SYSTEM_NAMES != *" $R_name "* ]]; }
+# Not yourself, not a sysop, not a system account (bbs-admin checks it again).
+# Used for every removal and for users enable, keys add stays open (a sysop may need a new key).
+ok_target() { ok_name && [[ $R_name != "$1" ]] && ! grep -qxF -- "$R_name" "$BBS_ROOT/sysops"; }
+
+# write_result <sender> <uid> <id> <rc> <outfile>
+write_result() {
+    local who=$1 uid=$2 id=$3 rc=$4 outf=$5 rf=$RESULTS/$3 tmp
+    if [[ -e $rf || -L $rf ]]; then
+        # A sender can only replace its own old result, never another sysop's.
+        [[ -f $rf && ! -L $rf && $(stat -c %u -- "$rf") == "$uid" ]] \
+            || { log_row "$who" "result $id exists, not replaced"; return 1; }
+    fi
+    tmp=$(mktemp "$RESULTS/.res.XXXXXX") || return 1
+    { printf 'status=%s\n' "$rc"; head -c "$MAX_OUT_BYTES" -- "$outf"; } > "$tmp" \
+        && chmod 0400 "$tmp" && "$CHOWN" "$uid" "$tmp" && mv -f -- "$tmp" "$rf" \
+        || { rm -f -- "$tmp"; log_row "$who" "cannot write result $id"; return 1; }
+}
+
+# run_request <sender> <outfile>: builds the fixed argv and runs bbs-admin. Prints rc.
+run_request() {
+    local who=$1 outf=$2 argv=() ja=1 keyf rc
+    case $R_action in
+        apps-accept|apps-reject)
+            only_fields code && [[ $R_code =~ $KOD_RE ]] || return 2
+            argv=(apps "${R_action#apps-}" "$R_code") ;;
+        users-enable)
+            only_fields name && ok_name || return 2
+            ok_target "$who" || return 3
+            argv=(users enable "$R_name") ;;
+        users-disable|users-remove)
+            only_fields name && ok_name || return 2
+            ok_target "$who" || return 3
+            argv=(users "${R_action#users-}" "$R_name") ;;
+        keys-add)
+            only_fields name key && ok_name && [[ $R_key =~ $KEY_RE ]] || return 2
+            keyf=$(mktemp "$TMPD/key.XXXXXX") || return 2
+            printf '%s\n' "$R_key" > "$keyf" || return 2
+            argv=(keys add "$R_name" "$keyf") ;;
+        keys-remove)
+            only_fields name fingerprint && ok_name && [[ $R_fingerprint =~ $FP_RE ]] || return 2
+            ok_target "$who" || return 3
+            argv=(keys remove "$R_name" "$R_fingerprint") ;;
+        alias-check)
+            only_fields name && ok_name || return 2
+            argv=(alias check "$R_name"); ja=0 ;;
+        alias-add)
+            only_fields name && ok_name || return 2
+            argv=(alias add "$R_name") ;;
+        alias-remove)
+            only_fields name && ok_name || return 2
+            ok_target "$who" || return 3
+            argv=(alias remove "$R_name") ;;
+        *) return 4 ;;
+    esac
+    (( ja )) && argv+=(--ja)
+    argv+=(--as "$who")
+    timeout "$ADMIN_TIMEOUT" "$ADMIN" "${argv[@]}" > "$outf" 2>&1 < /dev/null; rc=$?
+    [[ -n ${keyf:-} ]] && rm -f -- "$keyf"
+    log_row "$who" "$R_action ${R_name:-${R_code:-}} rc=$rc"
+    printf '%s\n' "$rc"
+    return 0
+}
+
+handle_file() { # handle_file <queue path>
+    local f=$1 copy out uid dev ino who rc outf now_id why
+    copy=$TMPD/req; outf=$TMPD/out
+    rm -f -- "$copy" "$outf"
+    out=$(python3 -I -c "$BIND_PY" "$f" "$copy" "$MAX_REQ_BYTES") || { reject_file "$f" "bind-${out:-error}"; return; }
+    read -r uid dev ino <<< "$out"
+    who=$(sender_of_uid "$uid") || { rm -f -- "$copy"; reject_file "$f" "owner-uid-$uid"; return; }
+    if ! parse_request "$copy"; then
+        rm -f -- "$copy"; reject_file "$f" "malformed-from-$who"; return
+    fi
+    : > "$outf"
+    rc=$(run_request "$who" "$outf"); why=$?
+    case $why in
+        0) ;;
+        2) rc=65; echo "bbs-admin-apply: bad or missing field for $R_action" > "$outf"
+           log_row "$who" "rejected bad-field $R_action" ;;
+        3) rc=77; echo "bbs-admin-apply: refusing: yourself, a sysop or a system account" > "$outf"
+           log_row "$who" "rejected protected $R_action $R_name" ;;
+        *) rc=64; echo "bbs-admin-apply: unknown action" > "$outf"
+           log_row "$who" "rejected unknown-action" ;;
+    esac
+    write_result "$who" "$uid" "$R_id" "$rc" "$outf"
+    rm -f -- "$copy" "$outf"
+    # Unlink the queue entry only if it is still the file that was read.
+    now_id=$(stat -c '%d %i' -- "$f" 2>/dev/null) && [[ $now_id == "$dev $ino" ]] && rm -f -- "$f"
+}
+
+# Sourced by a test: stop here, only the functions are wanted.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
+[[ -d $QUEUE && ! -L $QUEUE ]] || exit 0
+[[ -d $RESULTS && ! -L $RESULTS ]] || install -d -m 0711 "$RESULTS" || exit 1
+exec 9> "$BBS_ROOT/state/admin-apply.lock" || exit 1
+flock -w "${BBS_LOCK_WAIT:-30}" 9 || { echo "bbs-admin-apply: lock busy, retry next run" >&2; exit 0; }
+n=0
+for f in "$QUEUE"/*.req; do
+    [[ -e $f || -L $f ]] || continue
+    n=$((n + 1)); (( n <= MAX_PER_RUN )) || break
+    handle_file "$f"
+done

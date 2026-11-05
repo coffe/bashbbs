@@ -1,0 +1,9 @@
+[Unit]
+Description=Run BashBBS sysop requests every minute (fallback for the path unit)
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,111 @@
+                     FILES ON PIEWPIEW BBS - A SHORT GUIDE
+                     =====================================
+
+Press 8 in the main menu to open Files. A * next to it means there are new
+files since your last call. Press ? in any menu for a short help screen.
+
+
+THE FILE AREAS
+--------------
+Files are sorted into areas:
+
+  General    Anything that fits nowhere else
+  Demos      Demos, intros and cracktros
+  Music      Modules, tunes and samples
+  Utilities  Tools and useful programs
+  Grafix     Pictures, pixel art and ANSI
+
+Type the number of an area to open it. A * marks an area with new files.
+
+
+THE FILE LIST
+-------------
+Ten files per page. Each row shows the name, size, who uploaded it, the date
+and how many times it has been downloaded, with the description under it.
+A + in front means you have flagged the file. A * means it is new.
+
+  number  Open the file
+  N       More (next page)
+  U       Upload to this area
+  D       Download
+  A       Flag or unflag a file (C clears all flags)
+  O       Options: shows the ways to transfer
+  Q       Back
+
+
+DOWNLOADING
+-----------
+One file:   open it and press D, or press D in the list and type its number.
+Many files: flag them with A in the list (or F on the file page), then press
+            D. Up to 20 files at a time. Flags are kept until next call.
+
+Before the transfer you get:
+
+  LAST CHANCE! (Enter) to Start, (G)oodbye after transfer, (A)bort?
+
+  Enter  Start
+  G      Start, and log you out when the transfer is done
+  A      Abort
+
+You then get a web link. Open it in any browser, a phone works too. The
+link works for 15 minutes. With one file the browser saves it straight
+away. With several you get a page where you tap each file to save it.
+Downloaded files are unflagged for you.
+
+
+UPLOADING
+---------
+Open the area the file belongs in and press U. You get a web link that works
+for 30 minutes. Open it in a browser, pick your files and press Upload. Keep
+the BBS session open to see how it goes:
+
+  Testing NAME... OK
+  Rejected: <reason>
+
+You can leave the upload screen with Q. The transfer goes on anyway.
+
+Limits:
+  - 10 MB per file, up to 20 files per link
+  - 200 MB in total per user ("Your files: X of 200 MB" on the screen)
+  - The same file twice is refused ("already on the BBS as NAME")
+  - Empty files and names starting with a dot are refused
+
+Names: anything except letters, digits, dot, dash and underscore becomes _.
+"My Demo.zip" turns into My_Demo.zip.
+
+Every file is checked for name, size, quota and duplicates, and zip and lha
+archives are checked to see that they open. This is NOT a virus scan.
+
+Descriptions: a zip or lha with a FILE_ID.DIZ inside gets that as its
+description. Without one, the BBS asks you for up to 3 lines of 60
+characters. An empty line skips it.
+
+New files show up for everybody within a minute. There is no review queue.
+
+
+YOUR OWN FILES
+--------------
+Open one of your files to get three more keys:
+
+  E  Describe: write a new description (empty text removes it)
+  M  Move it to another area
+  R  Remove it. It goes away within a minute and the space is yours again.
+
+
+FOR TERMINAL PEOPLE: SCP
+------------------------
+The Files menu shows the exact commands with your login, host and port.
+Use scp -O (the old scp mode). Plain scp and sftp do not work.
+
+  Upload:    scp -O -P PORT FILE LOGIN@HOST:
+  Download:  scp -O -P PORT LOGIN@HOST:NAME .
+
+Files sent with scp land in General. Move them with M. Add a description
+with E. If an scp upload fails, nothing from it is saved, and the reason is
+not shown. Use the web link when you want to see why.
+
+
+QUICK REFERENCE
+---------------
+  8 Files   U Upload   D Download   A/F Flag   E Describe   M Move
+  R Remove  O Options  N More       Q Back     ? Help

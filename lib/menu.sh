@@ -2364,9 +2364,10 @@ sysop_menu() {
         menu_item 4 "Users" "Every account, sysops and hidden marked"
         menu_item 5 "Transfers" "The newest uploads and downloads"
         menu_item 6 "Quota" "Space used per user and in total"
+        menu_item 7 "Mail all" "One message to every active account"
         echo
         keyline "Q) Back"
-        menu_key "> " "123456Qq" "1-6: pick a screen
+        menu_key "> " "1234567Qq" "1-7: pick a screen
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -2378,6 +2379,7 @@ B M P W: jump   G: log out" || return
             4) sysop_users ;;
             5) sysop_transfers ;;
             6) sysop_quota ;;
+            7) sysop_mail_all ;;
         esac
     done
 }
@@ -2402,21 +2404,89 @@ sysop_status() {
     pause
 }
 
+# Send a request to the root sorter (sbin/bbs-admin-apply) and show its answer.
+# admin_request <action> [key=value ...]; BBS_ADMIN_QUEUE / BBS_ADMIN_RESULTS override the
+# directories, BBS_ADMIN_WAIT the seconds to wait (default 10). The request is built under
+# a dot name and moved into place, so the sorter never sees a half file. Returns the
+# status of bbs-admin (0 = done); 1 for a timeout or a write failure.
+admin_request() {
+    local action=$1 dir=${BBS_ADMIN_QUEUE:-$BBS_ROOT/queue/admin} \
+          res=${BBS_ADMIN_RESULTS:-$BBS_ROOT/state/admin-results} \
+          wait=${BBS_ADMIN_WAIT:-10} tmp id uuid kv i status= line
+    shift
+    tmp=$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null) || { echo "Could not queue the request."; return 1; }
+    uuid=$(cat /proc/sys/kernel/random/uuid)
+    id=$(date +%s)-${uuid//-/}
+    { printf 'id=%s\naction=%s\n' "$id" "$action"
+      for kv in "$@"; do printf '%s\n' "$kv"; done; } > "$tmp"
+    mv -n "$tmp" "$dir/$id.req" 2>/dev/null
+    if [[ -e $tmp ]]; then rm -f "$tmp"; echo "Could not queue the request."; return 1; fi
+    for (( i = 0; i < wait * 5; i++ )); do
+        [[ -r $res/$id ]] && break
+        sleep 0.2
+    done
+    if [[ ! -r $res/$id ]]; then
+        echo "Queued, check Status later"
+        return 1
+    fi
+    sleep 0.1   # the sorter writes the file in one go; this is only for slow disks
+    while IFS= read -r line; do
+        if [[ -z $status && $line == status=* ]]; then status=${line#status=}; continue; fi
+        printf '%s\n' "$line" | safe
+    done < "$res/$id"
+    [[ $status == 0 ]]
+}
+
 sysop_applications() {
-    local f name ts when any=0
-    redraw
-    local_header "Applications"
-    while IFS= read -r f; do
-        any=1
-        name=$(sed -n 's/^name=//p' "$f" | head -n 1 | safe)
-        ts=$(basename "$f" | sed -n 's/^\([0-9]*\)-.*/\1/p')
-        when=$( [[ -n $ts ]] && date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?" )
-        printf '%-16s %s\n' "$(list_fit 16 "$name")" "$when"
-    done < <(find "$BBS_ROOT/applications/incoming" -maxdepth 1 -name '*.app' -type f 2>/dev/null | sort)
-    (( any )) || echo "No applications waiting."
-    echo
-    echo "Approve or reject from the server for now."
-    pause
+    local f name ts when base uuid n pick
+    local -a codes names
+    while true; do
+        codes=() names=() n=0
+        redraw
+        local_header "Applications"
+        while IFS= read -r f; do
+            n=$((n + 1))
+            base=$(basename "$f" .app)
+            uuid=${base#*-}; uuid=${uuid//-/}
+            name=$(sed -n 's/^name=//p' "$f" | head -n 1 | safe)
+            ts=${base%%-*}
+            when=$( [[ $ts =~ ^[0-9]+$ ]] && date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?" )
+            codes[n]=; [[ $uuid =~ ^[0-9a-f]{8,}$ ]] && codes[n]=${uuid:0:8}
+            names[n]=$name
+            printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$when"
+        done < <(find "$BBS_ROOT/applications/incoming" -maxdepth 1 -name '*.app' -type f 2>/dev/null | sort)
+        if (( n == 0 )); then
+            echo "No applications waiting."
+            pause
+            return
+        fi
+        echo
+        keyline "Number) Decide  Q) Back"
+        menu_key "> " "123456789Qq" "1-9: pick an application to accept or reject
+Q: back" local || return
+        case $MKEY in
+            [Qq]) return ;;
+            [1-9]) read_num "$n" || continue; pick=$NUM ;;
+            *) continue ;;
+        esac
+        echo
+        if [[ -z ${codes[pick]} ]]; then
+            echo "This application has no usable id. Handle it from the server."
+            pause
+            continue
+        fi
+        printf 'Applicant: %s\n' "${names[pick]}"
+        menu_key "A) Accept  R) Reject  Q) Back > " "AaRrQq" "A: accept the application
+R: reject it
+Q: back" local || return
+        echo
+        case $MKEY in
+            [Aa]) read_confirm "Accept ${names[pick]}? [y/N] " || continue
+                  admin_request apps-accept "code=${codes[pick]}"; pause ;;
+            [Rr]) read_confirm "Reject ${names[pick]}? [y/N] " || continue
+                  admin_request apps-reject "code=${codes[pick]}"; pause ;;
+        esac
+    done
 }
 
 sysop_posts() {
@@ -2439,20 +2509,261 @@ sysop_posts() {
     pause
 }
 
-sysop_users() {
-    local f dir name tag
-    redraw
-    local_header "Users"
+# Names the menu never offers to suspend or remove: yourself, other sysops and the
+# system accounts. sbin/bbs-admin-apply and bbs-admin check the same again as root.
+sysop_protected() { # sysop_protected <name>
+    [[ $1 == "$me" || $1 == news || $1 == newsstatus ]] && return 0
+    grep -qxF -- "$1" "$BBS_ROOT/sysops" 2>/dev/null
+}
+
+# The detail screen of one account; the lines are plain text, one value per row.
+sysop_user_detail() { # sysop_user_detail <name>
+    local n=$1 ent shell uid alias_ created first last calls keys=0 fp label bytes files
+    local state=active
+    ent=$(getent passwd "bbs-$n" 2>/dev/null)
+    IFS=: read -r _ _ uid _ _ _ shell <<< "$ent"
+    [[ -n $ent && $shell == */nologin ]] && state=suspended
+    [[ -n $ent ]] || state="no system account"
+    alias_=
+    [[ -n $uid ]] && alias_=$(getent passwd 2>/dev/null | awk -F: -v u="$uid" '$3 == u && $1 !~ /^bbs-/ { print $1; exit }')
+    created=$(sed -n 's/^created=//p' "$BBS_ROOT/users/$n/profile" 2>/dev/null | head -n 1)
+    if [[ -z $created ]]; then
+        created=$(stat -c %W "$BBS_ROOT/users/$n/profile" 2>/dev/null)
+        [[ $created =~ ^[1-9][0-9]*$ ]] || created=$(stat -c %Y "$BBS_ROOT/users/$n/profile" 2>/dev/null)
+        [[ $created =~ ^[0-9]+$ ]] && created=$(date -d "@$created" '+%Y-%m-%d' 2>/dev/null)
+    fi
+    calls=0 first= last=
+    if [[ -r $BBS_ROOT/state/callers.log ]]; then
+        read -r calls first last < <(awk -v n="$n" '$2 == n { c++; if (!f) f = $1; l = $1 } END { print c + 0, (f ? f : "-"), (l ? l : "-") }' "$BBS_ROOT/state/callers.log")
+    fi
+    read -r bytes files < <(files_rows | awk -F'\t' -v u="bbs-$n" '$2 == u { b += $3; c++ } END { print b + 0, c + 0 }')
+    local_header "User $n"
+    printf '%-14s %s\n' "Account:" "bbs-$n"
+    printf '%-14s %s\n' "Short name:" "${alias_:--}"
+    printf '%-14s %s\n' "Status:" "$state"
+    printf '%-14s %s\n' "Created:" "${created:--}"
+    printf '%-14s %s\n' "Last call:" "$( [[ ${last:--} == - ]] && echo - || local_time "$last")"
+    printf '%-14s %s\n' "Calls:" "$calls"
+    printf '%-14s %s of %s (%s files)\n' "Files:" "$(files_size "${bytes:-0}")" "$(files_size "$UPLOAD_USER_QUOTA")" "${files:-0}"
+    if [[ -r $BBS_ROOT/users/$n/keys.meta ]]; then
+        while IFS=$'\t' read -r fp label _; do
+            [[ $fp =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] && keys=$((keys + 1))
+        done < "$BBS_ROOT/users/$n/keys.meta"
+    fi
+    printf '%-14s %s\n' "Keys:" "$keys"
+    if [[ -r $BBS_ROOT/users/$n/keys.meta ]]; then
+        while IFS=$'\t' read -r fp label _; do
+            [[ $fp =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || continue
+            printf '  %s %s\n' "$fp" "$(printf '%s' "$label" | safe)"
+        done < "$BBS_ROOT/users/$n/keys.meta"
+    fi
+    USER_STATE=$state
+    USER_ALIAS=$alias_
+}
+
+# Keys of one account: A adds a pasted public key (checked here with ssh-keygen, one line
+# only), R removes one by number. The root sorter checks it all again. A protected account
+# (you, a sysop, a system account) can get a key added, a sysop may need a new one, but
+# keys are not removed here: that could lock a sysop out.
+sysop_user_keys() { # sysop_user_keys <name> <protected 0|1>
+    local n=$1 protected=$2 fp label i pick key tmp info
+    local -a fps
+    while true; do
+        fps=() i=0
+        redraw
+        local_header "Keys of $n"
+        if [[ -r $BBS_ROOT/users/$n/keys.meta ]]; then
+            while IFS=$'\t' read -r fp label _; do
+                [[ $fp =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || continue
+                i=$((i + 1)); fps[i]=$fp
+                printf '%2d) %s %s\n' "$i" "$fp" "$(printf '%s' "$label" | safe)"
+            done < "$BBS_ROOT/users/$n/keys.meta"
+        fi
+        (( i )) || echo "No keys."
+        echo
+        if (( protected )); then keyline "A) Add a key  Q) Back"
+        else keyline "A) Add a key  R) Remove a key  Q) Back"; fi
+        menu_key "> " "AaRrQq" "A: paste a public key on one line
+R: remove a key by number
+Q: back" local || return
+        case $MKEY in
+            [Qq]) return ;;
+            [Aa])
+                echo
+                echo "Paste the public key on one line (/cancel stops)."
+                rline key "> " || return
+                [[ -z $key || $key == /cancel ]] && continue
+                if (( ${#key} > 7000 )); then echo "That key is too long."; pause; continue; fi
+                if [[ ! $key =~ ^[a-z0-9@.-]{3,40}\ [A-Za-z0-9+/]{16,}={0,3}(\ [A-Za-z0-9\ ._@+-]{1,80})?$ ]]; then
+                    echo "Not a plain public key line (type, key, optional comment)."; pause; continue
+                fi
+                tmp=$(mktemp) || continue
+                printf '%s\n' "$key" > "$tmp"
+                info=$(ssh-keygen -lf "$tmp" 2>&1); local rc=$?
+                rm -f "$tmp"
+                if (( rc != 0 )) || [[ $(wc -l <<< "$info") -ne 1 ]]; then
+                    echo "ssh-keygen does not accept that key."; pause; continue
+                fi
+                printf '%s\n' "$info" | safe
+                read_confirm "Add this key to $n? [y/N] " || continue
+                admin_request keys-add "name=$n" "key=$key"
+                pause ;;
+            [Rr])
+                (( protected )) && { echo; echo "Keys of you, sysops and system accounts are not removed here."; pause; continue; }
+                (( i )) || continue
+                echo
+                echo "Number of the key to remove:"
+                rline pick "> " || return
+                [[ $pick =~ ^[0-9]{1,2}$ && -n ${fps[pick]:-} ]] || { echo "No such key."; pause; continue; }
+                read_confirm "Remove ${fps[pick]} from $n? [y/N] " || continue
+                admin_request keys-remove "name=$n" "fingerprint=${fps[pick]}"
+                pause ;;
+        esac
+    done
+}
+
+# Short login name of one account (the name itself, without bbs-). Shows what alias-check
+# says first. Removal is not offered for a protected account; the sorter refuses it too.
+sysop_user_alias() { # sysop_user_alias <name> <protected 0|1>
+    local n=$1 protected=$2
+    echo
+    if [[ -n ${USER_ALIAS:-} ]]; then
+        echo "Short name: $USER_ALIAS"
+        if (( protected )); then echo "Not removed here (you, a sysop or a system account)."; pause; return; fi
+        read_confirm "Remove the short name $n? [y/N] " || return
+        admin_request alias-remove "name=$n"
+    else
+        echo "Checking whether $n may be a short name:"
+        admin_request alias-check "name=$n" || { pause; return; }
+        read_confirm "Add the short name $n? [y/N] " || return
+        admin_request alias-add "name=$n"
+    fi
+    pause
+}
+
+# One message to every account that is not suspended and not a system account, hidden
+# accounts included. One sendmail call with all recipients; the To header says only all@.
+sysop_mail_all() {
+    local f dir shell subject tmp host=$BBS_MAIL_DOMAIN line
+    local -a rcpt
+    valid_user "$me" || return 1
     for f in "$BBS_ROOT"/users/*/profile; do
         [[ -f $f && ! -L $f ]] || continue
         dir=$(basename "$(dirname "$f")")
-        name=$(sed -n 's/^name=//p' "$f" | safe)
-        tag=
-        grep -qx 'hidden=yes' "$f" && tag=hidden
-        grep -qx -- "$dir" "$BBS_ROOT/sysops" 2>/dev/null && tag="${tag:+$tag, }sysop"
-        printf '%-16s %s\n' "$(list_fit 16 "$name")" "$tag"
+        [[ $dir == news || $dir == newsstatus ]] && continue
+        shell=$(getent passwd "bbs-$dir" 2>/dev/null | cut -d: -f7)
+        [[ -n $shell && $shell != */nologin ]] || continue
+        rcpt+=("bbs-$dir")
     done
+    redraw
+    local_header "Mail all"
+    (( ${#rcpt[@]} )) || { echo "No active accounts."; pause; return; }
+    rline line "Subject (/cancel stops): " || return
+    [[ $line == /cancel ]] && return
+    subject=$(mail_subject "$line") || { pause; return; }
+    [[ -n $subject ]] || subject="(no subject)"
+    echo "Write text. End with a single dot (.)."
+    tmp=$(mktemp) || return 1
+    {
+        printf 'Message-ID: <%s@%s>\n' "$(cat /proc/sys/kernel/random/uuid)" "$host"
+        printf 'Date: %s\n' "$(date -R)"
+        printf 'From: %s@%s\n' "$me" "$host"
+        printf 'To: all@%s\n' "$host"
+        printf 'Subject: %s\n' "$subject"
+        printf '\n'
+    } > "$tmp"
+    if ! mail_body >> "$tmp"; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
+    if ! read_confirm "Send to ${#rcpt[@]} users? [y/N] "; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
+    if /usr/bin/env -i "$sendmail" -i -f "bbs-$me" "${rcpt[@]}" < "$tmp"; then
+        mail_store Sent cur "$tmp"
+        echo "Queued for delivery."
+    else
+        echo "Could not queue the message."
+    fi
+    rm -f "$tmp"
     pause
+}
+
+sysop_users() {
+    local f dir name tag n pick sel
+    local -a accts
+    while true; do
+        accts=() n=0
+        redraw
+        local_header "Users"
+        for f in "$BBS_ROOT"/users/*/profile; do
+            [[ -f $f && ! -L $f ]] || continue
+            dir=$(basename "$(dirname "$f")")
+            name=$(sed -n 's/^name=//p' "$f" | safe)
+            tag=
+            grep -qx 'hidden=yes' "$f" && tag=hidden
+            grep -qx -- "$dir" "$BBS_ROOT/sysops" 2>/dev/null && tag="${tag:+$tag, }sysop"
+            n=$((n + 1)); accts[n]=$dir
+            printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$tag"
+        done
+        echo
+        (( n )) || { echo "No users."; pause; return; }
+        keyline "Number) Open  Q) Back"
+        menu_key "> " "123456789Qq" "1-9: open an account
+Q: back" local || return
+        case $MKEY in
+            [Qq]) return ;;
+            [1-9]) read_num "$n" || continue; pick=$NUM ;;
+            *) continue ;;
+        esac
+        sysop_user_view "${accts[pick]}"
+    done
+}
+
+# One account: S suspends or unsuspends, X removes (typing the name confirms).
+sysop_user_view() { # sysop_user_view <name>
+    local n=$1 typed protected=0
+    sysop_protected "$n" && protected=1
+    while true; do
+        redraw
+        sysop_user_detail "$n"
+        echo
+        if (( protected )); then
+            echo "Cannot be suspended or removed here (you, a sysop or a system account)."
+            keyline "K) Keys  N) Short name  Q) Back"
+        elif [[ $USER_STATE == suspended ]]; then
+            keyline "S) Unsuspend  X) Remove  K) Keys  N) Short name  Q) Back"
+        else
+            keyline "S) Suspend  X) Remove  K) Keys  N) Short name  Q) Back"
+        fi
+        menu_key "> " "SsXxKkNnQq" "S: suspend or unsuspend the account
+X: remove the account for good
+K: add or remove a public key
+N: add or remove the short login name
+Q: back" local || return
+        case $MKEY in
+            [Qq]) return ;;
+            [Kk]) sysop_user_keys "$n" "$protected" ;;
+            [Nn]) sysop_user_alias "$n" "$protected" ;;
+            [Ss])
+                (( protected )) && continue
+                echo
+                if [[ $USER_STATE == suspended ]]; then
+                    read_confirm "Unsuspend $n? [y/N] " || continue
+                    admin_request users-enable "name=$n"
+                else
+                    read_confirm "Suspend $n? [y/N] " || continue
+                    admin_request users-disable "name=$n"
+                fi
+                pause ;;
+            [Xx])
+                (( protected )) && continue
+                echo
+                echo "Removes bbs-$n. The home directory and the key go to quarantine,"
+                echo "and the name is never given out again."
+                rline typed "Type the account name ($n) to confirm, anything else cancels: " || return
+                echo
+                if [[ $typed != "$n" ]]; then echo "Cancelled."; pause; continue; fi
+                admin_request users-remove "name=$n"
+                pause
+                return ;;
+        esac
+    done
 }
 
 # The newest transfers from state/transfers.log: up, down and del (a removed file).
