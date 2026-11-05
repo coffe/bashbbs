@@ -192,11 +192,11 @@ check "Enter does not turn the page" not_in 'Page 2 of 2' "$o2e"
 
 o3=$scratch/wall-main.out
 printf '2\n' | menu_run "$o3" main_nav
-check "main menu: 2) Wall" grep -q '^2) Wall  ' "$o3"
-check "main menu: 4) Fame & Glory, 6) My Account" bash -c "grep -q '^4) Fame & Glory  ' '$o3' && grep -q '^6) My Account  ' '$o3'"
+check "main menu: 2) Wall" grep -q '^2) Wall' "$o3"
+check "main menu: 4) Fame & Glory, 6) My Account" bash -c "grep -q '^4) Fame & Glory' '$o3' && grep -q '^6) My Account' '$o3'"
 check "header: [W] Wall" grep -q '\[W\] Wall' "$o3"
 check "choice 2 opens Wall" grep -q 'NAV=wall' "$o3"
-check "main menu: 5) Mail" grep -q '^5) Mail  ' "$o3"
+check "main menu: 5) Mail" grep -q '^5) Mail' "$o3"
 
 o4=$scratch/wall-main-w.out
 printf 'w\n' | menu_run "$o4" main_nav

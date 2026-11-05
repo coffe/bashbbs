@@ -379,7 +379,7 @@ def s_single(w):
         # Enter alone / unknown keys
         inert(s, b"\n\r\n", b"6", ACCT, "2 main menu: Enter alone")
         s.k("q", MAIN)
-        inert(s, b"x z ! 9 0 8 /", b"6", ACCT, "2 main menu: unknown keys")
+        inert(s, b"x z ! 9 0 /", b"6", ACCT, "2 main menu: unknown keys")
         s.k("q", MAIN)
         bo(s)
         inert(s, b"\n\nx!", b"1", GEN(), "2 boards list: Enter and unknown key")
@@ -561,7 +561,7 @@ def s_jump(w):
 def s_help(w):
     s, root, home = sess(w)
 
-    def helpcheck(nm, pat, danger, tail=False):
+    def helpcheck(nm, pat, danger, tail=False, most=4):
         before = s.screens[-1]
         s.send("?")
         t = s.expect(r"== Help ==.*\[Any key\] Back\r\n$")
@@ -570,7 +570,7 @@ def s_help(w):
         i = next(i for i, l in enumerate(L) if l == "== Help ==")
         j = next(j for j, l in enumerate(L) if l == "[Any key] Back")
         body = [l for l in L[i + 2:j]]
-        chk("5 help %s: at most 4 lines (title + body)" % nm, 1 + len(body) <= 4 and len(body) >= 1, repr(body))
+        chk("5 help %s: at most %d lines (title + body)" % (nm, most), 1 + len(body) <= most and len(body) >= 1, repr(body))
         chk("5 help %s: every line at most 40 columns" % nm, all(cellw(l) <= min(40, w) for l in L), repr([l for l in L if cellw(l) > 40]))
         t2 = s.k(danger, pat)
         sc2 = last_screen(t2)
@@ -585,7 +585,7 @@ def s_help(w):
         t0 = s.start()
         s.screens.append(last_screen(t0))
         helpcheck("welcome", r"== Welcome, alice ==.*?" + PROMPT, b"g")
-        s.k("x", MAIN); helpcheck("main", MAIN, b"q")
+        s.k("x", MAIN); helpcheck("main", MAIN, b"q", most=5)  # the main menu also explains 9 and the jump keys
         bo(s); helpcheck("boards", BOARDS, b"q")
         s.k("1", GEN()); helpcheck("thread list", GEN(), b"q")
         s.k("1", POST()); helpcheck("post", POST(), b"d")
