@@ -55,7 +55,95 @@ news_need_python() {
 }
 
 # Wrap stdin to width $1 (visual columns, UTF-8 aware).
-news_wrap() { python3 "$NEWS_LIB/wrap.py" "$1"; }
+news_wrap() { wrap_text "$1"; }
+
+# Is <text> plain enough to be counted with ${#} instead of wrap.py's width table?
+# Printable ASCII and U+00C0-U+00FF (bytes C3 80-BF: the Latin letters, å ä ö) are one
+# column each, and a newline too when <nl> is "nl". The check is on bytes, so broken
+# UTF-8 can't pass. Fails when the C.UTF-8 locale is missing. Python takes 0.25 s to
+# start on a Pi 2 and 0.7 s on a Zero W; callers that pass ask for ${#} in C.UTF-8.
+text_is_simple() { # text_is_simple <text> [nl]
+    local LC_ALL=C probe=å rest=${1//$'\xc3'[$'\x80'-$'\xbf']/}
+    if [[ ${2:-} == nl ]]; then
+        [[ $rest != *[!$'\n'\ -~]* ]] || return 1
+    else
+        [[ $rest != *[!\ -~]* ]] || return 1
+    fi
+    LC_ALL=C.UTF-8
+    (( ${#probe} == 1 ))
+}
+
+# Wrap one paragraph (words in "$@") to <width> into the array wt_lines of the caller.
+# Same rules as wrap_paragraph in wrap.py, for text text_is_simple has passed.
+wrap_para_bash() { # wrap_para_bash <width> <word>...
+    local width=$1 cur= curw=0 w
+    shift
+    for w in "$@"; do
+        if [[ -n $cur ]] && (( curw + 1 + ${#w} <= width )); then
+            cur+=" $w"; curw=$(( curw + 1 + ${#w} )); continue
+        fi
+        if [[ -n $cur ]]; then wt_lines+=("$cur"); cur=; curw=0; fi
+        while (( ${#w} > width )); do wt_lines+=("${w:0:width}"); w=${w:width}; done
+        cur=$w curw=${#w}
+    done
+    [[ -n $cur ]] && wt_lines+=("$cur")
+    return 0
+}
+
+# Wrap <text> (simple, see text_is_simple) into the array wt_lines of the caller:
+# wrap() of wrap.py, or wrap_keep_lines() when <keep> is 1. LC_ALL must be C.UTF-8.
+wrap_lines_bash() { # wrap_lines_bash <keep> <width> <text>
+    local keep=$1 width=$2 text=$3 line
+    local -a words=() para=() src=()
+    [[ $text == *$'\n' ]] && text=${text%$'\n'}
+    mapfile -t src <<< "$text"
+    for line in "${src[@]}"; do
+        if (( keep )); then
+            if (( ${#line} <= width )); then
+                wt_lines+=("$line")
+            else
+                IFS=' ' read -ra words <<< "$line"
+                wrap_para_bash "$width" "${words[@]}"
+            fi
+            continue
+        fi
+        IFS=' ' read -ra words <<< "$line"
+        if (( ${#words[@]} )); then
+            para+=("${words[@]}")
+        else
+            (( ${#para[@]} )) && wrap_para_bash "$width" "${para[@]}"
+            para=()
+            wt_lines+=("")
+        fi
+    done
+    (( ${#para[@]} )) && wrap_para_bash "$width" "${para[@]}"
+    return 0
+}
+
+# wrap_text [--keep-lines] WIDTH: stdin to stdout, exactly what lib/wrap.py does. Plain
+# text (text_is_simple) is wrapped in bash; anything else, a width python would reject,
+# or a NUL byte goes to wrap.py.
+wrap_text() {
+    local keep=0 a width= bad=0 text rc
+    for a in "$@"; do
+        if [[ $a == --keep-lines ]]; then keep=1
+        elif [[ -z $width && $a =~ ^[1-9][0-9]*$ ]]; then width=$a
+        else bad=1; fi
+    done
+    if (( bad )) || [[ -z $width ]] || (( width < 10 )); then
+        python3 "$NEWS_LIB/wrap.py" "$@"; return
+    fi
+    IFS= read -r -d '' text; rc=$?
+    if (( rc == 0 )) || ! text_is_simple "$text" nl; then
+        { printf '%s' "$text"; (( rc == 0 )) && printf '\0'; cat; } | python3 "$NEWS_LIB/wrap.py" "$@"
+        return
+    fi
+    [[ -n $text ]] || return 0
+    local LC_ALL=C.UTF-8
+    local -a wt_lines=()
+    wrap_lines_bash "$keep" "$width" "$text"
+    printf '%s\n' "${wt_lines[@]}"
+}
 
 # Packed key-hint lines, the key letters inside [ ] in mint. Takes plain lines on stdin,
 # so it runs after news_pack has measured them. Fixed strings only.

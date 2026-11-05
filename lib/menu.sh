@@ -617,7 +617,7 @@ keys_status() {
     done
     [[ -n $out ]] || return 0
     echo "Recent requests:"
-    printf '%s' "$out" | python3 "$NEWS_LIB/wrap.py" --keep-lines "$(term_width)"
+    printf '%s' "$out" | wrap_text --keep-lines "$(term_width)"
     echo
 }
 
@@ -754,7 +754,7 @@ keys_add() {
     line=${line#"${line%%[![:space:]]*}"}; line=${line%"${line##*[![:space:]]}"}
     [[ -n $line ]] || return
     if [[ ${line^^} == -----BEGIN* || ${line^^} == *"PRIVATE KEY"* || ${line^^} == *"PUTTY-USER-KEY-FILE"* ]]; then
-        echo "That looks like a private key. Never paste it anywhere." | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+        echo "That looks like a private key. Never paste it anywhere." | wrap_text "$(term_width)"
         pause
         return
     fi
@@ -772,7 +772,7 @@ keys_add() {
     if (( rc == 2 )); then
         IFS=$'\t' read -r kind ty body <<< "$out"
         echo
-        printf '%s\n' "$body" | safe | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+        printf '%s\n' "$body" | safe | wrap_text "$(term_width)"
         rline ans "Type LEGACY to accept: " || return
         [[ $ans == LEGACY ]] || { echo "Cancelled."; pause; return; }
         legacy=yes
@@ -781,7 +781,7 @@ keys_add() {
     IFS=$'\t' read -r kind ty body fp bits <<< "$out"
     if [[ $kind != OK ]]; then
         if [[ $kind == ERR && -n $body ]]; then ans=$(printf '%s' "$body" | safe); else ans="The key was not accepted."; fi
-        printf '%s\n' "$ans" | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+        printf '%s\n' "$ans" | wrap_text "$(term_width)"
         pause
         return
     fi
@@ -829,7 +829,7 @@ keys_remove() {
     echo "Label: ${k_label[PICK]}"
     keys_fp_show "${k_fp[PICK]}"
     echo
-    echo "Make sure you can still log in with a remaining key." | python3 "$NEWS_LIB/wrap.py" "$(term_width)"
+    echo "Make sure you can still log in with a remaining key." | wrap_text "$(term_width)"
     read_confirm "Remove this key? [y/N] " || { echo "Cancelled."; pause; return; }
     keys_send "remove ${k_label[PICK]}" \
         < <(printf 'Action: remove\nFingerprint: %s\nConfirm: yes\n' "${k_fp[PICK]}")
@@ -1121,21 +1121,19 @@ list_fit() { # list_fit <width> <text>
     # thirty times a page. Printable ASCII and U+00C0-U+00FF (bytes C3 80-BF: the Latin
     # letters, å ä ö) are one column each, so they need no table. The check is on bytes,
     # so broken UTF-8 can't pass. All else, or a missing locale, goes the long way.
-    local LC_ALL=C probe=å out rest=${2//$'\xc3'[$'\x80'-$'\xbf']/}
-    if [[ $rest != *[!\ -~]* ]]; then
-        LC_ALL=C.UTF-8
-        if (( ${#probe} == 1 )); then
-            if (( ${#2} <= $1 )); then
-                printf '%s' "$2"
-            elif (( $1 < 4 )); then
-                out=${2:0:$1}
-                printf '%s' "${out%"${out##*[! ]}"}"
-            else
-                out=${2:0:$1-3}
-                printf '%s...' "${out%"${out##*[! ]}"}"
-            fi
-            return 0
+    local out
+    if text_is_simple "$2"; then
+        local LC_ALL=C.UTF-8
+        if (( ${#2} <= $1 )); then
+            printf '%s' "$2"
+        elif (( $1 < 4 )); then
+            out=${2:0:$1}
+            printf '%s' "${out%"${out##*[! ]}"}"
+        else
+            out=${2:0:$1-3}
+            printf '%s...' "${out%"${out##*[! ]}"}"
         fi
+        return 0
     fi
     list_fit_py "$1" "$2"
 }
@@ -1191,13 +1189,13 @@ show_post() {
         return
     fi
     # Wrapped first, then each line coloured and closed (the text is already safe()).
-    printf '%s\n' "$subject" | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width" |
+    printf '%s\n' "$subject" | wrap_text --keep-lines "$width" |
         while IFS= read -r line; do paint SUBJ "$line"; echo; done
     echo "by $author, $(local_time "$date")"
     [[ -n $edited ]] && echo "edited $(local_time "$edited")"
     printf '%*s\n' "$width" '' | tr ' ' '-'
     echo
-    sed '1,/^$/d' "$file" | safe | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
+    sed '1,/^$/d' "$file" | safe | wrap_text --keep-lines "$width"
 }
 
 # Posts of a board that are shown to users, in file order, one path per line. A
@@ -1341,6 +1339,25 @@ read_mark_save() { # read_mark_save <board> <root-msgid> <epoch>
 # The count and the star sit at the end of the first line; the subject wraps to the room
 # left, later lines hang under it. Columns are counted by wrap.py, so å ä ö never split.
 thread_row() { # thread_row <number> <width> <suffix> <subject>
+    # Plain text (printable ASCII and å ä ö) is wrapped here: python costs a quarter of a
+    # second per row on a Pi 2 and 0.7 s on a Zero. Anything else goes to thread_row_py.
+    if [[ $1 =~ ^[0-9]+$ && $2 =~ ^[0-9]+$ ]] && text_is_simple "$3" && text_is_simple "$4"; then
+        local LC_ALL=C.UTF-8 room line first pad
+        local -a wt_lines=()
+        room=$(( 10#$2 - ${#3} - 1 ))
+        (( room < 10 )) && room=10
+        wrap_lines_bash 0 "$room" "$4"
+        (( ${#wt_lines[@]} )) || wt_lines=("")
+        pad=$(( 10#$2 - ${#3} - ${#wt_lines[0]} ))
+        (( pad < 1 )) && pad=1
+        printf -v first '%*s' "$pad" ''
+        printf '%3d) %s%s%s\n' "$((10#$1))" "${wt_lines[0]}" "$first" "$3"
+        for line in "${wt_lines[@]:1}"; do printf '     %s\n' "$line"; done
+        return 0
+    fi
+    thread_row_py "$@"
+}
+thread_row_py() {
     PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=UTF-8 python3 -c '
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -1674,7 +1691,7 @@ members_menu() {
         local_header "Members"
         cols=$(term_width)   # not inside the pipe: there term_width cannot see the terminal
         echo "Members: $(getent group "bbsb-$board" | cut -d: -f4 | sed 's/bbs-//g; s/,/ /g')" \
-            | python3 "$NEWS_LIB/wrap.py" "$cols"
+            | wrap_text "$cols"
         echo
         keyline "A) Add   R) Remove   Q) Back"
         menu_key "> " "AaRrQq" "A: add a member   R: remove one
@@ -2496,7 +2513,7 @@ Q: back" local || return
         printf 'Contact:   %s\n' "${contacts[pick]:-(none given)}"
         if [[ -n ${notes[pick]} ]]; then
             echo "About:"
-            printf '%s\n' "${notes[pick]}" | python3 "$NEWS_LIB/wrap.py" "$(( $(term_width) - 2 ))" | sed 's/^/  /'
+            printf '%s\n' "${notes[pick]}" | wrap_text "$(( $(term_width) - 2 ))" | sed 's/^/  /'
         else
             echo "About:     (nothing written)"
         fi
@@ -2603,7 +2620,7 @@ sysop_user_detail() { # sysop_user_detail <name>
         printf '%-14s %s\n' "Contact:" "${APP_CONTACT:-(none given)}"
         if [[ -n $APP_NOTE ]]; then
             echo "About:"
-            printf '%s\n' "$APP_NOTE" | python3 "$NEWS_LIB/wrap.py" "$(( $(term_width) - 2 ))" | sed 's/^/  /'
+            printf '%s\n' "$APP_NOTE" | wrap_text "$(( $(term_width) - 2 ))" | sed 's/^/  /'
         else
             printf '%-14s %s\n' "About:" "(nothing written)"
         fi
@@ -3107,7 +3124,7 @@ wall_entry() { # wall_entry <file> <width>
         esac
     done < "$file"
     echo "$(local_time "$date")  by $author"
-    sed '1,/^$/d' "$file" | safe | python3 "$NEWS_LIB/wrap.py" --keep-lines "$width"
+    sed '1,/^$/d' "$file" | safe | wrap_text --keep-lines "$width"
 }
 
 # Write one greeting into the queue. Empty input cancels.
