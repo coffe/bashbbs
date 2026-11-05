@@ -5,7 +5,8 @@
 # /x.cgi/<token>. The directory is mode 1733: nobody can list it, but anyone who
 # knows a token can open that file. The ticket's OWNER says who it belongs to;
 # its lines (dir=up|down, id=<file id>) are checked and never run as code. An area= line
-# is for the sorter, and not read here.
+# is for the sorter, and not read here. A download ticket may instead say export=callers:
+# a sysop's snapshot of the callers log, kept beside the ticket as <token>.snap.
 # A ticket expires by its ctime. Its owner can refresh that by changing the file
 # but cannot backdate it, and it only ever carries the owner's own rights.
 #
@@ -46,12 +47,14 @@ PUBLISHED = os.path.join(ROOT, "published")
 WEBUP = os.path.join(ROOT, "webup")
 DONE = os.path.join(ROOT, "state/xfer-done")
 SLOTS = os.path.join(ROOT, "state/xfer-slots")
+SYSOPS = os.path.join(ROOT, "sysops")
 RESULTS = os.path.join(ROOT, "state/xfer-results")
 
 TOKEN_RE = re.compile(r"/([A-Za-z0-9_-]{22})")
 ID_RE = re.compile(r"[0-9]+-[0-9a-f]{8}")
 OWNER_RE = re.compile(r"bbs-[a-z][a-z0-9]{2,8}")
 MAX_FILES = 20          # files per ticket
+MAX_SNAP = 4 << 20      # bytes of a callers snapshot
 MAX_SLOTS = 3           # transfers at the same time; the Pi Zero has one core
 MAX_NAME = 100          # bytes, same as sbin/bbs-upload
 MAX_SECS = 1800         # no single request runs longer than this
@@ -133,7 +136,9 @@ def gone(status, message):
 
 
 class Ticket:
-    def __init__(self, token, owner, direction, ids):
+    def __init__(self, token, owner, direction, ids, uid=-1, export=False):
+        self.uid = uid
+        self.export = export
         self.token = token
         self.owner = owner
         self.direction = direction
@@ -166,21 +171,75 @@ def load_ticket(token, limits):
 
     direction = ""
     ids = []
+    export = False
     for line in data.split("\n"):
         key, _, value = line.partition("=")
         if key == "dir" and not direction:
             direction = value
+        elif key == "export" and value == "callers":
+            export = True
         elif key == "id" and ID_RE.fullmatch(value) and value not in ids:
             ids.append(value)
     if direction not in ("up", "down") or len(ids) > MAX_FILES:
         return None
-    if direction == "down" and not ids:
+    if export and (direction != "down" or ids or not is_sysop(owner)):
+        return None
+    if direction == "down" and not ids and not export:
         return None
 
     ttl = limits["XFER_TTL_UP"] if direction == "up" else limits["XFER_TTL_DOWN"]
     if time.time() - st.st_ctime >= ttl:
         return "expired"
-    return Ticket(token, owner, direction, ids)
+    return Ticket(token, owner, direction, ids, st.st_uid, export)
+
+
+def is_sysop(owner):
+    """The owner (bbs-<name>) is listed as <name> in the sysops file."""
+    name = owner[4:]
+    try:
+        with open(SYSOPS, encoding="utf-8", errors="replace") as f:
+            return name in f.read(65536).split("\n")
+    except OSError:
+        return False
+
+
+def send_export(ticket):
+    """The sysop's snapshot of the callers log. The path is built here from the token."""
+    try:
+        fd = os.open(os.path.join(XFER, ticket.token + ".snap"),
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return gone("404 Not Found", "That export is no longer here.")
+    st = os.fstat(fd)
+    if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != ticket.uid
+            or st.st_size > MAX_SNAP):
+        return gone("404 Not Found", "That export is no longer here.")
+    name = "callers-" + time.strftime("%Y%m%d", time.gmtime(st.st_mtime)) + ".log"
+    head = [f"Content-Length: {st.st_size}", f'Content-Disposition: attachment; filename="{name}"',
+            "Accept-Ranges: none"]
+    if os.environ.get("REQUEST_METHOD") == "HEAD":
+        return respond("200 OK", "text/plain; charset=utf-8", b"", head)
+    if take_slot() is None:
+        return busy()
+    write_head("200 OK", "text/plain; charset=utf-8", head)
+    out = sys.stdout.buffer
+    sent = 0
+    try:
+        while True:
+            data = os.read(fd, CHUNK)
+            if not data:
+                break
+            out.write(data)
+            sent += len(data)
+        out.flush()
+    except OSError:     # the client went away
+        return
+    if sent == st.st_size:      # tell the session; the dir is writable but not listable
+        try:
+            os.close(os.open(os.path.join(XFER, ticket.token + ".sent"),
+                             os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC, 0o644))
+        except OSError:
+            pass
 
 
 def take_slot():
@@ -575,6 +634,8 @@ def main():
     if ticket.direction == "down":
         if method not in ("GET", "HEAD"):
             return text("405 Method Not Allowed", "This link is for downloads.", ["Allow: GET, HEAD"])
+        if ticket.export:
+            return send_export(ticket)
         wanted = query.get("f", [""])[0]
         if wanted:
             return send_file(ticket, int(wanted) if re.fullmatch(r"[0-9]{1,3}", wanted) else -1)
