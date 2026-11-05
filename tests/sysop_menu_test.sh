@@ -159,6 +159,16 @@ check "admin_request: timeout message" has "$out" "Queued, check Status later"
 check "admin_request: timeout leaves the .req queued" bash -c 'ls "$1"/*.req >/dev/null' _ "$root/noroot/q"
 
 # 8c. Applications: accept and reject need y; code comes from the file name.
+printf '1500000060\t0123abcd\tcarol\tI like BBSes and \033[31mcoffee\tcarol@example.org\n' > "$root/state/apps-waiting/sys0p"
+out=$(printf '1q' | lib sysop_applications)
+check "applications: detail shows contact" has "$out" "Contact:   carol@example.org"
+check "applications: detail shows the note" has "$out" "I like BBSes and"
+check "applications: list shows the start of the note" has "$out" "$(date -d @1500000060 "+%Y-%m-%d %H:%M")  I like"
+check "applications: note escape is stripped" not has "$out" $'\033[31mcoffee'
+printf '1500000061\t0123abce\tdan\t-\t-\n' > "$root/state/apps-waiting/sys0p"
+out=$(printf '1q' | lib sysop_applications)
+check "applications: no contact says so" has "$out" "Contact:   (none given)"
+check "applications: no note says so" has "$out" "(nothing written)"
 printf '1500000060\t0123abcd\tcarol\n' > "$root/state/apps-waiting/sys0p"
 out=$(printf '1ay' | lib sysop_applications)
 check "applications: accept shows result" has "$out" "DONE apps-accept"

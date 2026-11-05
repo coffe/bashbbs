@@ -2117,7 +2117,7 @@ file_areas() {
         keys=Qq hint="Q: back"
         local more="" down=""
         if (( start > 0 || next < total )); then
-            more="N) More   " keys+=Nn hint="N: next page   $hint"
+            more="Space) More   " keys+=" " hint="Space: next page   $hint"
         fi
         if (( ${#FLAGS[@]} )); then
             down="D) Download   " keys+=Dd hint="D: download what is flagged   $hint"
@@ -2130,7 +2130,7 @@ B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return 0 ;;
-            [Nn]) start=$next ;;
+            ' ') start=$next ;;
             [Dd]) echo; xfer_download "${FLAGS[@]}" || return ;;
             [1-9])
                 read_num "$total" || continue
@@ -2209,8 +2209,8 @@ files_menu() { # files_menu [area]
         echo
         keys=QqUuOo hint="U: upload   O: options   Q: back"
         if (( start > 0 || next < total )); then
-            keyline "N) More   U) Upload   D) Download   A) Flag   O) Options   Q) Back"
-            keys+=NnDdAa hint="N: next page   U: upload   D: download   A: flag   O: options   Q: back"
+            keyline "Space) More   U) Upload   D) Download   A) Flag   O) Options   Q) Back"
+            keys+=" DdAa" hint="Space: next page   U: upload   D: download   A: flag   O: options   Q: back"
         elif (( total > 0 )); then
             keyline "U) Upload   D) Download   A) Flag   O) Options   Q) Back"
             keys+=DdAa hint="U: upload   D: download   A: flag   O: options   Q: back"
@@ -2224,7 +2224,7 @@ B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return 0 ;;
-            [Nn]) start=$next; continue ;;
+            ' ') start=$next; continue ;;
             [Uu]) echo; xfer_upload "$area" || return; continue ;;
             [Oo]) echo; xfer_options; continue ;;
             [Aa])
@@ -2448,20 +2448,28 @@ admin_request() {
 
 # The waiting applications come from state/apps-waiting/<me>, written by the root sorter
 # (applications/incoming is write-only for the web form). It is at most a minute old.
+# One application per line from the sorter: time, code, name, note, contact ("-" = empty).
 sysop_applications() {
-    local ts code name when n pick
-    local -a codes names
+    local ts code name note contact when n pick w
+    local -a codes names whens notes contacts
     while true; do
-        codes=() names=() n=0
+        codes=() names=() whens=() notes=() contacts=() n=0
         redraw
         local_header "Applications"
-        while IFS=$'\t' read -r ts code name; do
+        w=$(( $(list_width) - 38 ))
+        while IFS=$'\t' read -r ts code name note contact; do
             n=$((n + 1))
             name=$(printf '%s' "$name" | safe)
+            note=$(printf '%s' "$note" | safe); [[ $note == - ]] && note=
+            contact=$(printf '%s' "$contact" | safe); [[ $contact == - ]] && contact=
             when=$( [[ $ts =~ ^[0-9]+$ ]] && (( ts > 0 )) && date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?" )
             codes[n]=; [[ $code =~ ^[0-9a-f]{8}$ ]] && codes[n]=$code
-            names[n]=$name
-            printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$when"
+            names[n]=$name whens[n]=$when notes[n]=$note contacts[n]=$contact
+            if (( w >= 10 )) && [[ -n $note ]]; then
+                printf '%2d) %-16s %s  %s\n' "$n" "$(list_fit 16 "$name")" "$when" "$(list_fit "$w" "$note")"
+            else
+                printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$when"
+            fi
         done < <(head -n 200 "$BBS_ROOT/state/apps-waiting/$me" 2>/dev/null)
         if (( n == 0 )); then
             echo "No applications waiting. The list is updated about once a minute."
@@ -2484,6 +2492,15 @@ Q: back" local || return
             continue
         fi
         printf 'Applicant: %s\n' "${names[pick]}"
+        printf 'Received:  %s\n' "${whens[pick]}"
+        printf 'Contact:   %s\n' "${contacts[pick]:-(none given)}"
+        if [[ -n ${notes[pick]} ]]; then
+            echo "About:"
+            printf '%s\n' "${notes[pick]}" | python3 "$NEWS_LIB/wrap.py" "$(( $(term_width) - 2 ))" | sed 's/^/  /'
+        else
+            echo "About:     (nothing written)"
+        fi
+        echo
         menu_key "A) Accept  R) Reject  Q) Back > " "AaRrQq" "A: accept the application
 R: reject it
 Q: back" local || return

@@ -240,10 +240,18 @@ run_request() {
 }
 
 # write_apps_lists: the waiting applications, one list per sysop (0400, owned by that
-# sysop), in state/apps-waiting/<name>. Lines: "<unix time>\t<8-char code or ->\t<name>".
+# sysop), in state/apps-waiting/<name>. Lines: "<unix time>\t<8-char code or ->\t<name>\t<note or ->\t<contact or ->".
 # applications/incoming stays write-only for www-data, so this is how the menu sees it.
+# One field of an application file as one line of valid UTF-8 with no control
+# characters (tabs included, they separate the list columns), at most <chars> characters.
+# apply.cgi already keeps printable characters only; this is the second check.
+app_field() { # app_field <file> <key> [chars]
+    head -c 8192 -- "$1" | sed -n "s/^$2=//p" | head -n 1 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null \
+        | LC_ALL=C.UTF-8 sed -E "s/[^[:print:]]//g; s/^[[:space:]]+//; s/^(.{0,${3:-400}}).*/\\1/; s/[[:space:]]+\$//"
+}
+
 write_apps_lists() {
-    local f base ts uuid code name list n uid tmp
+    local f base ts uuid code name note contact list n uid tmp
     [[ -d $APPS_IN && ! -L $APPS_IN ]] || return 0
     [[ -d $APPS_OUT && ! -L $APPS_OUT ]] || install -d -m 0711 "$APPS_OUT" || return 1
     list=$TMPD/apps; : > "$list"
@@ -253,8 +261,10 @@ write_apps_lists() {
         ts=${base%%-*}; [[ $ts =~ ^[0-9]{1,20}$ ]] || ts=0
         uuid=${base#*-}; uuid=${uuid//-/}; code=-   # "-": IFS tab would collapse an empty field
         [[ $uuid =~ ^[0-9a-f]{8} ]] && code=${uuid:0:8}
-        name=$(head -c 8192 -- "$f" | sed -n 's/^name=//p' | head -n 1 | tr -cd 'A-Za-z0-9._ -' | head -c 40)
-        printf '%s\t%s\t%s\n' "$ts" "$code" "$name" >> "$list"
+        name=$(app_field "$f" name | tr -cd 'A-Za-z0-9._ -' | head -c 40)
+        note=$(app_field "$f" note 300); note=${note:--}
+        contact=$(app_field "$f" contact 100); contact=${contact:--}
+        printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$code" "$name" "$note" "$contact" >> "$list"
     done
     sort -n -o "$list" -- "$list"
     while IFS= read -r n; do

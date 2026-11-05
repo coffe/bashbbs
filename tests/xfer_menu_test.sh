@@ -484,10 +484,10 @@ start
 check "page: seven fit" seen " 7) many24.txt"
 sleep 0.2
 check "page: the eighth does not" not grep -q ' 8) many23' "$out"
-check "page: N offered" seen "N) More"
+check "page: Space offered" seen "Space) More"
 mark=$(wc -l < "$out")
-keys n
-check "page: N goes on from the next file" after "$mark" " 8) many23.txt"
+keys ' '
+check "page: Space goes on from the next file" after "$mark" " 8) many23.txt"
 keys q; finish
 : > "$flags"
 for n in {10..29}; do echo "15000010$n-eeeeeeee" >> "$flags"; done

@@ -85,8 +85,8 @@ page() { ( export BBS_ROOT="$pagedir" HOME="$pagedir/home" BASHBBS_TEST=1 BASHBB
 out=$(printf 'q' | page files_menu)
 check "paging: first page holds the newest" has "$out" "page12.zip"
 check "paging: file 11 waits for the next page" not has "$out" "page02.zip"
-out=$(printf 'nq' | page files_menu)
-check "paging: N shows the rest" has "$out" "page02.zip"
+out=$(printf ' q' | page files_menu)
+check "paging: Space shows the rest" has "$out" "page02.zip"
 
 # 3. Empty.
 emptydir=$(mktemp -d "$scratch/filesempty.XXXXXX"); mkdir -p "$emptydir/home"
@@ -208,7 +208,7 @@ diz() { ( export BBS_ROOT="$dizdir" HOME="$dizdir/home" BASHBBS_TEST=1 BASHBBS_T
 out=$(printf 'q' | diz files_menu)
 check "diz list: first file shows all 10 lines" has "$out" "New diz line 10"
 check "diz list: the next file waits for the next page" not has "$out" "older.lha"
-out=$(printf 'nq' | diz files_menu)
+out=$(printf ' q' | diz files_menu)
 check "diz list: N shows the next file whole" has "$out" "Old diz line 10"
 
 # --- File areas
@@ -273,8 +273,8 @@ check "view: not the uploader, no move" not grep -q 'M) Move' <<< "$out"
 out=$(printf 'q' | bob file_areas)
 check "many areas: a page" has 'Area 12' "$out"
 check "many areas: not the rest" not grep -q 'Area 13' <<< "$out"
-check "many areas: more" has 'N) More' "$out"
-out=$(printf 'nq' | bob file_areas)
+check "many areas: more" has 'Space) More' "$out"
+out=$(printf ' q' | bob file_areas)
 check "many areas: next page" has 'Area 14' "$out"
 out=$(printf '14\nq' | bob file_areas)
 check "many areas: two digits" has 'Files: Area 14' "$out"

@@ -182,16 +182,19 @@ check "a killed request names the exit" has "$res/1-g6" "exit 137"
 
 # 8. Waiting applications: one list per sysop, from applications/incoming.
 mkdir -p "$root/applications/incoming"
-printf 'name=dave\nemail=x\n' > "$root/applications/incoming/1500000070-0a50511c-1111-2222-3333-444455556666.app"
+printf 'name=dave\nkey=ssh-ed25519 AAAA\nnote=Hej, jag \303\244r dave\tfr\303\245n G\303\266teborg\033[2J\nnote=second ignored\ncontact=dave@example.org\n' > "$root/applications/incoming/1500000070-0a50511c-1111-2222-3333-444455556666.app"
+printf 'name=lng\nnote=%s\xff\ncontact=%s\n' "$(printf 'a%.0s' {1..350})" "$(printf 'c%.0s' {1..150})" > "$root/applications/incoming/1500000090-0b50511c-1111-2222-3333-444455556666.app"
 printf 'name=e\033[31mve\nemail=x\n' > "$root/applications/incoming/1500000060-noid.app"
 ln -s /etc/passwd "$root/applications/incoming/1500000080-link.app"
 : > "$calls"
 apply
 lst=$root/state/apps-waiting
 check "apps list: written for sysop coffe" test -f "$lst/coffe"
-check "apps list: two applications, link skipped" eq "$(wc -l < "$lst/coffe")" 2
-check "apps list: oldest first, code from the file name" eq "$(tail -n 1 "$lst/coffe")" "$(printf '1500000070\t0a50511c\tdave')"
-check "apps list: no usable id gives -, control bytes stripped" eq "$(head -n 1 "$lst/coffe")" "$(printf '1500000060\t-\te31mve')"
+check "apps list: three applications, link skipped" eq "$(wc -l < "$lst/coffe")" 3
+check "apps list: note and contact, tab and escape stripped, UTF-8 kept" eq "$(sed -n 2p "$lst/coffe")" "$(printf '1500000070\t0a50511c\tdave\tHej, jag \303\244r davefr\303\245n G\303\266teborg[2J\tdave@example.org')"
+check "apps list: no usable id gives -, control bytes stripped, empty note and contact are -" eq "$(head -n 1 "$lst/coffe")" "$(printf '1500000060\t-\te31mve\t-\t-')"
+check "apps list: note cut at 300, contact at 100, bad UTF-8 dropped" eq "$(tail -n 1 "$lst/coffe" | awk -F'\t' '{print length($4), length($5)}')" "300 100"
+check "apps list: five columns on every line" eq "$(awk -F'\t' 'NF != 5' "$lst/coffe" | wc -l)" 0
 check "apps list: owned by the sysop (chown)" has "$calls" "chown"
 check "apps list: mode 0400" eq "$(stat -c %a "$lst/coffe")" 400
 printf 'x\n' > "$lst/oldsysop"
