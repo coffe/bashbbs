@@ -68,6 +68,28 @@ check "list: keys" seen "U) Upload   D) Download   A) Flag   O) Options   Q) Bac
 check "list: scp is only a side note" seen "Also works: scp -O -P 6464 FILE bbs-alice@bbs.piewpiew.se:"
 keys q; check "list: Q leaves" finish
 
+# 1b. R draws a QR code of the link, once, when qrencode is there; no offer without it.
+mkdir -p "$root/.qrbin"
+printf '#!/bin/sh\necho "QRSTUB $*"\n' > "$root/.qrbin/qrencode"; chmod +x "$root/.qrbin/qrencode"
+start PATH="$root/.qrbin:$PATH"
+seen "U) Upload" >/dev/null
+keys u
+check "qr: offered" seen "(R) QR code for your phone."
+keys r
+check "qr: drawn from the link" seen "QRSTUB -t UTF8 -m 2 -- https://"
+keys r
+sleep 0.5
+check "qr: only once" eq "$(grep -c QRSTUB "$out")" 1
+keys q; keys q; finish
+clear_tickets
+start PATH="/usr/bin:/bin"
+seen "U) Upload" >/dev/null
+keys u
+seen "Waiting for your browser" >/dev/null
+check "qr: not offered without qrencode" bash -c '! grep -q "(R) QR code" "$1"' _ "$out"
+keys q; keys q; finish
+clear_tickets
+
 # 2. U: a ticket, a link on its own line, Q always answers.
 start
 seen "U) Upload" >/dev/null

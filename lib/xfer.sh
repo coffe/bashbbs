@@ -42,13 +42,18 @@ xfer_wait() {
         rc=$?
         if (( rc == 0 )); then
             if [[ $c == [Qq] ]]; then XFER_OUTCOME=left; return 0; fi
+            if [[ $c == [Rr] && -n $XFER_QR ]]; then
+                # Light modules as blocks, so it reads on a dark screen; once per link.
+                qrencode -t UTF8 -m 2 -- "$XFER_QR" 2>/dev/null
+                XFER_QR=
+            fi
         elif (( rc <= 128 )); then
             return 1
         fi
     done
 }
 
-XFER_SEEN=0 XFER_OK=0 XFER_BAD=0
+XFER_SEEN=0 XFER_OK=0 XFER_BAD=0 XFER_QR=
 XFER_NEW_IDS=() XFER_NEW_NAMES=()
 
 # Prints the result lines not shown yet. Yes when the page has said it is finished.
@@ -204,9 +209,13 @@ xfer_no_link() {
 xfer_show_link() { # xfer_show_link <token> <minutes>
     echo "Open this link in your browser. It works for $2 minutes."
     echo
-    xfer_url "$1"
+    XFER_QR=$(xfer_url "$1")
+    echo "$XFER_QR"
     echo
     echo "Waiting for your browser... (Q) back to menu."
+    # A QR code only on request: at about 33x17 it does not fit beside the rest.
+    type -P qrencode >/dev/null || XFER_QR=
+    [[ -n $XFER_QR ]] && echo "(R) QR code for your phone."
     echo "The transfer goes on if you leave."
     echo
 }
