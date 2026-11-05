@@ -203,5 +203,13 @@ apply
 check "apps list: empty when none wait" eq "$(wc -l < "$lst/coffe")" 0
 check "apps list: a former sysop's list is removed" test ! -e "$lst/oldsysop"
 
+# 9. Accepted applications (applications/done) get their own list for the Users screen.
+mkdir -p "$root/applications/done"
+printf 'name=erin\nkey=ssh-ed25519 AAAA\nnote=Hi\tthere\ncontact=erin@example.org\n' > "$root/applications/done/1500000100-0c50511c-1111-2222-3333-444455556666.app"
+apply
+check "done list: written for sysop coffe" eq "$(cat "$root/state/apps-done/coffe" 2>/dev/null)" "$(printf '1500000100\t0c50511c\terin\tHithere\terin@example.org')"
+check "done list: mode 0400" eq "$(stat -c %a "$root/state/apps-done/coffe")" 400
+check "done list: waiting list untouched" eq "$(wc -l < "$lst/coffe")" 0
+
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

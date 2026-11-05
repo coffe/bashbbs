@@ -190,6 +190,18 @@ check "user detail: active" bash -c '[[ $1 == *"Status:"*active* ]]' _ "$out"
 check "user detail: call count" bash -c '[[ $1 == *"Calls:"*" 2"* ]]' _ "$out"
 check "user detail: key count and fingerprint" bash -c '[[ $1 == *"Keys:"*" 1"* && $1 == *SHA256:aaaa* ]]' _ "$out"
 check "user detail: quota shown" has "$out" "of 200.0 MB"
+check "user detail: no application on file" has "$out" "(not on file)"
+mkdir -p "$root/state/apps-done"
+printf '1500000010\tabcdef01\tbob\told note\told@example.org\n1500000020\tabcdef02\tbob\tI make \033[31mmusic on Amigas\tbob@example.org\n1500000030\tabcdef03\tghost\t-\t-\n' > "$root/state/apps-done/sys0p"
+out=$(printf '1q' | lib sysop_users)
+check "user list: contact from the accepted application" has "$out" "bob@example.org"
+check "user detail: newest application wins" not has "$out" "old@example.org"
+check "user detail: applied date" bash -c '[[ $1 == *"Applied:"*"$2"* ]]' _ "$out" "$(date -d @1500000020 '+%Y-%m-%d %H:%M')"
+check "user detail: note shown, escape stripped" bash -c '[[ $1 == *"I make"*"music on Amigas"* && $1 != *$'"'"'\033[31m'"'"'* ]]' _ "$out"
+check "user list: ghost without contact keeps the short row" not has "$(printf 'q' | lib sysop_users | grep Ghost)" "-"
+out=$(printf '2q' | lib sysop_users)
+check "user detail: empty fields say so" bash -c '[[ $1 == *"(none given)"* && $1 == *"(nothing written)"* ]]' _ "$out"
+rm -rf "$root/state/apps-done"
 out=$(printf '2q' | lib sysop_users)
 check "user detail: suspended account says suspended" bash -c '[[ $1 == *"Status:"*suspended* && $1 == *Unsuspend* ]]' _ "$out"
 

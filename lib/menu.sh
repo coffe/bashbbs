@@ -2542,6 +2542,22 @@ sysop_protected() { # sysop_protected <name>
 }
 
 # The detail screen of one account; the lines are plain text, one value per row.
+# What an account wrote when it applied, from state/apps-done/<me> (the root sorter's copy of
+# applications/done). The newest accepted application with that name wins. Sets APP_WHEN,
+# APP_NOTE and APP_CONTACT, all empty when there is none.
+app_info() { # app_info <name>
+    local ts code name note contact
+    APP_WHEN= APP_NOTE= APP_CONTACT=
+    [[ -r $BBS_ROOT/state/apps-done/$me ]] || return 1
+    while IFS=$'\t' read -r ts code name note contact; do
+        [[ $name == "$1" ]] || continue
+        APP_WHEN=$( [[ $ts =~ ^[0-9]+$ ]] && (( ts > 0 )) && date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null )
+        APP_NOTE=$(printf '%s' "$note" | safe); [[ $APP_NOTE == - ]] && APP_NOTE=
+        APP_CONTACT=$(printf '%s' "$contact" | safe); [[ $APP_CONTACT == - ]] && APP_CONTACT=
+    done < <(head -n 5000 "$BBS_ROOT/state/apps-done/$me" 2>/dev/null)
+    [[ -n $APP_WHEN$APP_NOTE$APP_CONTACT ]]
+}
+
 sysop_user_detail() { # sysop_user_detail <name>
     local n=$1 ent shell uid alias_ created first last calls keys=0 fp label bytes files
     local state=active
@@ -2581,6 +2597,18 @@ sysop_user_detail() { # sysop_user_detail <name>
             [[ $fp =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || continue
             printf '  %s %s\n' "$fp" "$(printf '%s' "$label" | safe)"
         done < "$BBS_ROOT/users/$n/keys.meta"
+    fi
+    if app_info "$n"; then
+        printf '%-14s %s\n' "Applied:" "${APP_WHEN:--}"
+        printf '%-14s %s\n' "Contact:" "${APP_CONTACT:-(none given)}"
+        if [[ -n $APP_NOTE ]]; then
+            echo "About:"
+            printf '%s\n' "$APP_NOTE" | python3 "$NEWS_LIB/wrap.py" "$(( $(term_width) - 2 ))" | sed 's/^/  /'
+        else
+            printf '%-14s %s\n' "About:" "(nothing written)"
+        fi
+    else
+        printf '%-14s %s\n' "Application:" "(not on file)"
     fi
     USER_STATE=$state
     USER_ALIAS=$alias_
@@ -2710,12 +2738,13 @@ sysop_mail_all() {
 }
 
 sysop_users() {
-    local f dir name tag n pick sel
+    local f dir name tag n pick sel w
     local -a accts
     while true; do
         accts=() n=0
         redraw
         local_header "Users"
+        w=$(( $(list_width) - 34 ))
         for f in "$BBS_ROOT"/users/*/profile; do
             [[ -f $f && ! -L $f ]] || continue
             dir=$(basename "$(dirname "$f")")
@@ -2724,7 +2753,11 @@ sysop_users() {
             grep -qx 'hidden=yes' "$f" && tag=hidden
             grep -qx -- "$dir" "$BBS_ROOT/sysops" 2>/dev/null && tag="${tag:+$tag, }sysop"
             n=$((n + 1)); accts[n]=$dir
-            printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$tag"
+            if (( w >= 10 )) && app_info "$dir" && [[ -n $APP_CONTACT ]]; then
+                printf '%2d) %-16s %-13s %s\n' "$n" "$(list_fit 16 "$name")" "$tag" "$(list_fit "$w" "$APP_CONTACT")"
+            else
+                printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$tag"
+            fi
         done
         echo
         (( n )) || { echo "No users."; pause; return; }

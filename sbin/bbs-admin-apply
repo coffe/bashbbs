@@ -60,6 +60,8 @@ fi
 QUEUE=$BBS_ROOT/queue/admin
 APPS_IN=$BBS_ROOT/applications/incoming
 APPS_OUT=$BBS_ROOT/state/apps-waiting
+APPS_DONE=$BBS_ROOT/applications/done
+APPS_DONE_OUT=$BBS_ROOT/state/apps-done
 RESULTS=$BBS_ROOT/state/admin-results
 REJECTED=$BBS_ROOT/drop/rejected
 ADMIN_LOG=$BBS_ROOT/state/admin.log
@@ -240,7 +242,8 @@ run_request() {
 }
 
 # write_apps_lists: the waiting applications, one list per sysop (0400, owned by that
-# sysop), in state/apps-waiting/<name>. Lines: "<unix time>\t<8-char code or ->\t<name>\t<note or ->\t<contact or ->".
+# sysop), in state/apps-waiting/<name>, and the accepted ones (applications/done) in
+# state/apps-done/<name>, so the Users screen can show what an account wrote when it applied. Lines: "<unix time>\t<8-char code or ->\t<name>\t<note or ->\t<contact or ->".
 # applications/incoming stays write-only for www-data, so this is how the menu sees it.
 # One field of an application file as one line of valid UTF-8 with no control
 # characters (tabs included, they separate the list columns), at most <chars> characters.
@@ -250,12 +253,12 @@ app_field() { # app_field <file> <key> [chars]
         | LC_ALL=C.UTF-8 sed -E "s/[^[:print:]]//g; s/^[[:space:]]+//; s/^(.{0,${3:-400}}).*/\\1/; s/[[:space:]]+\$//"
 }
 
-write_apps_lists() {
-    local f base ts uuid code name note contact list n uid tmp
-    [[ -d $APPS_IN && ! -L $APPS_IN ]] || return 0
-    [[ -d $APPS_OUT && ! -L $APPS_OUT ]] || install -d -m 0711 "$APPS_OUT" || return 1
+write_app_list() { # write_app_list <applications dir> <state list dir>
+    local in=$1 out=$2 f base ts uuid code name note contact list n uid tmp
+    [[ -d $in && ! -L $in ]] || return 0
+    [[ -d $out && ! -L $out ]] || install -d -m 0711 "$out" || return 1
     list=$TMPD/apps; : > "$list"
-    for f in "$APPS_IN"/*.app; do
+    for f in "$in"/*.app; do
         [[ -f $f && ! -L $f ]] || continue
         base=${f##*/}; base=${base%.app}
         ts=${base%%-*}; [[ $ts =~ ^[0-9]{1,20}$ ]] || ts=0
@@ -271,15 +274,20 @@ write_apps_lists() {
         [[ $n =~ $NAME_RE ]] || continue
         if (( ADMIN_TEST )) && [[ bbs-$n == "${BBS_TEST_OWNER:-}" ]]; then uid=$EUID
         else uid=$(id -u -- "bbs-$n" 2>/dev/null) || continue; fi
-        tmp=$(mktemp "$APPS_OUT/.lst.XXXXXX") || continue
-        cat -- "$list" > "$tmp" && chmod 0400 "$tmp" && "$CHOWN" "$uid" "$tmp" && mv -f -- "$tmp" "$APPS_OUT/$n" \
+        tmp=$(mktemp "$out/.lst.XXXXXX") || continue
+        cat -- "$list" > "$tmp" && chmod 0400 "$tmp" && "$CHOWN" "$uid" "$tmp" && mv -f -- "$tmp" "$out/$n" \
             || rm -f -- "$tmp"
     done < "$BBS_ROOT/sysops"
     # Someone who is no longer a sysop keeps no list.
-    for f in "$APPS_OUT"/*; do
+    for f in "$out"/*; do
         [[ -e $f || -L $f ]] || continue
         grep -qxF -- "${f##*/}" "$BBS_ROOT/sysops" || rm -f -- "$f"
     done
+}
+
+write_apps_lists() {
+    write_app_list "$APPS_IN" "$APPS_OUT"
+    write_app_list "$APPS_DONE" "$APPS_DONE_OUT"
 }
 
 handle_file() { # handle_file <queue path>
