@@ -191,6 +191,25 @@ check "top downloads: the name" grep -q 'told.zip' <<< "$out"
 check "top downloads: no description in it" not grep -q 'First of it' <<< "$out"
 out=$(printf 'q' | bob file_view "$line")
 check "view: the description, every line" grep -q 'Second of it' <<< "$out"
+out=$(printf 'q' | bob files_menu)
+check "list: the description, every line" has "$out" "Second of it"
+
+# The whole FILE_ID.DIZ in the list: a file with 10 lines fills the page (24 rows, room 14),
+# so the next one with 10 lines waits for N.
+dizdir=$(mktemp -d "$scratch/filesdiz.XXXXXX"); mkdir -p "$dizdir/published" "$dizdir/state" "$dizdir/home"
+for f in 1500002001-0000000a:older.lha:Old 1500002002-0000000b:newer.lha:New; do
+    IFS=: read -r id nm tag <<< "$f"
+    printf 'x' > "$dizdir/published/$id"
+    { printf 'user=bbs-alice\nname=%s\nsize=1\ndate=2026-11-01T00:00:00Z\n' "$nm"
+      for n in $(seq 1 10); do printf 'desc=%s diz line %02d\n' "$tag" "$n"; done; } > "$dizdir/published/$id.meta"
+done
+diz() { ( export BBS_ROOT="$dizdir" HOME="$dizdir/home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-bob TERM=dumb \
+          BASHBBS_COLOR=0 COLUMNS=100; source "$here/lib/menu.sh"; "$@" ); }
+out=$(printf 'q' | diz files_menu)
+check "diz list: first file shows all 10 lines" has "$out" "New diz line 10"
+check "diz list: the next file waits for the next page" not has "$out" "older.lha"
+out=$(printf 'nq' | diz files_menu)
+check "diz list: N shows the next file whole" has "$out" "Old diz line 10"
 
 # --- File areas
 areas() { fa_load; local i; for (( i = 0; i < ${#FA_SLUGS[@]}; i++ )); do printf '%s=%s=%s\n' "${FA_SLUGS[i]}" "${FA_TITLES[i]}" "${FA_TEXTS[i]}"; done; printf 'default=%s\n' "$FA_DEFAULT"; }

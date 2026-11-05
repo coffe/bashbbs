@@ -2142,10 +2142,15 @@ B M P W: jump   G: log out" || return
 }
 
 # The files of one area, the default area when none is given.
+# The description of a published file: its desc= lines (FILE_ID.DIZ), at most 10, made safe.
+file_desc_lines() { # file_desc_lines <id>
+    sed -n 's/^desc=//p' "$BBS_ROOT/published/$1.meta" 2>/dev/null | head -n 10 | safe
+}
+
 files_menu() { # files_menu [area]
     local area=${1:-} title
     local rows=() total start=0 next i row id user size date dls name desc w width isnew keys hint
-    local height room used need mark
+    local height room used need mark descs=() line
     while true; do
         fa_load
         fa_known "$area" || area=$FA_DEFAULT
@@ -2159,8 +2164,9 @@ files_menu() { # files_menu [area]
         (( start >= total )) && start=0
         width=$(list_width)
         w=$(( width - 40 ))
-        # Ten files always; a description takes a line more, so fewer may fit. The rest of
-        # the screen is 10 lines: top 3, foot 6, and one for the flag count.
+        # Ten files at most; each description line takes a line more, so fewer may fit. The
+        # first file on a page is always shown whole. The rest of the screen is 10 lines:
+        # top 3, foot 6, and one for the flag count.
         height=$(stty size 2>/dev/null | awk '{print $1}')
         [[ $height =~ ^[0-9]+$ ]] || height=24
         room=$(( height - 10 ))
@@ -2171,8 +2177,9 @@ files_menu() { # files_menu [area]
         fi
         for (( i = start; i < total && i < start + FILES_PAGE; i++ )); do
             IFS=$'\t' read -r id user size date dls name _ desc <<< "${rows[i]}"
-            need=1
-            [[ -n $desc ]] && need=2
+            descs=()
+            [[ -n $desc ]] && mapfile -t descs < <(file_desc_lines "$id")
+            need=$(( 1 + ${#descs[@]} ))
             (( i > start && used + need > room )) && break
             used=$(( used + need ))
             isnew=0
@@ -2188,7 +2195,9 @@ files_menu() { # files_menu [area]
             fi
             (( isnew )) && printf ' %s' "$(paint ACC '*')"
             echo
-            [[ -n $desc ]] && printf '     %s\n' "$(list_fit $(( width - 5 )) "$desc")"
+            for line in "${descs[@]}"; do
+                printf '     %s\n' "$(list_fit $(( width - 5 )) "$line")"
+            done
         done
         next=$i
         if (( ${#FLAGS[@]} )); then
@@ -2263,7 +2272,7 @@ file_view() { # file_view <row from files_rows>
         flags_load
         flagword=Flag
         flag_has "$id" && flagword=Unflag
-        mapfile -t descs < <(sed -n 's/^desc=//p' "$BBS_ROOT/published/$id.meta" 2>/dev/null | head -n 10 | safe)
+        mapfile -t descs < <(file_desc_lines "$id")
         fa_load
         areas=${#FA_SLUGS[@]}
         # A move is carried out while this screen is open, so the area comes from the .meta.

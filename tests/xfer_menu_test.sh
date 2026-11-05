@@ -368,7 +368,7 @@ clear_tickets
 start
 seen "2)" >/dev/null
 check "list: first line of the description" seen "Two line one"
-check "list: only the first line" not grep -q 'Two line two' "$out"
+check "list: every line of the description" seen "Two line two"
 keys 2
 check "view: every line of the description" seen "Two line two"
 check "view: F offered, not E or R on someone else's file" seen "D) Download   F) Flag   Q) Back"
