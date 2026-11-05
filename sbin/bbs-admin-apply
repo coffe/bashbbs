@@ -248,9 +248,16 @@ run_request() {
 # One field of an application file as one line of valid UTF-8 with no control
 # characters (tabs included, they separate the list columns), at most <chars> characters.
 # apply.cgi already keeps printable characters only; this is the second check.
+# The cut is done in bash: sed -E 's/^(.{0,300}).*/' in a UTF-8 locale took 16 s per call
+# on the Pi Zero (the bounded repeat makes a huge automaton).
 app_field() { # app_field <file> <key> [chars]
-    head -c 8192 -- "$1" | sed -n "s/^$2=//p" | head -n 1 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null \
-        | LC_ALL=C.UTF-8 sed -E "s/[^[:print:]]//g; s/^[[:space:]]+//; s/^(.{0,${3:-400}}).*/\\1/; s/[[:space:]]+\$//"
+    local v LC_ALL=C.UTF-8
+    v=$(head -c 8192 -- "$1" | sed -n "s/^$2=//p" | head -n 1 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null \
+        | sed 's/[^[:print:]]//g')
+    v=${v#"${v%%[![:space:]]*}"}
+    v=${v:0:${3:-400}}
+    v=${v%"${v##*[![:space:]]}"}
+    printf '%s' "$v"
 }
 
 write_app_list() { # write_app_list <applications dir> <state list dir>
