@@ -154,5 +154,51 @@ req f1 id=1-f1 action=alias-check name=bob
 apply BBS_TEST_OWNER=bbs-carol
 check "own old result may be replaced" has "$res/1-f1" "status=0"
 
+# 7. Key check: lengths by ${#}, not {m,n} (that regex took ~800 MB on a Pi 2 and was OOM-killed).
+long=$(head -c 3000 /dev/zero | tr '\0' 'A')
+req g1 id=1-g1 action=keys-add name=bob "key=ssh-rsa $long== big key"
+( ulimit -v 400000; apply )
+check "keys-add: a 3000-char key passes under 400 MB in time" has "$res/1-g1" "status=0"
+req g2 id=1-g2 action=keys-add name=bob "key=ssh-rsa $long$long$(head -c 2050 /dev/zero | tr '\0' A)"   # 8050 chars, request still under 8192 bytes
+apply
+check "keys-add: base64 over 8000 chars refused" has "$res/1-g2" "status=65"
+req g3 id=1-g3 action=keys-add name=bob 'key=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA===='
+apply
+check "keys-add: four = refused" has "$res/1-g3" "status=65"
+req g4 id=1-g4 action=keys-add name=bob 'key=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA bad;comment'
+apply
+check "keys-add: comment with ; refused" has "$res/1-g4" "status=65"
+req g5 id=1-g5 action=keys-add name=bob 'key=ss AAAAC3NzaC1lZDI1NTE5AAAA'
+apply
+check "keys-add: type under 3 chars refused" has "$res/1-g5" "status=65"
+# A run that dies (signal, OOM) is not reported as "unknown action".
+req g6 id=1-g6 action=alias-check name=bob
+env -u SUDO_USER BASHBBS_TEST=1 BBS_ROOT=$root BBS_TEST_OWNER=bbs-coffe BBS_TEST_EUID=0 \
+    BBS_SBIN=$sbin BBS_GETENT=$sbin/getent BBS_CHOWN=$sbin/chown bash -c '
+    source "$1"; run_request() { kill -9 $BASHPID; }; handle_file "$2"' _ \
+    "$here/sbin/bbs-admin-apply" "$root/queue/admin/g6.req" >>"$log" 2>&1
+check "a killed request is not reported as unknown action" has "$res/1-g6" "status=70"
+check "a killed request names the exit" has "$res/1-g6" "exit 137"
+
+# 8. Waiting applications: one list per sysop, from applications/incoming.
+mkdir -p "$root/applications/incoming"
+printf 'name=dave\nemail=x\n' > "$root/applications/incoming/1500000070-0a50511c-1111-2222-3333-444455556666.app"
+printf 'name=e\033[31mve\nemail=x\n' > "$root/applications/incoming/1500000060-noid.app"
+ln -s /etc/passwd "$root/applications/incoming/1500000080-link.app"
+: > "$calls"
+apply
+lst=$root/state/apps-waiting
+check "apps list: written for sysop coffe" test -f "$lst/coffe"
+check "apps list: two applications, link skipped" eq "$(wc -l < "$lst/coffe")" 2
+check "apps list: oldest first, code from the file name" eq "$(tail -n 1 "$lst/coffe")" "$(printf '1500000070\t0a50511c\tdave')"
+check "apps list: no usable id gives -, control bytes stripped" eq "$(head -n 1 "$lst/coffe")" "$(printf '1500000060\t-\te31mve')"
+check "apps list: owned by the sysop (chown)" has "$calls" "chown"
+check "apps list: mode 0400" eq "$(stat -c %a "$lst/coffe")" 400
+printf 'x\n' > "$lst/oldsysop"
+rm -f "$root/applications/incoming"/*.app
+apply
+check "apps list: empty when none wait" eq "$(wc -l < "$lst/coffe")" 0
+check "apps list: a former sysop's list is removed" test ! -e "$lst/oldsysop"
+
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

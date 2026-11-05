@@ -2409,7 +2409,7 @@ sysop_status() {
     echo
     printf 'Accounts:             %s\n' "$(getent passwd | grep -c '^bbs-' || true)"
     printf 'Posts, last day:      %s\n' "$(find "$BBS_ROOT/boards" -mindepth 2 -maxdepth 2 -name '*.msg' -mtime -1 2>/dev/null | wc -l)"
-    printf 'Applications waiting: %s\n' "$(find "$BBS_ROOT/applications/incoming" -maxdepth 1 -name '*.app' -type f 2>/dev/null | wc -l)"
+    printf 'Applications waiting: %s\n' "$(grep -c . "$BBS_ROOT/state/apps-waiting/$me" 2>/dev/null || echo 0)"
     pause
 }
 
@@ -2446,26 +2446,25 @@ admin_request() {
     [[ $status == 0 ]]
 }
 
+# The waiting applications come from state/apps-waiting/<me>, written by the root sorter
+# (applications/incoming is write-only for the web form). It is at most a minute old.
 sysop_applications() {
-    local f name ts when base uuid n pick
+    local ts code name when n pick
     local -a codes names
     while true; do
         codes=() names=() n=0
         redraw
         local_header "Applications"
-        while IFS= read -r f; do
+        while IFS=$'\t' read -r ts code name; do
             n=$((n + 1))
-            base=$(basename "$f" .app)
-            uuid=${base#*-}; uuid=${uuid//-/}
-            name=$(sed -n 's/^name=//p' "$f" | head -n 1 | safe)
-            ts=${base%%-*}
-            when=$( [[ $ts =~ ^[0-9]+$ ]] && date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?" )
-            codes[n]=; [[ $uuid =~ ^[0-9a-f]{8,}$ ]] && codes[n]=${uuid:0:8}
+            name=$(printf '%s' "$name" | safe)
+            when=$( [[ $ts =~ ^[0-9]+$ ]] && (( ts > 0 )) && date -d "@$ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?" )
+            codes[n]=; [[ $code =~ ^[0-9a-f]{8}$ ]] && codes[n]=$code
             names[n]=$name
             printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$when"
-        done < <(find "$BBS_ROOT/applications/incoming" -maxdepth 1 -name '*.app' -type f 2>/dev/null | sort)
+        done < <(head -n 200 "$BBS_ROOT/state/apps-waiting/$me" 2>/dev/null)
         if (( n == 0 )); then
-            echo "No applications waiting."
+            echo "No applications waiting. The list is updated about once a minute."
             pause
             return
         fi

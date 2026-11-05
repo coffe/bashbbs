@@ -5,6 +5,8 @@ Description=Wake the BashBBS admin sorter when a sysop request lands
 # A glob, not PathChanged: a request left here starts the sorter again. The sorter
 # removes every request it handles (or moves it to drop/rejected).
 PathExistsGlob=/srv/bashbbs/queue/admin/*.req
+# New or handled applications refresh the sysops' lists (state/apps-waiting).
+PathChanged=/srv/bashbbs/applications/incoming
 Unit=bbs-admin-apply.service
 
 [Install]

@@ -137,6 +137,8 @@ install -d -m 0755 /srv/bashbbs/state/keys-results /srv/bashbbs/etc
 # Each result is owned by its sender (0400); the directory cannot be listed.
 install -d -m 1733 /srv/bashbbs/queue/admin
 install -d -m 0711 /srv/bashbbs/state/admin-results
+# Waiting applications, one list per sysop, written by bbs-admin-apply (incoming is write-only).
+install -d -m 0711 /srv/bashbbs/state/apps-waiting
 keep_or_note "$src/etc/file-areas" /srv/bashbbs/etc/file-areas
 
 # Private boards: one meta file per board (owner, created). Sysops are listed

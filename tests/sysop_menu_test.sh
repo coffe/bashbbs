@@ -17,7 +17,7 @@ not() { ! "$@"; }
 [[ $(id -u) -ne 0 ]] || { echo "Run as a normal user, not root." >&2; exit 2; }
 
 root=$(mktemp -d "$scratch/sysop.XXXXXX")
-mkdir -p "$root"/{boards/general,boards/whatsup,applications/incoming,users/sys0p,users/bob,users/ghost,meta,home,bin}
+mkdir -p "$root"/{boards/general,boards/whatsup,applications/incoming,state/apps-waiting,users/sys0p,users/bob,users/ghost,meta,home,bin}
 printf 'sys0p\n' > "$root/sysops"   # login names without bbs-, as install.sh uses
 printf 'name=Sysop\n' > "$root/users/sys0p/profile"
 printf 'name=Bob\n' > "$root/users/bob/profile"
@@ -34,7 +34,7 @@ post() {
 post general 1500000100 old bbs-bob "Old post"
 post general 1500000400 gone bbs-bob "Removed post" deleted
 post whatsup 1500000300 new bbs-kitty "Newest post"
-printf 'name=alice\n' > "$root/applications/incoming/1500000050-alice.app"
+printf '1500000050\t-\talice\n' > "$root/state/apps-waiting/sys0p"   # the sorter's list, not incoming/
 
 # Stub systemctl: sshd-style units are fine, bbs-drop.timer is failed.
 cat > "$root/bin/systemctl" <<'EOF'
@@ -92,10 +92,13 @@ check "posts: body never shown" not has "$out" "SECRET BODY"
 out=$(printf '\n' | lib sysop_applications)
 check "applications: applicant listed" has "$out" "alice"
 check "applications: says how to decide" has "$out" "Number) Decide"
-rm -f "$root/applications/incoming"/*.app
+: > "$root/state/apps-waiting/sys0p"
 out=$(printf '\n' | lib sysop_applications)
 check "applications: empty message when none wait" has "$out" "No applications waiting."
-printf 'name=alice\n' > "$root/applications/incoming/1500000050-alice.app"
+printf '1500000050\t-\t\033[31mevil\n' > "$root/state/apps-waiting/sys0p"
+out=$(printf '\n' | lib sysop_applications)
+check "applications: control bytes in a name are made safe" bash -c '[[ $1 != *$'"'"'\033[31m'"'"'* ]]' _ "$out"
+printf '1500000050\t-\talice\n' > "$root/state/apps-waiting/sys0p"
 
 # 6. Users: hidden and sysop markers, no profile contents beyond the name.
 out=$(printf '\n' | lib sysop_users)
@@ -156,8 +159,7 @@ check "admin_request: timeout message" has "$out" "Queued, check Status later"
 check "admin_request: timeout leaves the .req queued" bash -c 'ls "$1"/*.req >/dev/null' _ "$root/noroot/q"
 
 # 8c. Applications: accept and reject need y; code comes from the file name.
-find "$root/applications/incoming" -name '*.app' -type f -delete
-printf 'name=carol\n' > "$root/applications/incoming/1500000060-0123abcd-1111-2222-3333-444455556666.app"
+printf '1500000060\t0123abcd\tcarol\n' > "$root/state/apps-waiting/sys0p"
 out=$(printf '1ay' | lib sysop_applications)
 check "applications: accept shows result" has "$out" "DONE apps-accept"
 check "applications: accept request has code" bash -c 'grep -qx "code=0123abcd" "$1"/seen/*.req && grep -qx "action=apps-accept" "$1"/seen/*.req' _ "$root"

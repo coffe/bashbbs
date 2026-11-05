@@ -58,6 +58,8 @@ else
 fi
 
 QUEUE=$BBS_ROOT/queue/admin
+APPS_IN=$BBS_ROOT/applications/incoming
+APPS_OUT=$BBS_ROOT/state/apps-waiting
 RESULTS=$BBS_ROOT/state/admin-results
 REJECTED=$BBS_ROOT/drop/rejected
 ADMIN_LOG=$BBS_ROOT/state/admin.log
@@ -71,7 +73,6 @@ ID_RE='^[0-9]{1,20}-[A-Za-z0-9]{1,32}$'
 NAME_RE='^[a-z][a-z0-9]{2,8}$'
 KOD_RE='^[0-9a-f]{4,36}$'
 FP_RE='^[A-Za-z0-9+/:=._-]{8,100}$'
-KEY_RE='^[a-z0-9@.-]{3,40} [A-Za-z0-9+/]{16,8000}={0,3}( [A-Za-z0-9 ._@+-]{1,80})?$'
 SYSTEM_NAMES=" news newsstatus "
 
 # Same binder as bbs-keys-apply: opens without following links, checks with
@@ -162,6 +163,19 @@ only_fields() {
 }
 
 ok_name() { [[ $R_name =~ $NAME_RE && $SYSTEM_NAMES != *" $R_name "* ]]; }
+
+# ok_key: "type base64 [comment]", the same shape bbs-keys accepts. Lengths are checked
+# with ${#}, not with {m,n} in the regex: glibc compiles {16,8000} into an automaton of
+# about 800 MB, which took minutes and was killed by the OOM killer on a Pi 2.
+ok_key() {
+    local t b c
+    (( ${#R_key} <= 8200 )) || return 1
+    [[ $R_key =~ ^([a-z0-9@.-]+)\ ([A-Za-z0-9+/]+)(=*)(\ (.*))?$ ]] || return 1
+    t=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]} c=${BASH_REMATCH[5]}
+    (( ${#t} >= 3 && ${#t} <= 40 && ${#b} >= 16 && ${#b} <= 8000 && ${#BASH_REMATCH[3]} <= 3 )) || return 1
+    [[ -z ${BASH_REMATCH[4]} ]] && return 0
+    (( ${#c} >= 1 && ${#c} <= 80 )) && [[ $c =~ ^[A-Za-z0-9\ ._@+-]+$ ]]
+}
 # Not yourself, not a sysop, not a system account (bbs-admin checks it again).
 # Used for every removal and for users enable, keys add stays open (a sysop may need a new key).
 ok_target() { ok_name && [[ $R_name != "$1" ]] && ! grep -qxF -- "$R_name" "$BBS_ROOT/sysops"; }
@@ -196,7 +210,7 @@ run_request() {
             ok_target "$who" || return 3
             argv=(users "${R_action#users-}" "$R_name") ;;
         keys-add)
-            only_fields name key && ok_name && [[ $R_key =~ $KEY_RE ]] || return 2
+            only_fields name key && ok_name && ok_key || return 2
             keyf=$(mktemp "$TMPD/key.XXXXXX") || return 2
             printf '%s\n' "$R_key" > "$keyf" || return 2
             argv=(keys add "$R_name" "$keyf") ;;
@@ -225,6 +239,39 @@ run_request() {
     return 0
 }
 
+# write_apps_lists: the waiting applications, one list per sysop (0400, owned by that
+# sysop), in state/apps-waiting/<name>. Lines: "<unix time>\t<8-char code or ->\t<name>".
+# applications/incoming stays write-only for www-data, so this is how the menu sees it.
+write_apps_lists() {
+    local f base ts uuid code name list n uid tmp
+    [[ -d $APPS_IN && ! -L $APPS_IN ]] || return 0
+    [[ -d $APPS_OUT && ! -L $APPS_OUT ]] || install -d -m 0711 "$APPS_OUT" || return 1
+    list=$TMPD/apps; : > "$list"
+    for f in "$APPS_IN"/*.app; do
+        [[ -f $f && ! -L $f ]] || continue
+        base=${f##*/}; base=${base%.app}
+        ts=${base%%-*}; [[ $ts =~ ^[0-9]{1,20}$ ]] || ts=0
+        uuid=${base#*-}; uuid=${uuid//-/}; code=-   # "-": IFS tab would collapse an empty field
+        [[ $uuid =~ ^[0-9a-f]{8} ]] && code=${uuid:0:8}
+        name=$(head -c 8192 -- "$f" | sed -n 's/^name=//p' | head -n 1 | tr -cd 'A-Za-z0-9._ -' | head -c 40)
+        printf '%s\t%s\t%s\n' "$ts" "$code" "$name" >> "$list"
+    done
+    sort -n -o "$list" -- "$list"
+    while IFS= read -r n; do
+        [[ $n =~ $NAME_RE ]] || continue
+        if (( ADMIN_TEST )) && [[ bbs-$n == "${BBS_TEST_OWNER:-}" ]]; then uid=$EUID
+        else uid=$(id -u -- "bbs-$n" 2>/dev/null) || continue; fi
+        tmp=$(mktemp "$APPS_OUT/.lst.XXXXXX") || continue
+        cat -- "$list" > "$tmp" && chmod 0400 "$tmp" && "$CHOWN" "$uid" "$tmp" && mv -f -- "$tmp" "$APPS_OUT/$n" \
+            || rm -f -- "$tmp"
+    done < "$BBS_ROOT/sysops"
+    # Someone who is no longer a sysop keeps no list.
+    for f in "$APPS_OUT"/*; do
+        [[ -e $f || -L $f ]] || continue
+        grep -qxF -- "${f##*/}" "$BBS_ROOT/sysops" || rm -f -- "$f"
+    done
+}
+
 handle_file() { # handle_file <queue path>
     local f=$1 copy out uid dev ino who rc outf now_id why
     copy=$TMPD/req; outf=$TMPD/out
@@ -243,8 +290,10 @@ handle_file() { # handle_file <queue path>
            log_row "$who" "rejected bad-field $R_action" ;;
         3) rc=77; echo "bbs-admin-apply: refusing: yourself, a sysop or a system account" > "$outf"
            log_row "$who" "rejected protected $R_action $R_name" ;;
-        *) rc=64; echo "bbs-admin-apply: unknown action" > "$outf"
+        4) rc=64; echo "bbs-admin-apply: unknown action" > "$outf"
            log_row "$who" "rejected unknown-action" ;;
+        *) rc=70; echo "bbs-admin-apply: the request failed inside the sorter (exit $why)" > "$outf"
+           log_row "$who" "failed $R_action exit=$why" ;;
     esac
     write_result "$who" "$uid" "$R_id" "$rc" "$outf"
     rm -f -- "$copy" "$outf"
@@ -265,3 +314,5 @@ for f in "$QUEUE"/*.req; do
     n=$((n + 1)); (( n <= MAX_PER_RUN )) || break
     handle_file "$f"
 done
+# Refreshed on every run: after accept/reject, by the timer, and when an application lands.
+write_apps_lists
