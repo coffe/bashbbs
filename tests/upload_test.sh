@@ -383,5 +383,18 @@ up BBS_UPLOAD_TEST_OWNER=bbs-alice
 check "area removed: nothing moves there" eq "$(area_of "$am")" music
 check "area removed: request gone" test ! -e "$areq"
 
+# A callers export: its snapshot and sent marker stay while fresh, go when old.
+X=EXPORTabcdefghijklmnop
+mkdir -p "$root/queue/xfer"
+: > "$root/queue/xfer/$X"; : > "$root/queue/xfer/$X.snap"; : > "$root/queue/xfer/$X.sent"
+: > "$root/queue/xfer/$X.other"
+up
+check "export: fresh snapshot kept" test -e "$root/queue/xfer/$X.snap"
+check "export: fresh sent marker kept" test -e "$root/queue/xfer/$X.sent"
+check "export: other names still removed" test ! -e "$root/queue/xfer/$X.other"
+up XFER_KEEP_SECS=0
+check "export: old snapshot removed" test ! -e "$root/queue/xfer/$X.snap"
+check "export: old sent marker removed" test ! -e "$root/queue/xfer/$X.sent"
+
 echo "passed=$pass failed=$fail"
 [[ $fail -eq 0 ]]

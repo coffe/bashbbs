@@ -431,7 +431,9 @@ expire_xfer() {
     find "$QUEUE/transfers" -maxdepth 1 -type f -name '.tmp-*' -mmin +60 -delete 2>/dev/null
     if [[ -d $XFER ]]; then
         while IFS= read -r -d '' rec; do
-            if [[ ! ${rec##*/} =~ ^[A-Za-z0-9_-]{22}$ || ! -f $rec || -L $rec ]] \
+            # A callers export keeps <token>.snap beside its ticket, and x.cgi leaves
+            # <token>.sent when it has been fetched; both go with the ticket's age.
+            if [[ ! ${rec##*/} =~ ^[A-Za-z0-9_-]{22}(\.snap|\.sent)?$ || ! -f $rec || -L $rec ]] \
                 || (( now - $(stat -c %Z -- "$rec") >= XFER_KEEP_SECS )); then
                 find "$rec" -delete
             fi
