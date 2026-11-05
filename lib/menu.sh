@@ -65,6 +65,12 @@ paint() {
     case $1 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; SUBJ) c=$C_SUBJ ;; BAD) c=$C_BAD ;; *) c= ;; esac
     printf '%s%s%s' "$c" "$2" "$C_RST"
 }
+# paint_v <var> HEAD|KEY|ACC|SUBJ|BAD <text>: like paint, into a variable (no subshell).
+paint_v() {
+    local c
+    case $2 in HEAD) c=$C_HEAD ;; KEY) c=$C_KEY ;; ACC) c=$C_ACC ;; SUBJ) c=$C_SUBJ ;; BAD) c=$C_BAD ;; *) c= ;; esac
+    printf -v "$1" '%s%s%s' "$c" "$3" "$C_RST"
+}
 # key <token> [label]: the key token in mint, then the label in the default colour.
 key() { paint KEY "$1"; [[ $# -gt 1 ]] && printf ' %s' "$2"; return 0; }
 # keyline <literal text>: prints the line with every "N)" / "Q)" token in mint.
@@ -1338,7 +1344,7 @@ read_mark_save() { # read_mark_save <board> <root-msgid> <epoch>
 # One thread-list row as plain text lines: "  3) subject wrapped         (4) *".
 # The count and the star sit at the end of the first line; the subject wraps to the room
 # left, later lines hang under it. Columns are counted by wrap.py, so å ä ö never split.
-thread_row() { # thread_row <number> <width> <suffix> <subject>
+thread_row_v() { # thread_row_v <number> <width> <suffix> <subject>: lines into TR_LINES, 1 if not simple
     # Plain text (printable ASCII and å ä ö) is wrapped here: python costs a quarter of a
     # second per row on a Pi 2 and 0.7 s on a Zero. Anything else goes to thread_row_py.
     if [[ $1 =~ ^[0-9]+$ && $2 =~ ^[0-9]+$ ]] && text_is_simple "$3" && text_is_simple "$4"; then
@@ -1351,8 +1357,18 @@ thread_row() { # thread_row <number> <width> <suffix> <subject>
         pad=$(( 10#$2 - ${#3} - ${#wt_lines[0]} ))
         (( pad < 1 )) && pad=1
         printf -v first '%*s' "$pad" ''
-        printf '%3d) %s%s%s\n' "$((10#$1))" "${wt_lines[0]}" "$first" "$3"
-        for line in "${wt_lines[@]:1}"; do printf '     %s\n' "$line"; done
+        TR_LINES=()
+        printf -v line '%3d) %s%s%s' "$((10#$1))" "${wt_lines[0]}" "$first" "$3"
+        TR_LINES+=("$line")
+        for line in "${wt_lines[@]:1}"; do TR_LINES+=("     $line"); done
+        return 0
+    fi
+    return 1
+}
+thread_row() { # thread_row <number> <width> <suffix> <subject>
+    local TR_LINES=() l
+    if thread_row_v "$@"; then
+        for l in "${TR_LINES[@]}"; do printf '%s\n' "$l"; done
         return 0
     fi
     thread_row_py "$@"
@@ -1391,24 +1407,32 @@ board_view() {
         mapfile -t rows < <(board_threads "$board" "$SEEN_PREV")
         pins_first "$board"
         roots=() counts=() news=()
-        local i=1 subject row suffix rest line cnt isnew
+        local i=1 subject row suffix rest line cnt isnew pv
+        local -a lines=()
         for row in "${rows[@]}"; do
             IFS=$'\t' read -r f cnt _ isnew <<< "$row"
             roots+=("$f") counts+=("$cnt") news+=("$isnew")
-            subject=$(post_hdr "$f" Subject)
-            [[ -n $(post_hdr "$f" Deleted) ]] && subject="(deleted)"
+            hdr_read "$f"
+            subject=${HDR[Subject]-}
+            [[ -n ${HDR[Deleted]-} ]] && subject="(deleted)"
             suffix="($cnt)"
             (( isnew )) && suffix+=" *"
             # Wrap on the plain text first, colour each finished line after: the number
             # in mint, the trailing * of a new thread in gold, the subject stays default.
-            while IFS= read -r line; do
+            if thread_row_v "$i" "$wrapw" "$suffix" "$subject"; then
+                lines=("${TR_LINES[@]}")
+            else
+                mapfile -t lines < <(thread_row_py "$i" "$wrapw" "$suffix" "$subject")
+            fi
+            for line in "${lines[@]}"; do
                 if (( COLOR )) && [[ $line =~ ^(\ *)([0-9]+\))(.*)$ ]]; then
                     rest=${BASH_REMATCH[3]}
-                    (( isnew )) && [[ $rest == *' *' ]] && rest="${rest% \*} $(paint ACC '*')"
-                    line="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}")$rest"
+                    if (( isnew )) && [[ $rest == *' *' ]]; then paint_v pv ACC '*'; rest="${rest% \*} $pv"; fi
+                    paint_v pv KEY "${BASH_REMATCH[2]}"
+                    line="${BASH_REMATCH[1]}$pv$rest"
                 fi
                 printf '%s\n' "$line"
-            done < <(thread_row "$i" "$wrapw" "$suffix" "$subject")
+            done
             echo
             i=$((i + 1))
         done
@@ -1464,12 +1488,13 @@ _thread_view() {
     mapfile -t files < <(board_threads "$board" "$SEEN_PREV" "$root")
     n=${#files[@]}
     (( n )) || return 0
-    for f in "${files[@]}"; do ids+=("$(post_hdr "$f" Msgid)"); done
+    for f in "${files[@]}"; do hdr_read "$f"; ids+=("${HDR[Msgid]-}"); done
     # The first new, active post; the file name starts with the publish epoch.
     if [[ -n $TV_TH ]]; then
         for (( i = 0; i < n; i++ )); do
             ep=$(basename "${files[i]}"); ep=${ep%%-*}
-            [[ -z $(post_hdr "${files[i]}" Deleted) && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )) && { k=$i; break; }
+            hdr_read "${files[i]}"
+            [[ -z ${HDR[Deleted]-} && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )) && { k=$i; break; }
         done
     fi
     while true; do
@@ -1477,9 +1502,9 @@ _thread_view() {
         redraw
         local_header "$(board_label "$board")" "[Q] Back"
         width=$(term_width)
-        author=$(post_hdr "$f" Author); date=$(local_time "$(post_hdr "$f" Date)")
+        hdr_read "$f"; author=${HDR[Author]-}; date=$(local_time "${HDR[Date]-}")
         head="#$((k + 1))/$n  $author  $date"
-        pid=$(post_hdr "$f" Parent); at=""
+        pid=${HDR[Parent]-}; at=""
         if [[ -n $pid ]]; then
             for (( i = 0; i < n; i++ )); do [[ ${ids[i]} == "$pid" ]] && at=$((i + 1)); done
             [[ -n $at ]] && head+="  · reply to #$at"
@@ -1507,7 +1532,39 @@ _thread_view() {
 }
 
 # One header value from a post file. Reads only up to the blank line after the headers.
-post_hdr() { sed '/^$/q' "$1" | sed -n "s/^$2: *//p" | head -n 1 | safe; }
+# hdr_read <file>: the headers of a post file into the global array HDR, without forking.
+# HDR[Key] is the first value of that key, as post_hdr used to print it: the headers end at
+# the first empty line (a line holding only CR does not end them), the spaces after "Key:"
+# are dropped, control characters are removed. A last line without newline counts.
+# Control characters as safe() sees them in C.UTF-8: C0, DEL, C1 (U+0080-U+009F) and U+2028/9,
+# written byte-wise so that invalid UTF-8 elsewhere in the value cannot disable them.
+HDR_CNTRL=$'@([[:cntrl:]]|\xc2[\x80-\x9f]|\xe2\x80[\xa8\xa9])'
+declare -gA HDR=()
+hdr_read() {
+    local LC_ALL=C line key val ext=0
+    shopt -q extglob && ext=1 || shopt -s extglob
+    HDR=()
+    {
+        while IFS= read -r line || [[ -n $line ]]; do
+            [[ -z $line ]] && break
+            [[ $line == *:* ]] || continue
+            key=${line%%:*}
+            [[ $key =~ ^[A-Za-z0-9_-]+$ ]] || continue
+            [[ -v HDR[$key] ]] && continue
+            val=${line#*:}
+            val=${val#"${val%%[! ]*}"}
+            HDR[$key]=${val//$HDR_CNTRL/}
+        done
+    } 2>/dev/null < "$1"
+    (( ext )) || shopt -u extglob
+    return 0
+}
+# One header value from a post file (same output as before: value and newline, or nothing).
+post_hdr() {
+    hdr_read "$1"
+    [[ -v HDR[$2] ]] && printf '%s\n' "${HDR[$2]}"
+    return 0
+}
 
 # Commands under an open post. Deleted posts and read-only boards have none.
 # Edit is for the author. Delete is for the author, the board owner and sysops.
@@ -1517,8 +1574,9 @@ post_actions() { # post_actions <board> <file>
     local board=$1 f=$2 cmds="" keys="Qq Pp" hint="Space: next  P: previous
 "
     local author
-    author=$(post_hdr "$f" Author)
-    if [[ -z $(post_hdr "$f" Deleted) ]] && ! is_readonly "$board"; then
+    hdr_read "$f"
+    author=${HDR[Author]-}
+    if [[ -z ${HDR[Deleted]-} ]] && ! is_readonly "$board"; then
         # $root is the thread being read, a local of _thread_view.
         if ! thread_closed "$board" "$root" || is_sysop; then
             cmds+="R) Reply"; keys+=Rr hint+="R: reply"
@@ -1913,7 +1971,7 @@ Q: back" local || return
         for f in "${files[@]}"; do
             mark=" "
             [[ $f == "$dir"/new/* ]] && mark="*"
-            row=$(printf '%3d) %s %s' "$i" "$mark" "$(list_fit "$width" "$(post_hdr "$f" Subject)" | safe)")
+            row=$(printf '%3d) %s %s' "$i" "$mark" "$(hdr_read "$f"; list_fit "$width" "${HDR[Subject]-}" | safe)")
             if (( COLOR )) && [[ $row =~ ^(\ *)([0-9]+\))\ (.)(.*)$ ]]; then
                 [[ ${BASH_REMATCH[3]} == '*' ]] && mark=$(paint ACC '*') || mark=${BASH_REMATCH[3]}
                 row="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}") ${mark}${BASH_REMATCH[4]}"
@@ -2539,10 +2597,11 @@ sysop_posts() {
     (( w < 10 )) && w=10
     while IFS=$'\t' read -r f b; do
         (( shown >= 15 )) && break
-        [[ -n $(post_hdr "$b/$f" Deleted) ]] && continue
+        hdr_read "$b/$f"
+        [[ -n ${HDR[Deleted]-} ]] && continue
         board=$(basename "$b")
-        author=$(post_hdr "$b/$f" Author); author=${author#bbs-}; author=${author%%@*}
-        subject=$(post_hdr "$b/$f" Subject)
+        author=${HDR[Author]-}; author=${author#bbs-}; author=${author%%@*}
+        subject=${HDR[Subject]-}
         printf '%-12s %-16s %s\n' "$(list_fit 12 "$board")" "$(list_fit 16 "$author")" "$(list_fit "$w" "$subject")"
         shown=$((shown + 1))
     done < <(find "$BBS_ROOT/boards" -mindepth 2 -maxdepth 2 -type f -name '*.msg' -printf '%f\t%h\n' 2>/dev/null \
@@ -3308,7 +3367,8 @@ new_board_posts() { # new_board_posts <since>
             pre=$(basename "$f"); pre=${pre%%-*}
             [[ $pre =~ ^[0-9]+$ ]] && (( 10#$pre > since )) || continue
             # A deleted post is a stub, not new activity.
-            [[ -z $(post_hdr "$f" Deleted) ]] && n=$((n + 1))
+            hdr_read "$f"
+            [[ -z ${HDR[Deleted]-} ]] && n=$((n + 1))
         done
     done
     printf '%d' "$n"
