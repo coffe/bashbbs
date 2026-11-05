@@ -4,7 +4,7 @@
 # queue/admin (1733: write only, sticky) and this script runs bbs-admin for it.
 # Started by bbs-admin-apply.path when a request lands, and by
 # bbs-admin-apply.timer every 60 s as a fallback.
-# Plan: thoughts/kristofer/plan-sysop-useradmin.md ("Behörighetsmodell").
+# Plan: thoughts/kristofer/plan-sysop-useradmin.md (permission model section).
 #
 # Request file queue/admin/<anything>.req, fixed key=value lines, each key at
 # most once, printable ASCII only, <= 8 kB:
