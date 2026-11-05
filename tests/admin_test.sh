@@ -155,6 +155,7 @@ check "users disable refuses an unknown account" rc_is "$rc" 1
 run users remove bob
 check "users remove without --ja changes nothing" not_has "$calls" "userdel bbs-bob"
 mkdir -p "$root/home/bbs-bob"; printf 'mail\n' > "$root/home/bbs-bob/.mail"
+mkdir -p "$root/users/bob"; printf 'name=bob\n' > "$root/users/bob/profile"
 run users remove bob --ja
 check "users remove calls userdel without -r" has "$calls" "userdel bbs-bob"
 kar=$(ls -d "$root"/_karantan-users-*/bob 2>/dev/null | head -n 1)
@@ -162,6 +163,8 @@ check "users remove removes the alias before userdel" has "$calls" "bbs-alias re
 check "users remove never uses userdel -r" not_has "$calls" "userdel -r"
 check "users remove moves the home to quarantine" test -f "$kar/home/.mail"
 check "users remove moves the key file to quarantine" test -f "$kar/keys"
+check "users remove moves users/<name> to quarantine" test -f "$kar/users/profile"
+check "users remove leaves no users/<name> behind" test ! -e "$root/users/bob"
 
 # 7. --as: only for root itself (the sorter), never through sudo or as a user
 echo carol >> "$root/sysops"

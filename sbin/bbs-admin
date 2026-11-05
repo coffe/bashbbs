@@ -21,9 +21,9 @@
 #   bbs-admin alias add|remove <name> [--ja]  short name for bbs-<name> (bbs-alias)
 #
 # Without --ja every change only prints what it would do and exits 0.
-# Nothing is deleted: a removed home dir and key file are moved to
-# _karantan-users-<stamp>/ under the BBS root. users/<name> stays, so a
-# removed name is not handed out again.
+# Nothing is deleted: a removed home dir, key file and users/<name> are
+# moved to _karantan-users-<stamp>/ under the BBS root. The name can then be
+# applied for again and starts with a fresh profile and counters.
 #
 # The sysop is the account sudo ran for ($SUDO_USER). It must be listed in
 # sysops. Requests are written as the sysop's own bbs-<name> account, so the
@@ -293,7 +293,7 @@ case $cmd in
                 account_exists "$name"
                 home=$("$GETENT" passwd "bbs-$name" | cut -d: -f6)
                 [[ $home == "$BBS_ROOT/home/"* ]] || die "home of bbs-$name is outside $BBS_ROOT/home"
-                need_ja "remove bbs-$name: disable, userdel (home and key moved to quarantine)"
+                need_ja "remove bbs-$name: disable, userdel (home, key and users/$name moved to quarantine)"
                 log_admin "users remove $name"
                 "$USERMOD" -s "$NOLOGIN" "bbs-$name" || die "usermod failed"
                 "$SBIN/bbs-alias" shell "$name" "$NOLOGIN" || die "alias usermod failed"
@@ -305,6 +305,9 @@ case $cmd in
                 install -d -m 0700 "$kar" || die "cannot create quarantine"
                 [[ -d $home ]] && mv -- "$home" "$kar/home"
                 [[ -f $BBS_ROOT/keys/bbs-$name ]] && mv -- "$BBS_ROOT/keys/bbs-$name" "$kar/keys"
+                if [[ -d $BBS_ROOT/users/$name && ! -L $BBS_ROOT/users/$name ]]; then
+                    mv -- "$BBS_ROOT/users/$name" "$kar/users" || die "cannot move users/$name to quarantine"
+                fi
                 echo "bbs-$name removed; quarantine: $kar"
                 ;;
             *) usage ;;
