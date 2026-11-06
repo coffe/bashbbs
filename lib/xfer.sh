@@ -44,9 +44,9 @@ xfer_wait() {
             if [[ $c == [Qq] ]]; then XFER_OUTCOME=left; return 0; fi
             if [[ $c == [Rr] && -n $XFER_QR ]]; then
                 # Light modules as blocks, so it reads on a dark screen; once per link.
-                # Warm gold (C_ACC) by Kristofer's wish, each line closed on its own.
+                # Warm orange (C_SUBJ) by Kristofer's wish, each line closed on its own.
                 while IFS= read -r qr; do
-                    printf '%s%s%s\n' "${C_ACC:-}" "$qr" "${C_RST:-}"
+                    printf '%s%s%s\n' "${C_SUBJ:-}" "$qr" "${C_RST:-}"
                 done < <(qrencode -t UTF8 -m 2 -- "$XFER_QR" 2>/dev/null)
                 XFER_QR=
             fi
