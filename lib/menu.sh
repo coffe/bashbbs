@@ -41,7 +41,7 @@ safe_rows() { LC_ALL=C.UTF-8 sed 's/[^[:print:]\t]//g'; }
 # Four roles, one meaning each (16-colour SGR; nothing else is ever emitted):
 #   C_HEAD 1;35 pink  identity: BBS name, screen titles, section names, rules
 #   C_KEY  1;36 mint  navigation: only the key token (1) N) [B] [Space] [y/N] >)
-#   C_ACC  1;33 gold  news: the * marker, [P] Mail (N), "N new"
+#   C_ACC  1;33 gold  news: the * marker, [P] Mail (N), "N new"; also the QR code (lib/xfer.sh)
 #   C_SUBJ 0;33 orange the subject line of an open post or mail
 #   C_BAD  1;31 red   a problem the sysop must see (a service that is down)
 #   text   no code    body text and metadata stay in the terminal's own colour
