@@ -26,7 +26,7 @@ T1=AAAAAAAAAAAAAAAAAAAAA1 T2=AAAAAAAAAAAAAAAAAAAAA2 TU=AAAAAAAAAAAAAAAAAAAAU1
 cgi() { local method=$1 token=$2 query=$3 body=${4:-/dev/null} length=""
     [[ -n ${4:-} ]] && length=$(stat -c %s -- "$4")
     env BASHBBS_TEST=1 BBS_ROOT="$root" BBS_UPLOAD_COMMON="${COMMON_FILE:-$here/lib/upload-common.sh}" \
-        BBS_XFER_TEST_OWNER="${OWNER-bbs-alice}" UPLOAD_MIN_FREE_KB=1 \
+        BBS_XFER_TEST_OWNER="${OWNER-bbs-alice}" UPLOAD_MIN_FREE_KB="${UPLOAD_MIN_FREE_KB:-1}" \
         REQUEST_METHOD="$method" PATH_INFO="/$token" QUERY_STRING="$query" \
         CONTENT_LENGTH="${LENGTH-$length}" REMOTE_ADDR=192.0.2.9 HTTP_X_FORWARDED_FOR=198.51.100.5 \
         python3 "$here/web/x.cgi" < "$body" > "$out" 2>>"$root/.err"
@@ -242,6 +242,18 @@ check "short body: 400" eq "$(status)" 400
 check "short body: nothing kept" eq "$(find "$root/webup/$TU" -name '*short*' | wc -l)" 0
 UPLOAD_USER_QUOTA=2 cgi PUT "$TU" "name=a.txt" "$ok"
 check "over quota: 413 before reading" eq "$(status)" 413
+# A sysop's link has no size limit and no quota (the free-space check still holds).
+TS=AAAAAAAAAAAAAAAAAAAAS1
+ticket "$TS" dir=up
+echo alice > "$root/sysops"
+UPLOAD_MAX_BYTES=2 cgi PUT "$TS" "name=big.txt" "$ok"
+check "sysop: over the size limit is taken" test -f "$root/webup/$TS/big.txt"
+UPLOAD_USER_QUOTA=2 UPLOAD_GLOBAL_QUOTA=2 cgi PUT "$TS" "name=full.txt" "$ok"
+check "sysop: over quota is taken" test -f "$root/webup/$TS/full.txt"
+UPLOAD_MIN_FREE_KB=999999999999 cgi PUT "$TS" "name=disk.txt" "$ok"
+check "sysop: a full disk still says no ($(status))" eq "$(status)" 413
+find "$root/webup/$TS" -mindepth 1 -delete
+mv "$root/sysops" "$root/sysops.off"
 
 TF=AAAAAAAAAAAAAAAAAAAAF1
 ticket "$TF" dir=up

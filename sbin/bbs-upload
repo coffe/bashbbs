@@ -145,7 +145,7 @@ handle() { # handle <file> <user>
     fi
     size=$(stat -c %s -- "$f")
     if (( size == 0 )); then reject "$f" "$u" "empty file"; return; fi
-    if (( size > UPLOAD_MAX_BYTES )); then reject "$f" "$u" "over size limit ($size bytes)"; return; fi
+    if (( size > UPLOAD_MAX_BYTES )) && ! ub_is_sysop "$u"; then reject "$f" "$u" "over size limit ($size bytes)"; return; fi
     if why=$(ub_check "$u" "$size"); then :; else reject "$f" "$u" "$why"; return; fi
 
     sum=$(sha256sum -- "$f" | cut -d' ' -f1)

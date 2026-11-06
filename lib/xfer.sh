@@ -232,8 +232,13 @@ xfer_upload() { # xfer_upload [area]
     if [[ -n $area ]] && (( ${#FA_SLUGS[@]} > 1 )); then
         printf '%-11s %s\n' "Area:" "$(fa_title "$area")"
     fi
-    printf '%-11s %s\n' "Per file:" "up to $(files_size "$UPLOAD_MAX_BYTES")"
-    printf '%-11s %s of %s\n' "Your files:" "$(files_size "$(ub_used "$login")")" "$(files_size "$UPLOAD_USER_QUOTA")"
+    if ub_is_sysop "$login"; then
+        printf '%-11s %s\n' "Per file:" "no limit (sysop)"
+        printf '%-11s %s\n' "Your files:" "$(files_size "$(ub_used "$login")")"
+    else
+        printf '%-11s %s\n' "Per file:" "up to $(files_size "$UPLOAD_MAX_BYTES")"
+        printf '%-11s %s of %s\n' "Your files:" "$(files_size "$(ub_used "$login")")" "$(files_size "$UPLOAD_USER_QUOTA")"
+    fi
     echo
     if ! why=$(ub_check "$login"); then
         echo "Uploads are closed right now: $why."

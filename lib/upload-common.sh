@@ -62,6 +62,13 @@ ub_free_kb() {
     df -Pk "$BBS_ROOT" 2>/dev/null | awk 'NR == 2 { print $4 }'
 }
 
+# ub_is_sysop <user>: listed in $BBS_ROOT/sysops (with or without bbs-). Sysops have no
+# size limit and no quota; the free-space check below still holds for them.
+ub_is_sysop() {
+    local n=${1#bbs-}
+    [[ -n $n ]] && grep -qsx -- "$n" "$BBS_ROOT/sysops"
+}
+
 # ub_check <user> <size>: prints why an upload of <size> bytes (0 = size not
 # known yet) must be refused and returns 1, or returns 0 when it may go ahead.
 ub_check() {
@@ -70,6 +77,10 @@ ub_check() {
     if [[ -n $free ]] && (( free < UPLOAD_MIN_FREE_KB )); then
         echo "disk nearly full"; return 1
     fi
+    if [[ -n $free ]] && (( free - size / 1024 < UPLOAD_MIN_FREE_KB )); then
+        echo "disk nearly full"; return 1
+    fi
+    ub_is_sysop "$u" && return 0
     if (( $(ub_used "$u") + size > UPLOAD_USER_QUOTA )); then
         echo "user quota exceeded"; return 1
     fi

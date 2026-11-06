@@ -58,6 +58,7 @@ MAX_SNAP = 4 << 20      # bytes of a callers snapshot
 MAX_SLOTS = 3           # transfers at the same time; the Pi Zero has one core
 MAX_NAME = 100          # bytes, same as sbin/bbs-upload
 MAX_SECS = 1800         # no single request runs longer than this
+SYSOP_SECS = 6 * 3600   # ...except on a sysop's link, which has no size limit
 CHUNK = 65536
 LIMIT_NAMES = ("UPLOAD_MAX_BYTES", "UPLOAD_USER_QUOTA", "UPLOAD_GLOBAL_QUOTA",
                "UPLOAD_MIN_FREE_KB", "XFER_TTL_DOWN", "XFER_TTL_UP")
@@ -382,15 +383,18 @@ def file_list(ticket):
          f"<ul>{''.join(rows)}</ul>")
 
 
-def quota_refusal(owner, size, limits):
+def quota_refusal(owner, size, limits, sysop=False):
     """The same checks as ub_check in lib/upload-common.sh, made before the body is read, so
     nobody sends 10 MB to hear no. sbin/bbs-upload checks again; this one only saves the wait."""
     try:
         vfs = os.statvfs(ROOT)
-        if vfs.f_bavail * vfs.f_frsize // 1024 < limits["UPLOAD_MIN_FREE_KB"]:
+        free_kb = vfs.f_bavail * vfs.f_frsize // 1024
+        if free_kb - size // 1024 < limits["UPLOAD_MIN_FREE_KB"]:
             return "The disk is nearly full."
     except OSError:
         return "The disk is nearly full."
+    if sysop:
+        return None     # sysops have no quota, only the free-space check
     used = mine = 0
     try:
         names = os.listdir(PUBLISHED)
@@ -460,10 +464,11 @@ def receive(ticket, query, limits):
     length = int(raw_length)
     if length == 0:
         return text("400 Bad Request", "That file is empty.")
-    if length > limits["UPLOAD_MAX_BYTES"]:
+    sysop = is_sysop(ticket.owner)
+    if length > limits["UPLOAD_MAX_BYTES"] and not sysop:
         mb = limits["UPLOAD_MAX_BYTES"] // 1048576
         return text("413 Payload Too Large", f"Files can be up to {mb} MB.")
-    why = quota_refusal(ticket.owner, length, limits)
+    why = quota_refusal(ticket.owner, length, limits, sysop)
     if why:
         return text("413 Payload Too Large", why)
     if take_slot() is None:
@@ -597,14 +602,17 @@ go.addEventListener('click', async () => {
 """
 
 
-def upload_page(limits):
-    mb = limits["UPLOAD_MAX_BYTES"] // 1048576
-    inner = (f"<p>Up to {MAX_FILES} files, {mb} MB each. Keep your BBS session open and it will "
+def upload_page(ticket, limits):
+    most = limits["UPLOAD_MAX_BYTES"]
+    each = f"{most // 1048576} MB each"
+    if is_sysop(ticket.owner):
+        most, each = 2 ** 53 - 1, "any size"    # a sysop's link has no size limit
+    inner = (f"<p>Up to {MAX_FILES} files, {each}. Keep your BBS session open and it will "
              "show the result too. The link works for 30 minutes.</p>"
              "<p><input id='files' type='file' multiple></p>"
              "<p><button id='go' type='button'>Upload</button></p>"
              "<p id='state' role='status'></p><ul id='list'></ul>")
-    page("200 OK", "Upload to the BBS", inner, UPLOAD_SCRIPT % limits["UPLOAD_MAX_BYTES"])
+    page("200 OK", "Upload to the BBS", inner, UPLOAD_SCRIPT % most)
 
 
 def main():
@@ -626,6 +634,8 @@ def main():
         return gone("404 Not Found", "This is not a valid link. Make a new one in the BBS.")
     if ticket == "expired":
         return gone("410 Gone", "This link has expired. Make a new one in the BBS.")
+    if is_sysop(ticket.owner):
+        signal.alarm(SYSOP_SECS)    # big files over the Zero's wifi take a while
     try:
         query = urllib.parse.parse_qs(os.environ.get("QUERY_STRING", ""), max_num_fields=4)
     except ValueError:
@@ -646,7 +656,7 @@ def main():
     if method == "POST" and "done" in query:
         return finish(ticket)
     if method in ("GET", "HEAD"):
-        return results(ticket) if "results" in query else upload_page(limits)
+        return results(ticket) if "results" in query else upload_page(ticket, limits)
     return text("405 Method Not Allowed", "This link is for uploads.", ["Allow: GET, HEAD, PUT, POST"])
 
 
