@@ -3884,6 +3884,22 @@ intro_run() {
 }
 
 # First screen after login. Sets nav_req: [Enter] main menu, or a quick key.
+# The Mortimer Twang art above the welcome screen, in the same purple as the other banners.
+# Shown only when the whole screen (art + welcome text) fits the terminal height.
+welcome_art() {
+    local f=$BBS_ROOT/etc/welcome.txt h rows=0
+    [[ -f $f && ! -L $f && -r $f ]] && (( $(stat -c %s "$f") <= ADS_MAX_BYTES )) || return 0
+    (( $(intro_width "$f") <= $(list_width) )) || return 0
+    h=$(intro_height "$f")
+    read -r rows _ < <(stty size 2>/dev/null) || true
+    [[ $rows =~ ^[0-9]+$ ]] && (( rows >= h + 12 )) || return 0
+    printf '%s' "$C_HEAD"
+    art_cat "$f"
+    printf '%s' "$C_RST"
+    [[ -z $(tail -c1 "$f") ]] || echo
+    return 0
+}
+
 welcome_screen() {
     local seen=$HOME/.bashbbs-seen prev=""
     prev=$(sed -n 's/^login=//p' "$seen" 2>/dev/null | head -n 1)
@@ -3894,6 +3910,7 @@ welcome_screen() {
     caller_queue
     while true; do
         redraw
+        welcome_art
         screen_header "Welcome, $me"
         echo "You are caller #$callno"
         echo
