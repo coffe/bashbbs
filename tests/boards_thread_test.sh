@@ -103,6 +103,14 @@ check "thread: #2/3 replies to #1, #3/3 replies to #2" bash -c "grep -q '#2/3.*r
 check "thread: P goes back" eq "$(grep -c '^#2/3' <<<"$v2")" 2
 check "thread: Space after the last post returns to the list" eq "$(grep -c '^  1) ' <<<"$v2")$(grep -c DONE <<<"$v2")" 21
 check "thread: key line" has "$out/v2.txt" '^R) Reply  Q) Back'
+# # and a number jump to that post; a number out of range only redraws.
+run_list "$out/g1.txt" 80 "" 0 --step 'Q) Back=>4' --step 'Go to=>#3' --step 'Go to=>#1' --step 'Go to=>#9' --step 'Go to=>q' --step 'New post=>q'
+g1=$(tr -d '\r' < "$out/g1.txt")
+check "goto: key line offers #) Go to" has "$out/g1.txt" '^\[Space\] Next  P) Prev  #) Go to'
+check "goto: #3 opens post 3, #1 goes back to post 1" eq "$(grep -c '^#3/3' <<<"$g1") $(grep -c '^#1/3' <<<"$g1")" "1 3"
+check "goto: back to the list afterwards" has "$out/g1.txt" DONE
+run_list "$out/g2.txt" 80 "" 0 --step 'Q) Back=>1' --step 'Prev=>q' --step 'Q) Back=>q'
+check "goto: a one-post thread has no #) Go to" not grep -q 'Go to' "$out/g2.txt"
 run_list "$out/v3.txt" 40 "" 0 --step 'Q) Back=>4' --step 'Prev=>q' --step 'Q) Back=>q'
 check "thread 40: no row wider than 40" fits "$out/v3.txt" 40
 run_list "$out/v4.txt" 80 "" 0 --step 'Q) Back=>3' --step 'Prev=>q' --step 'Q) Back=>q'

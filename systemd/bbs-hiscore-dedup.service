@@ -1,0 +1,8 @@
+[Unit]
+Description=Keep only each player's best dopewars high score
+# Every finished game wakes it; the default start limit would stop it after a busy evening.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bbs-hiscore-dedup

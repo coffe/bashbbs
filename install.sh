@@ -55,10 +55,16 @@ install -m 0755 "$src/bin/bbs-health" /usr/local/sbin/bbs-health
 # Multiplayer Hisingen Hustle: a private dopewars server on this host, reached only through the menu.
 install -m 0644 "$src/etc/dopewars.nft" /usr/local/lib/bashbbs/dopewars.nft
 install -m 0644 "$src/systemd/dopewars-server.service" /etc/systemd/system/dopewars-server.service
+# One line per name in the high score tables: keep each player's best game only.
+install -m 0755 "$src/sbin/bbs-hiscore-dedup" /usr/local/sbin/bbs-hiscore-dedup
+install -m 0644 "$src/systemd/bbs-hiscore-dedup.path" /etc/systemd/system/bbs-hiscore-dedup.path
+install -m 0644 "$src/systemd/bbs-hiscore-dedup.service" /etc/systemd/system/bbs-hiscore-dedup.service
 if [[ -x /usr/games/dopewars ]]; then
     id dopewars >/dev/null 2>&1 || useradd --system --home-dir /var/lib/dopewars --shell /usr/sbin/nologin dopewars
     systemctl daemon-reload
     systemctl enable --now dopewars-server.service
+    systemctl enable --now bbs-hiscore-dedup.path
+    /usr/local/sbin/bbs-hiscore-dedup || true
 else
     echo "dopewars not installed: multiplayer server skipped" >&2
 fi

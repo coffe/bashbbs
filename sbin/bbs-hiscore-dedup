@@ -1,0 +1,126 @@
+#!/usr/bin/python3
+"""Keep only each player's best score in the dopewars high score files.
+
+dopewars puts every finished game into its table, so one name can fill it.
+This runs as root from bbs-hiscore-dedup.path whenever a score file changes,
+and on each file it keeps the highest entry per name (case-insensitive).
+
+File format (dopewars 1.6, "DOPEWARS SCORES V.1"): a NUL-terminated header,
+then two tables of 18 entries (antique mode first, then normal). Each entry is
+name NUL, date NUL, money as decimal text NUL, and one byte that is 1 if the
+player died. An empty slot has an empty name and date.
+
+The file is rewritten in place (same inode): the multiplayer server keeps it
+open and reads it again from the start before each update. A file with no
+duplicates is not touched, so the rewrite does not wake the path unit forever.
+
+Usage: bbs-hiscore-dedup [FILE...]   (default: both BashBBS score files)
+"""
+import sys
+
+HEADER = b"DOPEWARS SCORES V.1"
+NUMHISCORE = 18
+DEFAULT_FILES = ["/var/games/dopewars.sco", "/var/lib/dopewars/dopewars.sco"]
+
+
+def parse(data):
+    """Return (antique, normal) entry lists, or None if the file is not one we know."""
+    fields = data.split(b"\0", 1)
+    if len(fields) < 2 or fields[0] != HEADER:
+        return None
+    rest = fields[1]
+    pos = 0
+    tables = []
+    for _ in range(2):
+        table = []
+        for _ in range(NUMHISCORE):
+            if pos >= len(rest):
+                break
+            entry = []
+            for _ in range(3):
+                end = rest.find(b"\0", pos)
+                if end < 0:
+                    return None  # cut off in the middle of an entry
+                entry.append(rest[pos:end])
+                pos = end + 1
+            if pos >= len(rest):
+                return None
+            entry.append(rest[pos])
+            pos += 1
+            table.append(entry)
+        tables.append(table)
+    if pos != len(rest):
+        return None
+    return tables
+
+
+def money(entry):
+    try:
+        return int(entry[2])
+    except ValueError:
+        return 0
+
+
+def dedup(table):
+    """Drop every entry whose name already appears higher up. Returns (table, changed)."""
+    seen = set()
+    kept = []
+    for entry in table:
+        name, date = entry[0], entry[1]
+        if not name and not date:
+            continue  # empty slot
+        key = name.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(entry)
+    # dopewars keeps the table sorted, best first; keep that order after the drops.
+    kept.sort(key=money, reverse=True)
+    changed = len(kept) != sum(1 for e in table if e[0] or e[1])
+    return kept, changed
+
+
+def encode(tables):
+    out = bytearray(HEADER + b"\0")
+    for table in tables:
+        for i in range(NUMHISCORE):
+            if i < len(table):
+                name, date, cash, dead = table[i]
+                out += name + b"\0" + date + b"\0" + cash + b"\0" + bytes([1 if dead else 0])
+            else:
+                out += b"\0\0\0\0"  # empty slot, as dopewars writes it
+    return bytes(out)
+
+
+def clean(path):
+    try:
+        f = open(path, "r+b")
+    except FileNotFoundError:
+        return 0
+    with f:
+        data = f.read()
+        tables = parse(data)
+        if tables is None:
+            if data.rstrip(b"\0") != HEADER:
+                print(f"{path}: not a dopewars V.1 score file, left alone", file=sys.stderr)
+                return 1
+            return 0  # header only: nothing has been played yet
+        results = [dedup(t) for t in tables]
+        if not any(changed for _, changed in results):
+            return 0
+        f.seek(0)
+        f.write(encode([t for t, _ in results]))
+        f.truncate()
+    print(f"{path}: kept the best score per name")
+    return 0
+
+
+def main(argv):
+    rc = 0
+    for path in argv[1:] or DEFAULT_FILES:
+        rc |= clean(path)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

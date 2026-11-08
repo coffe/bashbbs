@@ -77,7 +77,7 @@ key() { paint KEY "$1"; [[ $# -gt 1 ]] && printf ' %s' "$2"; return 0; }
 # Only for fixed strings written in this file, never for user text.
 keyline() {
     if (( ! COLOR )); then printf '%s\n' "$1"; return; fi
-    printf '%s\n' "$1" | sed -E "s/(^|[[:space:]])([0-9A-Za-z]\\))/\\1${C_KEY}\\2${C_RST}/g"
+    printf '%s\n' "$1" | sed -E "s/(^|[[:space:]])([0-9A-Za-z#]\\))/\\1${C_KEY}\\2${C_RST}/g"
 }
 
 prefs_load() {
@@ -1041,7 +1041,7 @@ boards_home() {
     while true; do
         unread_refresh
         redraw
-        screen_header "Boards" "[Q] Back"
+        banner_header boards Boards "[Q] Back"
         menu_item 1 "Public boards" "" "$( (( UNREAD_PUB )) && echo '*')"
         menu_item 2 "Private boards" "" "$( (( UNREAD_PRIV )) && echo '*')"
         echo
@@ -1067,7 +1067,7 @@ board_menu() { # board_menu [public|private]
     while true; do
         unread_refresh
         redraw
-        screen_header "$title" "[Q] Back"
+        banner_header boards "$title" "[Q] Back"
         board_order "$kind" boards
         local i=1
         for b in "${boards[@]}"; do
@@ -1526,6 +1526,7 @@ _thread_view() {
             2) ;;
             3) (( k + 1 < n )) && k=$((k + 1)) || return 0 ;;
             4) (( k > 0 )) && k=$((k - 1)) ;;
+            5) k=$((TV_GOTO - 1)) ;;
             *) return 0 ;;
         esac
     done
@@ -1568,8 +1569,10 @@ post_hdr() {
 
 # Commands under an open post. Deleted posts and read-only boards have none.
 # Edit is for the author. Delete is for the author, the board owner and sysops.
-# Space (next) and P (previous) move inside the thread.
-# Returns 0 for back to the list, 1 at end of input, 2 to redraw the post, 3 next, 4 previous.
+# Space (next) and P (previous) move inside the thread; # and a number jump to that post
+# ($n, the thread's post count, is a local of _thread_view; the number goes in TV_GOTO).
+# Returns 0 for back to the list, 1 at end of input, 2 to redraw the post, 3 next, 4 previous,
+# 5 go to post TV_GOTO.
 post_actions() { # post_actions <board> <file>
     local board=$1 f=$2 cmds="" keys="Qq Pp" hint="Space: next  P: previous
 "
@@ -1589,6 +1592,8 @@ post_actions() { # post_actions <board> <file>
     # Two lines: the full line does not fit in 40 columns.
     # Both lines are built first and written at once (a test harness reacts to "Prev").
     local l1="[Space] Next  P) Prev" l2="${cmds:+$cmds  }Q) Back"
+    if (( n > 1 )); then l1+="  #) Go to"; keys+='#'; hint="Space: next  P: previous  #: go to post
+${hint#*$'\n'}"; fi
     if (( COLOR )); then
         l1=$(keyline "$l1" | sed -E "s/\[Space\]/${C_KEY}[Space]${C_RST}/"); l2=$(keyline "$l2")
     fi
@@ -1600,6 +1605,10 @@ post_actions() { # post_actions <board> <file>
         '?') return 2 ;;
         ' ') return 3 ;;
         [Pp]) return 4 ;;
+        '#') printf '#'
+             read_key_raw || return 1
+             [[ $MKEY == [1-9] ]] && read_num "$n" || return 2
+             TV_GOTO=$NUM; return 5 ;;
         [Rr]) reply_to "$board" "$f" ;;
         [Ee]) edit_post "$board" "$f" ;;
         [Dd]) delete_post "$board" "$f" ;;
@@ -2156,6 +2165,25 @@ files_size() {
     else printf '%d.%d GB' $(( n / 1073741824 )) $(( n * 10 / 1073741824 % 10 )); fi
 }
 
+# A screen header with art above it: the top bar, etc/<name>.txt, then "== <title> ==".
+# Without the art file (or when it is too big or too wide) it is a plain screen_header.
+banner_header() { # banner_header <name> <title> [bar text]
+    local f=$BBS_ROOT/etc/$1.txt
+    if [[ -f $f && ! -L $f && -r $f ]] && (( $(stat -c %s "$f") <= ADS_MAX_BYTES )) \
+        && (( $(intro_width "$f") <= $(list_width) )); then
+        top_bar "[?] Help${3:+  $3}"
+        printf '%s' "$C_HEAD"   # the same purple as the piewpiew art
+        art_cat "$f"
+        printf '%s' "$C_RST"
+        [[ -z $(tail -c1 "$f") ]] || echo   # art without a final newline
+        echo
+        paint HEAD "== $2 =="; echo
+        echo
+    else
+        screen_header "$2" ${3:+"$3"}
+    fi
+}
+
 # The areas, with the number of files in each. One area: straight to its list.
 # Returns 1 at end of input.
 file_areas() {
@@ -2175,7 +2203,7 @@ file_areas() {
         done < <(files_rows)
         (( start >= total )) && start=0
         redraw
-        screen_header "Files" "[Q] Back"
+        if (( start == 0 )); then banner_header files Files "[Q] Back"; else screen_header "Files" "[Q] Back"; fi
         flags_load
         for (( i = start; i < total && i < start + AREAS_PAGE; i++ )); do
             area=${FA_SLUGS[i]}
@@ -3415,7 +3443,7 @@ wall_menu() {
         (( pages > 0 )) || pages=1
         (( page < pages )) || page=0
         redraw
-        screen_header "Wall"
+        if (( page == 0 )); then banner_header wall Wall; else screen_header "Wall"; fi
         if (( ${#newest[@]} == 0 )); then
             echo "No greetings yet."
             echo
@@ -3591,14 +3619,16 @@ count_text() { # count_text <n> <singular> <plural>
 #     <seconds> <file> [<narrow-file> [<caption-file> [<narrow-caption-file>]]]   (- = no narrow-file)
 # <file> may be a|b|c: one of them is picked at random for each login. It is shown as it is when the terminal is at least as wide as its widest line,
 # otherwise <narrow-file>; with no fitting file the screen is skipped. <caption-file>
-# is printed under the file with one empty line between. Lines are never wrapped,
-# centred or changed (a CR from a DOS file is dropped, empty lines at the end of the
-# art are not shown). Space ends a screen at once, any other key is ignored. File
+# is printed under the file with one empty line between, each of its lines centred on
+# the art shown above it (the spaces a caption line starts with do not matter). The art
+# itself is never wrapped or changed (a CR from a DOS file is dropped, empty lines at the
+# end are not shown). Space ends a screen at once, any other key is ignored. File
 # names are plain names in the intro directory.
 # A line "season <MMDD>-<MMDD> <file>" puts <file> above the first screen while today
 # (local time) is in the window, both days included; a window may run over New Year
 # (1220-0106). The rest of the year the line sleeps. The seasonal art is left out when it
-# is wider than the terminal, or when it and the first screen do not fit its height.
+# is wider than the terminal, or when it and the first screen do not fit its height. The
+# narrower of the seasonal art and the first screen is moved right to centre them.
 INTRO_MAX_BYTES=16384
 
 intro_file() { # intro_file <name>: prints the path when it is a plain, small file
@@ -3675,19 +3705,138 @@ intro_height() {
     art_raw "$1" | ansi_strip | awk '/[^[:space:]]/ { n = NR } END { print n + 0 }'
 }
 
-intro_show() { # intro_show <file>: the art as it is, without the empty lines at its end
-    art_raw "$1" | ansi_out | awk '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s\n", b, $0; b = "" }'
+intro_show() { # intro_show <file> [<shift>]: the art as it is, without the empty lines at its end
+    # <shift> spaces go in front of every line, so the art keeps its own shape.
+    art_raw "$1" | ansi_out | awk -v pad="$(printf '%*s' "${2:-0}" '')" \
+        '/^[[:space:]]*$/ { b = b $0 "\n"; next } { printf "%s%s%s\n", b, pad, $0; b = "" }'
     printf '\033[0m'
 }
 
+# intro_mid <file>: twice the column where the visible art is centred, i.e. its first
+# used column plus its last (spaces on the left of every line and on the right do not
+# count). Twice, so that odd widths need no fractions. Counted in bash, by characters:
+# awk on the Pi (mawk) counts UTF-8 bytes.
+intro_mid() {
+    local LC_ALL=C.UTF-8 line t left=-1 right=0 lead
+    while IFS= read -r line || [[ -n $line ]]; do
+        t=${line%"${line##*[![:space:]]}"}
+        [[ -n $t ]] || continue
+        lead=${t%%[![:space:]]*}
+        (( left < 0 || ${#lead} < left )) && left=${#lead}
+        (( ${#t} > right )) && right=${#t}
+    done < <(art_raw "$1" | ansi_strip | tr '\t' ' ')
+    (( left < 0 )) && left=0
+    echo $(( left + right ))
+}
+
+# intro_caption <file> <mid> <cols>: the caption with each line centred on <mid> (as
+# from intro_mid). The spaces a line starts with are replaced; colour codes in front of
+# them are kept. A line never starts left of column 0 or runs past <cols>.
+intro_caption() {
+    local LC_ALL=C.UTF-8 line pre rest vis pad re=$'^(\e\\[[0-9;?]*[A-Za-z])'
+    while IFS= read -r line || [[ -n $line ]]; do
+        pre="" rest=$line
+        while :; do
+            if [[ $rest =~ $re ]]; then pre+=${BASH_REMATCH[1]}; rest=${rest:${#BASH_REMATCH[1]}}
+            elif [[ $rest == [[:space:]]* ]]; then rest=${rest:1}
+            else break; fi
+        done
+        vis=$(printf '%s' "$rest" | ansi_strip)
+        vis=${vis%"${vis##*[![:space:]]}"}
+        if [[ -z $vis ]]; then printf '%s\n' "$pre$rest"; continue; fi
+        pad=$(( ($2 - ${#vis}) / 2 ))
+        (( pad + ${#vis} > $3 )) && pad=$(( $3 - ${#vis} ))
+        (( pad < 0 )) && pad=0
+        printf '%s%*s%s\n' "$pre" "$pad" '' "$rest"
+    done < <(art_raw "$1" | ansi_out | tr '\t' ' ')
+}
+
+# intro_anim <file> [<hold secs>]: the art drawn top to bottom, a few characters at a
+# time, in orange; then the greeting under it (same left column), in a lighter orange. Any key finishes the
+# drawing at once. Builtins only (no fork per tick), so it is cheap on a Pi Zero.
+# Returns 0 when drawn, 1 when it does not fit (nothing shown), 2 when the input is gone.
+INTRO_ANIM_TEXT="... hello sailor, stay a while and listen..."
+INTRO_ANIM_MARGIN=3  # columns from the left edge to the art and the greeting
+INTRO_ANIM_TICKS=110   # about 2.5 s in all
+intro_anim() {
+    local LC_ALL=C.UTF-8 f=$1 hold=${2:-4} cols rows h w pad line ch buf o="" l="" r="" n c total=0 fast=0 st=0 i
+    local -a lines
+    [[ $hold =~ ^[0-9]+$ ]] || hold=4
+    cols=$(list_width)
+    rows=$(stty size 2>/dev/null | awk '{print $1}')
+    [[ $rows =~ ^[0-9]+$ ]] || rows=24
+    h=$(intro_height "$f") w=$(intro_width "$f")
+    (( w <= cols && h <= rows )) || return 1
+    mapfile -t lines < <(art_raw "$f" | ansi_strip | tr '\t' ' ' | head -n "$h")
+    for line in "${lines[@]}"; do
+        buf=${line//[[:space:]]/}
+        total=$(( total + ${#buf} ))
+    done
+    c=$(( (total + INTRO_ANIM_TICKS - 1) / INTRO_ANIM_TICKS )); (( c >= 1 )) || c=1
+    if (( COLOR )); then
+        # 256 colours where the terminal has them; else brown and yellow, the ANSI oranges.
+        if [[ ${TERM:-} == *256color* || ${TERM:-} == xterm* || ${TERM:-} == syncterm* ]]; then
+            o=$'\033[38;5;208m' l=$'\033[38;5;215m'
+        else
+            o=$'\033[0;33m' l=$'\033[1;33m'
+        fi
+        r=$'\033[0m'
+    fi
+    # The art sits INTRO_ANIM_MARGIN columns in from the left edge (its own empty left
+    # margin is cut off); the shape is unchanged. The greeting starts at the same column.
+    local lead=-1
+    for line in "${lines[@]}"; do
+        [[ $line == *[![:space:]]* ]] || continue
+        buf=${line%%[![:space:]]*}
+        (( lead < 0 || ${#buf} < lead )) && lead=${#buf}
+    done
+    (( lead -= INTRO_ANIM_MARGIN )); (( lead >= 0 )) || lead=0
+    for i in "${!lines[@]}"; do lines[i]=${lines[i]:$lead}; done
+    drain_input; redraw
+    printf '\033[?25l%s' "$o"
+    for line in "${lines[@]}"; do
+        line=${line%"${line##*[![:space:]]}"}
+        buf="" n=0
+        for (( i = 0; i < ${#line}; i++ )); do
+            ch=${line:i:1}
+            buf+=$ch
+            [[ $ch == ' ' ]] && continue
+            if (( ++n >= c )); then
+                printf '%s' "$buf"; buf="" n=0
+                (( fast )) && continue
+                if IFS= read -rsn1 -t 0.02 _; then fast=1
+                elif (( $? <= 128 )); then printf '%s\033[?25h' "$r"; return 2; fi
+            fi
+        done
+        printf '%s\n' "$buf"
+    done
+    pad=$INTRO_ANIM_MARGIN
+    (( h + 2 <= rows )) && echo
+    printf '%s%*s%s%s\033[?25h' "$l" "$pad" '' "$INTRO_ANIM_TEXT" "$r"
+    # Hold: any key goes on to the next screen.
+    local end=$(( SECONDS + hold ))
+    while (( SECONDS < end )); do
+        if IFS= read -rsn1 -t 0.25 _; then break
+        elif (( $? <= 128 )); then return 2; fi
+    done
+    return 0
+}
+
 intro_run() {
-    local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols rows f w c s need shown=0 season=""
+    local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols rows f w c s need shown=0 season="" mid smid fshift sshift nstatic=0 st
     [[ -t 0 && -t 1 && -r $conf ]] || return 0
     cols=$(list_width)
     rows=$(stty size 2>/dev/null | awk '{print $1}')
     [[ $rows =~ ^[0-9]+$ ]] || rows=24
     season=$(intro_season "$conf") || season=""
     while read -r -u 3 secs file narrow caption ncaption extra; do
+        if [[ $secs == anim ]]; then   # anim <file> [<hold secs>]: drawn line by line, in orange
+            f=$(intro_file "${file:--}") || continue
+            intro_anim "$f" "$narrow"; st=$?
+            (( st == 2 )) && return 0
+            (( st == 0 )) && shown=1
+            continue
+        fi
         [[ $secs =~ ^[0-9]+$ ]] && (( secs >= 1 && secs <= 60 )) || continue
         f=$(intro_file "$(intro_pick "${file:-}")") || continue
         w=$(intro_width "$f")
@@ -3703,20 +3852,31 @@ intro_run() {
         fi
         (( shown )) && drain_input
         redraw
-        # Seasonal art above the first screen only, when it fits.
-        if [[ -n $season ]] && (( ! shown )); then
+        mid=$(intro_mid "$f") fshift=0
+        # Seasonal art above the first screen only, when it fits. The narrower of the
+        # two is moved right so both are centred on the same column.
+        if [[ -n $season ]] && (( ! nstatic )); then
             s=$season; season=""
             need=$(( $(intro_height "$s") + $(intro_height "$f") ))
             [[ -n $c ]] && need=$(( need + 1 + $(intro_height "$c") ))
-            (( $(intro_width "$s") <= cols && need <= rows )) && intro_show "$s"
+            if (( $(intro_width "$s") <= cols && need <= rows )); then
+                smid=$(intro_mid "$s") sshift=0
+                if (( smid > mid )); then fshift=$(( (smid - mid) / 2 ))
+                    (( w + fshift > cols )) && fshift=$(( cols - w ))
+                else sshift=$(( (mid - smid) / 2 ))
+                    (( $(intro_width "$s") + sshift > cols )) && sshift=$(( cols - $(intro_width "$s") ))
+                fi
+                intro_show "$s" "$sshift"
+                mid=$(( mid + 2 * fshift ))
+            fi
         fi
-        intro_show "$f"
+        intro_show "$f" "$fshift"
         if [[ -n $c ]]; then
             echo
-            art_raw "$c" | ansi_out
+            intro_caption "$c" "$mid" "$cols"
             printf '\033[0m\n'
         fi
-        shown=1
+        shown=1 nstatic=1
         intro_wait "$secs"; (( $? == 2 )) && return 0
     done 3< <(grep -v '^[[:space:]]*#' "$conf")   # fd 3: the key reads below use stdin
     (( shown )) && intro_swallow

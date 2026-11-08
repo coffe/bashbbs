@@ -1,0 +1,11 @@
+[Unit]
+Description=Wake the high score cleaner when a dopewars score file changes
+
+[Path]
+# Hisingen Hustle (single player) and Turf Wars (the multiplayer server).
+PathChanged=/var/games/dopewars.sco
+PathChanged=/var/lib/dopewars/dopewars.sco
+Unit=bbs-hiscore-dedup.service
+
+[Install]
+WantedBy=paths.target

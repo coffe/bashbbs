@@ -180,8 +180,38 @@ w=$(wc -L < "$root/etc/intro/halloween.txt")
 BASHBBS_TEST_TODAY=1101 TAIL=5 run 80 "" "$root/season-2nd.out"
 check "season: skull only once, not on the second screen" bash -c "[ \$(grep -c HaLooJen '$root/season-2nd.out') -eq 1 ]"
 
+# 6e. Captions are centred on the art above, whatever its width; colour codes kept.
+cdir=$(mktemp -d "$scratch/intro-centre.XXXXXX"); mkdir -p "$cdir/etc/intro"
+printf '  ####################\n  #  å°¦ art  #\n' > "$cdir/etc/intro/a.txt"       # columns 2..21: first + end = 2 + 22
+printf '            hi\n\n\033[1;33m   abcd\033[0m\n%s\n' "$(printf '%050d' 0)" > "$cdir/etc/intro/c.txt"
+check "intro_mid and intro_caption: centred per line, codes kept, clamped" bash -c "
+export BBS_ROOT='$cdir' BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 TERM=xterm; source '$here/lib/menu.sh'; COLOR=1
+m=\$(intro_mid '$cdir/etc/intro/a.txt'); [[ \$m == 24 ]] || { echo mid=\$m; exit 1; }
+out=\$(intro_caption '$cdir/etc/intro/c.txt' \"\$m\" 40)
+want=\$(printf '           hi\n\n\033[1;33m          abcd\033[0m')
+got=\${out%\$'\n'*}; [[ \$got == \"\$want\" ]] || { printf '%q\n%q\n' \"\$got\" \"\$want\"; exit 1; }
+last=\${out##*\$'\n'}; [[ \$last == 0* ]]   # wider than the terminal: starts at column 0"
+rm -rf "$cdir"
+
 # 7. The start loop calls intro_run before the welcome screen.
 check "start block: intro_run before welcome_screen" bash -c "grep -n -A2 -F '\${BASHBBS_TEST:-} ]]; then' '$here/lib/menu.sh' | tail -3 | tr '\n' ' ' | grep -q 'intro_run.*welcome_screen'"
+
+# 8. intro_anim: orange, the art unchanged, the greeting under it, any key finishes it.
+adir=$(mktemp -d "$scratch/anim.XXXXXX"); mkdir -p "$adir/etc/intro"
+printf '  .oOo.\n .o  Oo.\n  `oOo`\n' > "$adir/etc/intro/p.txt"
+anim() { # anim <keydelay|-> <term>: runs intro_anim on a pipe, prints the raw output and the time
+    ( [[ $1 != - ]] && sleep "$1" && echo x; sleep 6 ) | BBS_ROOT="$adir" BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 BASHBBS_COLOR=1 TERM=$2 bash -c "
+source '$here/lib/menu.sh'; COLOR=1; S=\$SECONDS; intro_anim '$adir/etc/intro/p.txt' 1; echo; echo \"rc=\$? t=\$((SECONDS-S))\"" 2>&1
+}
+anim - xterm-256color > "$adir/a.out"
+check "intro_anim: 256-colour orange, lighter orange greeting" bash -c "grep -q $'\033\\[38;5;208m' '$adir/a.out' && grep -q $'\033\\[38;5;215m' '$adir/a.out'"
+check "intro_anim: the art is drawn as it is, greeting under it" bash -c "sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' '$adir/a.out' | tr -d '\r' | head -4 | diff -q - <(printf '  .oOo.\n .o  Oo.\n  \`oOo\`\n  ... hello sailor, stay a while and listen...\n') >/dev/null || sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' '$adir/a.out' | tr -d '\r' | grep -q 'hello sailor, stay a while and listen'"
+check "intro_anim: cursor hidden while drawing, shown again" bash -c "grep -q $'\033\\\\[?25l' '$adir/a.out' && grep -q $'\033\\\\[?25h' '$adir/a.out'"
+anim - linux > "$adir/b.out"
+check "intro_anim: plain ANSI oranges on a 16-colour terminal" bash -c "grep -q $'\033\\[0;33m' '$adir/b.out' && grep -q $'\033\\[1;33m' '$adir/b.out'"
+anim 0.3 xterm > "$adir/c.out"
+check "intro_anim: a key during the hold goes on at once" bash -c "grep -q 'rc=0 t=[01]\$' '$adir/c.out'"
+rm -rf "$adir"
 
 echo "intro_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]
