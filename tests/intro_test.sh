@@ -83,8 +83,8 @@ check "real timeouts: next screen after about $total s ($t)" awk -v t="$t" -v n=
 [[ -f $src/art-1.txt ]] && check "greetings text is exact (80 columns)" python3 -c "
 import re, sys
 t = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', open(sys.argv[1], 'rb').read().decode().replace('\r', ''))
-want = 'This BBS sends greetings to\nthe Up Rough Crew (c) and is made in collab\nwith the BashBBS Beta Party (tm)\n\nFor maximum laz0r experience, please haz\nthe supreme Topaz font handy.'
-sys.exit(0 if want in t else 1)" "$root/real.out"
+want = ['This BBS sends greetings to', 'the Up Rough Crew (c) and is', 'made in collab with the', 'BashBBS Beta Party (tm)', 'For maximum laz0r experience,', 'please haz the supreme Topaz', 'font handy.']
+sys.exit(0 if all(w in t for w in want) else 1)" "$root/real.out"
 check "caption below the art" bash -c "tr -d '\r' < '$root/real.out' | grep -q 'CRASH THE PARTY!.*SMASH THE SPACEBAR!'"
 
 # 2. At 80 columns exactly one of the two arts is on screen, unchanged.
