@@ -7,3 +7,16 @@ devlog/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local scratch, downloads and working notes
+.claude/
+_quarantine/
+downloads/
+*.zip
+*.lha
+ascii.md
+bbs-reklam.md
+log.md
+nevidia_bashbbs_optimisera.md
+nvidia-bashbbs-*.md
+tests/demo.sh
