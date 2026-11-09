@@ -22,7 +22,7 @@ Anyway...
 This is very much a work in progress, and you're very much invited to poke
 around, break things (gently!), and help make it better.
 
-## Please tell me what you think!
+Please tell me what you think!
 
 Found a bug? Let me know.
 Got an idea? I'd love to hear it.
@@ -30,9 +30,9 @@ Wish there was a feature? Make a wish!
 Just want to say hi? Even better!
 
 
-# Here's a quick guide to finding your way around.
+Here's a quick guide to finding your way around.
 
-## The Main Menu
+The Main Menu
 
 1) Boards – Public and private discussions. Drop by The Pub for a chat, share
 interesting links in Shared News, or post upcoming events in What's up?!
@@ -49,14 +49,14 @@ records.
 
 6) My Account – Check your profile, manage SSH keys and change your settings.
 
-## A Few Things Worth Knowing
+A Few Things Worth Knowing
 
-- Press **?** for help on almost any screen.
-- Press **Q** to go back one step.
+- Press "?" for help on almost any screen.
+- Press "Q" to go back one step.
 - The top bar has shortcuts for Boards, Main, Mail, Wall and Goodbye. These work
 in most menus.
 - Uppercase and lowercase keys both work.
-- When writing a post or message, enter a single **.** on its own line to
+- When writing a post or message, enter a single "." on its own line to
 finish.
 - Posts, edits and deletions may take about a minute to appear.
 
@@ -64,7 +64,7 @@ You can start your own private board, invite other users and have your own
 little corner of the BBS.
 And don't forget to check your mail!
 
-## One Last Thing
+One Last Thing
 
 This is a hobby project, built for the fun of it. Things might change, features
 might appear, and occasionally something might break.
