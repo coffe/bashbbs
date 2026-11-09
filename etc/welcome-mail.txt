@@ -48,6 +48,8 @@ records.
 5) Mail – Send and receive private messages with other users.
 
 6) My Account – Check your profile, manage SSH keys and change your settings.
+   Item 4 there is the Manual: a short guide to every part of the BBS,
+   including how to upload and download files.
 
 A Few Things Worth Knowing
 

@@ -147,6 +147,9 @@ install -d -m 0711 /srv/bashbbs/state/admin-results
 install -d -m 0711 /srv/bashbbs/state/apps-waiting
 keep_or_note "$src/etc/file-areas" /srv/bashbbs/etc/file-areas
 keep_or_note "$src/etc/welcome-mail.txt" /srv/bashbbs/etc/welcome-mail.txt
+# Manual chapters (generated from docs/manual by docs/build-manual.py); always refreshed.
+install -d -m 0755 /srv/bashbbs/etc/manual
+for f in "$src"/etc/manual/*.txt; do install -m 0644 "$f" /srv/bashbbs/etc/manual/; done
 
 # Private boards: one meta file per board (owner, created). Sysops are listed
 # one name per line, without the bbs- prefix, and are added to every private board.

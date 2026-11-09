@@ -1,0 +1,13 @@
+# 5. Wall
+
+The Wall is where everybody leaves a short greeting for the rest of the
+callers. Each message is at most 140 characters, so make them count.
+
+- Open the Wall to read the latest messages, newest first.
+- N writes a greeting. Type one line and press Enter. An empty line
+  cancels.
+- Space shows the next page of older messages.
+- It is public. Anyone logged in can read it.
+
+It is the quickest way to say you were here. For longer talk use Boards,
+for something private use Mail.

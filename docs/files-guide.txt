@@ -1,3 +1,6 @@
+NOTE: the in-BBS Manual (My Account > Manual, chapters 11-14) is the main source;
+this file is kept in line with it.
+
                      FILES ON PIEWPIEW BBS - A SHORT GUIDE
                      =====================================
 
@@ -25,7 +28,7 @@ and how many times it has been downloaded, with the description under it.
 A + in front means you have flagged the file. A * means it is new.
 
   number  Open the file
-  N       More (next page)
+  Space   More (next page)
   U       Upload to this area
   D       Download
   A       Flag or unflag a file (C clears all flags)
@@ -65,7 +68,7 @@ the BBS session open to see how it goes:
 You can leave the upload screen with Q. The transfer goes on anyway.
 
 Limits:
-  - 10 MB per file, up to 20 files per link
+  - 10 MB per file (no limit for sysops), up to 20 files per link
   - 200 MB in total per user ("Your files: X of 200 MB" on the screen)
   - The same file twice is refused ("already on the BBS as NAME")
   - Empty files and names starting with a dot are refused
@@ -108,4 +111,4 @@ not shown. Use the web link when you want to see why.
 QUICK REFERENCE
 ---------------
   8 Files   U Upload   D Download   A/F Flag   E Describe   M Move
-  R Remove  O Options  N More       Q Back     ? Help
+  R Remove  O Options  Space More     Q Back     ? Help

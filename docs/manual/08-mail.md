@@ -1,0 +1,17 @@
+# 8. Mail
+
+Mail is private messages between users on this BBS. It does not go to or
+come from the outside world.
+
+- The main menu shows how many unread messages you have, e.g. (2 unread).
+- Inbox: read, reply to and delete messages.
+- Write: type the user's name (for example kitty), a subject, then the
+  text. End with a single . and confirm with y to send.
+- Sent: a copy of everything you sent is kept.
+- /cancel stops at any prompt.
+
+Replies keep the thread together. In My Account, Settings, you can choose
+whether mail is also shown as a reminder when you log in.
+
+New users get a welcome mail from the sysop. Do not forget to check your
+mail now and then.

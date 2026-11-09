@@ -1,0 +1,16 @@
+My Account
+Everything about you lives here.
+
+  1 Profile   Your name, your unique ID and when you joined. Other users
+              see parts of this in Fame & Glory.
+  2 SSH Keys  The keys that let you log in without a password.
+              A add a key, R remove one, N give it a name.
+              You can have several keys, for example one per computer.
+  3 Settings  C turns colour on or off. N turns the reply-mail reminder on
+              or off.
+
+Adding a second key before removing the first is the safe order, so you do
+not lock yourself out. If you do get locked out, write to the sysop from
+another key or through the contact given on the web page.
+
+  4 Manual    This manual. Also linked from the ? help and the welcome mail.

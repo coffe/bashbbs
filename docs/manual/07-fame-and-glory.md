@@ -1,0 +1,14 @@
+# 7. Fame & Glory
+
+Fame & Glory is the place for the people and the records of the BBS.
+
+  1 Users          everybody with an account
+  2 Last Callers   who logged in lately
+  3 Most Active    who posts and calls the most
+  4 BBS Records    the best numbers ever
+  5 Top Uploaders  who shared the most files
+  6 Top Downloads  the most popular files
+  7 Who's Online   who is on right now
+
+Open a user from the list to see their profile. Your own profile is edited
+under My Account.

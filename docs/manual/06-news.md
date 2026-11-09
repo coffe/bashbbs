@@ -1,0 +1,11 @@
+# 6. News
+
+News is collected automatically from sources around the world and
+sorted into groups. It is read-only: you cannot post here.
+
+- Pick a group, then an article.
+- Articles are shown in full text where possible, with the link at the top.
+- If something is worth talking about, take it to the Boards, for example
+  Shared News.
+
+News updates a few times a day, not live.

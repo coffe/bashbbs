@@ -490,9 +490,10 @@ my_account() {
         menu_item 1 "Profile"
         menu_item 2 "SSH Keys"
         menu_item 3 "Settings"
+        menu_item 4 "Manual"
         echo
         keyline "Q) Back"
-        menu_key "> " "123Qq" "1-3: pick a section
+        menu_key "> " "1234Qq" "1-4: pick a section (4: the Manual)
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -500,9 +501,65 @@ B M P W: jump   G: log out" || return
             1) account_profile ;;
             2) ssh_keys_menu ;;
             3) account_settings ;;
+            4) manual_menu ;;
             [Qq]) return ;;
         esac
         [[ -n $nav_req ]] && return
+    done
+}
+
+# ---- Manual: 15 chapters in $BBS_ROOT/etc/manual/NN.txt (line 1 = title) ------
+# Page 1 lists chapters 1-9 on keys 1-9, page 2 chapters 10-15 on keys 1-6.
+# N: page 2. Q: page 2 -> page 1, page 1 -> My Account, open chapter -> its page.
+manual_title() { head -n 1 "$BBS_ROOT/etc/manual/$(printf '%02d' "$1").txt" 2>/dev/null | safe; }
+
+manual_menu() {
+    local page=1 first count i keys
+    while true; do
+        if (( page == 1 )); then first=1; count=9; else first=10; count=6; fi
+        redraw
+        local_header "Manual" "[Q] Back"
+        for (( i = 0; i < count; i++ )); do
+            menu_item $(( i + 1 )) "Chapter $(( first + i )) - $(manual_title $(( first + i )))"
+        done
+        echo
+        if (( page == 1 )); then keyline "N) Next page   Q) Back"; keys="NnQq"; else keyline "Q) Back to page 1"; keys="Qq"; fi
+        menu_key "> " "$keys$(digit_keys "$count")" "Number: open that chapter
+$( (( page == 1 )) && echo 'N: page 2 (chapters 10-15)' || echo 'Q: back to page 1')
+Q: back" local || return
+        case $MKEY in
+            [Nn]) page=2 ;;
+            [Qq]) if (( page == 2 )); then page=1; else return; fi ;;
+            [1-9]) (( MKEY <= count )) && manual_chapter $(( first + MKEY - 1 )) ;;
+        esac
+    done
+}
+
+# Show one chapter, a screenful at a time. Space: more. Q: back to the manual page.
+manual_chapter() { # manual_chapter <number>
+    local f lines rows per pos=0 total
+    f="$BBS_ROOT/etc/manual/$(printf '%02d' "$1").txt"
+    [[ -r $f && ! -L $f ]] || { redraw; echo "Chapter missing."; pause; return; }
+    mapfile -t lines < <(tail -n +2 "$f" | safe)
+    total=${#lines[@]}
+    rows=$(stty size 2>/dev/null | awk '{print $1}'); [[ $rows =~ ^[0-9]+$ ]] || rows=24
+    per=$(( rows - 7 )); (( per < 8 )) && per=8
+    while true; do
+        redraw
+        local_header "Chapter $1 - $(manual_title "$1")" "[Q] Back"
+        printf '%s\n' "${lines[@]:pos:per}"
+        pos=$(( pos + per ))
+        echo
+        if (( pos < total )); then
+            keyline "Space) More   Q) Back"
+            menu_key "> " "Qq " "Space: next page
+Q: back to the manual" local || return
+            [[ $MKEY == [Qq] ]] && return
+        else
+            keyline "Q) Back"
+            menu_key "> " "Qq" "Q: back to the manual" local || return
+            return
+        fi
     done
 }
 
@@ -2078,7 +2135,7 @@ main_menu() {
         echo
         keyline "Q) Log out"
         local keys="12345678Qq"; sysop_menu_on && keys+=9
-        menu_key "> " "$keys" "1-8: pick a section
+        menu_key "> " "$keys" "1-8: pick a section (Manual: 6, then 4)
 9: Sysop (sysops only)
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }

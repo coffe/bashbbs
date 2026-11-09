@@ -1,0 +1,30 @@
+# 13. Uploading files
+
+1. Open the area the file belongs in and press U.
+2. You get a web link that works for 30 minutes. Open it in a browser,
+   pick your files and press Upload.
+3. Keep the BBS session open to see how it goes:
+     Testing NAME... OK
+     Rejected: <reason>
+   You can leave with Q; the transfer goes on anyway.
+
+Limits (check the screen, it shows your own numbers):
+- 10 MB per file and up to 20 files per link
+- 200 MB in total per user ("Your files: X of 200 MB")
+- The same file twice is refused ("already on the BBS as NAME")
+- Empty files and names starting with a dot are refused
+- Sysops have no size limit
+
+Names: anything except letters, digits, dot, dash and underscore becomes _.
+"My Demo.zip" becomes My_Demo.zip.
+
+Every file is checked for name, size, quota and duplicates, and zip and
+lha archives are checked to see that they open. This is NOT a virus scan,
+so be careful with what you download from others.
+
+Descriptions: a zip or lha with a FILE_ID.DIZ inside gets that text as its
+description. Without one the BBS asks for up to 3 lines of 60 characters.
+An empty line skips it. You can change it later with E.
+
+New files show up for everybody within a minute. There is no review queue,
+so share things you are happy to be named on.
