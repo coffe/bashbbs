@@ -420,8 +420,13 @@ show_help() { # show_help <text, lines separated by newlines>
     redraw
     local_header "Help"
     printf '%s\n' "$1"
-    paint_bar "[Any key] Back"; echo
+    if (( ${IN_MANUAL:-0} )); then
+        paint_bar "[Any key] Back"; echo
+    else
+        paint_bar "[H] Manual  [Any key] Back"; echo
+    fi
     read_key_raw || true   # redraw drained before the help was drawn
+    if [[ $MKEY == [Hh] ]] && ! (( ${IN_MANUAL:-0} )); then manual_menu; fi
     MKEY='?'
 }
 
@@ -515,6 +520,7 @@ manual_title() { head -n 1 "$BBS_ROOT/etc/manual/$(printf '%02d' "$1").txt" 2>/d
 
 manual_menu() {
     local page=1 first count i keys
+    local IN_MANUAL=1
     while true; do
         if (( page == 1 )); then first=1; count=9; else first=10; count=6; fi
         redraw

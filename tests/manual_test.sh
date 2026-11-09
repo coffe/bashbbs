@@ -54,5 +54,10 @@ check "page 2 has no key 7 (ignored)" has "$out/pg.txt" DONE
 # My Account item 4 and the ? help
 drive "$out/ma.txt" my_account "4) Manual=>4" "Next page   Q) Back=>q" "Q) Back=>q"
 check "My Account lists 4) Manual and opens it" bash -c "grep -q '^4) Manual' '$out/ma.txt' && grep -q '== Manual ==' '$out/ma.txt' && grep -q DONE '$out/ma.txt'"
+# ? help -> H opens the Manual, Q returns to the screen that asked
+drive "$out/hh.txt" my_account "4) Manual=>?" "Any key=>h" "Next page   Q) Back=>q" "4) Manual=>q"
+check "? then H opens the Manual page, Q returns to My Account" bash -c "grep -q '\[H\] Manual' '$out/hh.txt' && grep -q '== Manual ==' '$out/hh.txt' && grep -q DONE '$out/hh.txt'"
+drive "$out/hm.txt" manual_menu "Next page   Q) Back=>?" "Any key=>h" "Next page   Q) Back=>q"
+check "help inside the Manual does not offer [H]" bash -c "! grep -q '\[H\] Manual' '$out/hm.txt' && grep -q DONE '$out/hm.txt'"
 echo "pass $pass fail $fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

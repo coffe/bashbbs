@@ -568,7 +568,7 @@ def s_help(w):
         sc = last_screen(t)
         L = lines_of(sc)
         i = next(i for i, l in enumerate(L) if l == "== Help ==")
-        j = next(j for j, l in enumerate(L) if l == "[Any key] Back")
+        j = next(j for j, l in enumerate(L) if l.endswith("[Any key] Back"))
         body = [l for l in L[i + 2:j]]
         chk("5 help %s: at most %d lines (title + body)" % (nm, most), 1 + len(body) <= most and len(body) >= 1, repr(body))
         chk("5 help %s: every line at most 40 columns" % nm, all(cellw(l) <= min(40, w) for l in L), repr([l for l in L if cellw(l) > 40]))
