@@ -146,6 +146,7 @@ install -d -m 0711 /srv/bashbbs/state/admin-results
 # Waiting applications, one list per sysop, written by bbs-admin-apply (incoming is write-only).
 install -d -m 0711 /srv/bashbbs/state/apps-waiting
 keep_or_note "$src/etc/file-areas" /srv/bashbbs/etc/file-areas
+keep_or_note "$src/etc/welcome-mail.txt" /srv/bashbbs/etc/welcome-mail.txt
 
 # Private boards: one meta file per board (owner, created). Sysops are listed
 # one name per line, without the bbs- prefix, and are added to every private board.

@@ -1,0 +1,75 @@
+             .-----------.
+             | Välkommen |
+             |    to     |
+             |  BashBBS  |
+             '-----------'
+                 /\_/\
+                ( o.o )
+                 > ^ <
+
+
+One small step for a small computer!
+
+BashBBS runs on a Raspberry Pi Zero W. The original one. Not the Zero 2 W. Nope.
+The little old one!
+
+It's built almost entirely with tools that come baked into Debian. No fancy
+frameworks, no heavy dependencies.
+Well, except Fail2ban. That's not baked in.
+
+Anyway...
+
+This is very much a work in progress, and you're very much invited to poke
+around, break things (gently!), and help make it better.
+
+## Please tell me what you think!
+
+Found a bug? Let me know.
+Got an idea? I'd love to hear it.
+Wish there was a feature? Make a wish!
+Just want to say hi? Even better!
+
+
+# Here's a quick guide to finding your way around.
+
+## The Main Menu
+
+1) Boards – Public and private discussions. Drop by The Pub for a chat, share
+interesting links in Shared News, or post upcoming events in What's up?!
+
+2) Wall – Leave a short greeting for everyone. 140 characters, make them count!
+
+3) News – Automatically collected and curated news from around the world.
+Read-only, but you're welcome to discuss anything over on the boards.
+
+4) Fame & Glory – Meet the users, see who's been calling, and check out the BBS
+records.
+
+5) Mail – Send and receive private messages with other users.
+
+6) My Account – Check your profile, manage SSH keys and change your settings.
+
+## A Few Things Worth Knowing
+
+- Press **?** for help on almost any screen.
+- Press **Q** to go back one step.
+- The top bar has shortcuts for Boards, Main, Mail, Wall and Goodbye. These work
+in most menus.
+- Uppercase and lowercase keys both work.
+- When writing a post or message, enter a single **.** on its own line to
+finish.
+- Posts, edits and deletions may take about a minute to appear.
+
+You can start your own private board, invite other users and have your own
+little corner of the BBS.
+And don't forget to check your mail!
+
+## One Last Thing
+
+This is a hobby project, built for the fun of it. Things might change, features
+might appear, and occasionally something might break.
+If something seems odd, drop me a message.
+Make yourself at home, explore a little and say hello!
+Let the Beta Bash begin!
+
+/by SySop (coffe)

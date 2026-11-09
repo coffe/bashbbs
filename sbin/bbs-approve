@@ -38,6 +38,22 @@ case $cmd in
         # bbs-provision checks the name and the key again before it creates anything.
         /usr/local/sbin/bbs-provision "$name" "$tmpd/key.pub"
         mv -f "$src" "$APP/done/"
+
+        # Welcome mail from the sysop into the new account's inbox. The account is
+        # already made, so a failure here only warns. The text is etc/welcome-mail.txt.
+        wm=/srv/bashbbs/etc/welcome-mail.txt
+        if [[ -f $wm && ! -L $wm && -r $wm ]] && [[ $name =~ ^[a-z][a-z0-9]{2,8}$ ]]; then
+            {
+                printf 'Message-ID: <%s@bbs.localdomain>\n' "$(cat /proc/sys/kernel/random/uuid)"
+                printf 'Date: %s\n' "$(date -R)"
+                printf 'From: coffe@bbs.localdomain\n'
+                printf 'To: %s@bbs.localdomain\n' "$name"
+                printf 'Subject: Welcome to BashBBS!\n'
+                printf 'MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\n'
+                cat "$wm"
+            } | /usr/bin/env -i /usr/sbin/sendmail -i -f bbs-coffe "bbs-$name" ||
+                echo "warning: welcome mail to $name not queued" >&2
+        fi
         ;;
     *)
         echo "usage: bbs-approve list | accept <file> | reject <file>" >&2
