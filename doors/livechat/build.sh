@@ -18,7 +18,8 @@ fi
 
 objs=(ae_host ui_cells ae_chat ae_request ae_http ae_net ae_net_tls json_lite ae_dos
       ae_session ae_session_bbs ae_board_screen ae_usernote ae_chatprefs ui_ansi ui_chrome
-      ui_key ui_input ui_list ui_profile ui_screen ui_theme ae_dos_native)
+      ui_key ui_input ui_list ui_profile ui_screen ui_theme ae_dos_native ui_canvas ui_paint
+      ae_kitty)
 sources=("${objs[@]/#/$src/src/}")
 sources=("${sources[@]/%/.c}")
 
@@ -31,10 +32,17 @@ sed '/ae_req_put_json_string(char/,/^}/ s/if (\*p < 0x20) {/if (*p < 0x20 || *p 
 grep -q '\*p >= 0x80' "$patched/ae_request.c"
 sources=("${sources[@]/#$src\/src\/ae_request.c/$patched/ae_request.c}")
 
+# Every "is typing" signal is a blocking HTTPS request to the hub, about one a second
+# while typing, and the door reads no keys meanwhile. Keep the local echo row and the
+# other callers' typing rows, but never send our own.
+sed '/^static void typing_sync(void)/,/^}/ s/if (dm_thread.*return;$/return; \/* no outgoing typing signals *\//' \
+    "$src/examples/livechat/livechat.c" > "$patched/livechat.c"
+grep -q 'no outgoing typing signals' "$patched/livechat.c"
+
 gcc -std=c99 -O2 -D_DEFAULT_SOURCE -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
     -DLIVECHAT_CFG_PATH="\"$cfg\"" \
     -I"$src/include" -I"$src/src" -I"$src/examples/livechat" "${ssl_cflags[@]}" \
     "$here/ae_transport_bashbbs.c" "${sources[@]}" \
-    "$src/examples/livechat/livechat.c" "$src/examples/livechat/livechat_ui.c" \
+    "$patched/livechat.c" "$src/examples/livechat/livechat_ui.c" \
     "${ssl_libs[@]}" -o "$out"
 strip "$out"
