@@ -3720,6 +3720,8 @@ count_text() { # count_text <n> <singular> <plural>
 # (1220-0106). The rest of the year the line sleeps. The seasonal art is left out when it
 # is wider than the terminal, or when it and the first screen do not fit its height. The
 # narrower of the seasonal art and the first screen is moved right to centre them.
+# "anim <file> [<hold>]" draws art in orange (intro_anim); "boot <file> [<hold>]" plays
+# a text file as a green terminal boot sequence (intro_boot).
 INTRO_MAX_BYTES=16384
 
 intro_file() { # intro_file <name>: prints the path when it is a plain, small file
@@ -3913,6 +3915,90 @@ intro_anim() {
     return 0
 }
 
+# intro_boot <file> [<hold secs>]: a terminal boot sequence, in green. The text is the
+# file's own; the timing comes from what each line looks like, so the sysop changes the
+# text, the dots and the number of stars without touching this script:
+#   the first line         shown at once (bright)
+#   [*****] (+ any tail)   a progress bar, the stars filled one by one in about 0.8 s
+#   ... OK                 a line ending in OK: the text first, OK a moment later
+#   ending in ...          a longer pause after it, as if waiting for an answer
+#   starting with >>>      a dramatic pause before it, shown bright
+#   anything else          one line at a time, a short pause before each
+# The file is only ever printed (printf %s, colour codes stripped), never run.
+# Any key finishes the sequence at once and skips the hold. Builtins only in the loop.
+# Returns 0 when shown, 1 when it does not fit (nothing shown), 2 when the input is gone.
+INTRO_BOOT_BAR_MS=800   # time to fill the progress bar, whatever the number of stars
+intro_boot() {
+    local LC_ALL=C.UTF-8 f=$1 hold=${2:-1} cols rows h line fast=0 first=1 g="" b="" r="" n i step per pre tail stars
+    local -a lines
+    [[ $hold =~ ^[0-9]+$ ]] || hold=1
+    cols=$(list_width)
+    rows=$(stty size 2>/dev/null | awk '{print $1}')
+    [[ $rows =~ ^[0-9]+$ ]] || rows=24
+    h=$(intro_height "$f")
+    (( h >= 1 && $(intro_width "$f") <= cols && h <= rows )) || return 1
+    mapfile -t lines < <(art_raw "$f" | ansi_strip | tr -d '\000-\010\013-\037\177' | head -n "$h")
+    if (( COLOR )); then g=$'\033[0;32m' b=$'\033[1;32m' r=$'\033[0m'; fi
+    # boot_wait <secs>: sleep that a key cuts short (then everything after is instant).
+    boot_wait() {
+        (( fast )) && return 0
+        if IFS= read -rsn1 -t "$1" _; then fast=1
+        elif (( $? <= 128 )); then return 2; fi
+        return 0
+    }
+    drain_input; redraw
+    printf '\033[?25l%s' "$g"
+    for line in "${lines[@]}"; do
+        if (( first )); then
+            printf '%s%s%s\n' "$b" "$line" "$g"; first=0
+            boot_wait 0.25 || { printf '%s\033[?25h' "$r"; return 2; }
+            continue
+        fi
+        if [[ -z ${line//[[:space:]]/} ]]; then echo; continue; fi
+        if [[ $line =~ ^([^[]*)\[(\*+)\](.*)$ ]]; then
+            pre=${BASH_REMATCH[1]} n=${#BASH_REMATCH[2]} tail=${BASH_REMATCH[3]}
+            # Empty bar first, then the stars over it; at most 40 steps so a long bar
+            # does not mean more writes on a slow line.
+            printf '%s[%*s]\033[%dD' "$pre" "$n" '' $(( n + 1 ))
+            step=$(( (n + 39) / 40 ))
+            per=$(( INTRO_BOOT_BAR_MS / ((n + step - 1) / step) ))
+            printf -v per '%d.%03d' $(( per / 1000 )) $(( per % 1000 ))
+            printf -v stars '%*s' "$n" ''; stars=${stars// /*}
+            for (( i = 0; i < n; i += step )); do
+                printf '%s' "${stars:i:step}"
+                boot_wait "$per" || { printf '%s\033[?25h' "$r"; return 2; }
+            done
+            printf ']%s\n' "$tail"
+            continue
+        fi
+        if [[ $line == '>>>'* ]]; then
+            boot_wait 0.45 || { printf '%s\033[?25h' "$r"; return 2; }
+            printf '%s%s%s\n' "$b" "$line" "$g"
+            continue
+        fi
+        boot_wait 0.08 || { printf '%s\033[?25h' "$r"; return 2; }
+        if [[ $line =~ ^(.*[^[:space:]])([[:space:]]+OK[[:space:]]*)$ ]]; then
+            printf '%s' "${BASH_REMATCH[1]}"
+            boot_wait 0.14 || { printf '%s\033[?25h' "$r"; return 2; }
+            printf '%s%s%s\n' "$b" "${BASH_REMATCH[2]}" "$g"
+            continue
+        fi
+        printf '%s\n' "$line"
+        if [[ $line =~ \.\.\.[[:space:]]*$ ]]; then
+            boot_wait 0.35 || { printf '%s\033[?25h' "$r"; return 2; }
+        fi
+    done
+    printf '%s\033[?25h' "$r"
+    (( fast )) && return 0
+    # Hold: any key goes on to the next screen.
+    local end=$(( SECONDS + hold ))
+    while (( SECONDS < end )); do
+        if IFS= read -rsn1 -t 0.25 _; then break
+        elif (( $? <= 128 )); then return 2; fi
+    done
+    return 0
+}
+
 intro_run() {
     local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols rows f w c s need shown=0 season="" mid smid fshift sshift nstatic=0 st
     [[ -t 0 && -t 1 && -r $conf ]] || return 0
@@ -3924,6 +4010,13 @@ intro_run() {
         if [[ $secs == anim ]]; then   # anim <file> [<hold secs>]: drawn line by line, in orange
             f=$(intro_file "${file:--}") || continue
             intro_anim "$f" "$narrow"; st=$?
+            (( st == 2 )) && return 0
+            (( st == 0 )) && shown=1
+            continue
+        fi
+        if [[ $secs == boot ]]; then   # boot <file> [<hold secs>]: a green boot sequence
+            f=$(intro_file "${file:--}") || continue
+            intro_boot "$f" "$narrow"; st=$?
             (( st == 2 )) && return 0
             (( st == 0 )) && shown=1
             continue

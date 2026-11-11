@@ -213,5 +213,29 @@ anim 0.3 xterm > "$adir/c.out"
 check "intro_anim: a key during the hold goes on at once" bash -c "grep -q 'rc=0 t=[01]\$' '$adir/c.out'"
 rm -rf "$adir"
 
+# 9. intro_boot: green, the text as it is, the bar filled over an empty one, about 3 s,
+# any key finishes it, file text never run, a missing file skipped by intro_run.
+bdir=$(mktemp -d "$scratch/boot.XXXXXX"); mkdir -p "$bdir/etc/intro"
+cp "$here/examples/intro/boot.txt" "$bdir/etc/intro/boot.txt"
+printf 'HEAD\n$(touch %s/pwned) `touch %s/pwned2`\n' "$bdir" "$bdir" > "$bdir/etc/intro/evil.txt"
+boot() { # boot <keydelay|-> <file> <hold>: runs intro_boot on a pipe, prints output and time
+    ( [[ $1 != - ]] && sleep "$1" && echo x; sleep 6 ) | BBS_ROOT="$bdir" BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 BASHBBS_COLOR=1 TERM=xterm bash -c "
+source '$here/lib/menu.sh'; COLOR=1; S=\$EPOCHREALTIME; intro_boot '$bdir/etc/intro/$2' $3; rc=\$?; echo; echo \"rc=\$rc ms=\$(( (\${EPOCHREALTIME/./} - \${S/./}) / 1000 ))\"" 2>&1
+}
+strip() { sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$1" | tr -d '\r'; }
+boot - boot.txt 0 > "$bdir/a.out"
+check "intro_boot: green" bash -c "grep -q $'\033\\[0;32m' '$bdir/a.out' && grep -q $'\033\\[1;32m' '$bdir/a.out'"
+check "intro_boot: the text shown as it is" bash -c "diff <(sed -e 's/\[ *\]\x1b\[[0-9]*D/[/' -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' '$bdir/a.out' | grep -v '^rc=' | sed -e '/./,\$!d' | sed -e :a -e '/^\n*\$/{\$d;N;ba' -e '}') <(sed -e :a -e '/^\n*\$/{\$d;N;ba' -e '}' '$bdir/etc/intro/boot.txt')"
+check "intro_boot: empty bar drawn first, cursor back over it" bash -c "grep -qF '[                                ]'$'\033''[33D' '$bdir/a.out'"
+check "intro_boot: about 3 s with no hold" bash -c "ms=\$(grep -o 'ms=[0-9]*' '$bdir/a.out' | cut -d= -f2); echo ms=\$ms; (( ms >= 2400 && ms <= 4500 ))"
+check "intro_boot: cursor hidden, shown again" bash -c "grep -q $'\033\\[?25l' '$bdir/a.out' && grep -q $'\033\\[?25h' '$bdir/a.out'"
+boot 0.4 boot.txt 5 > "$bdir/b.out"
+check "intro_boot: a key finishes it at once and skips the hold" bash -c "ms=\$(grep -o 'ms=[0-9]*' '$bdir/b.out' | cut -d= -f2); echo ms=\$ms; (( ms <= 1500 )) && grep -q 'REMOTE SESSION ACTIVE' '$bdir/b.out'"
+boot - evil.txt 0 > "$bdir/c.out"
+check "intro_boot: file text is printed, never run" bash -c "[[ ! -e '$bdir/pwned' && ! -e '$bdir/pwned2' ]] && grep -qF '\$(touch' '$bdir/c.out'"
+printf 'boot missing.txt 1\n' > "$bdir/etc/intro/intro.conf"
+check "intro_run: a missing boot file is skipped" bash -c "cd '$bdir' && script -qec \"env BBS_ROOT='$bdir' BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 bash -c 'source $here/lib/menu.sh; intro_run; echo RC=\\\$?'\" /dev/null < /dev/null | grep -q RC=0"
+rm -rf "$bdir"
+
 echo "intro_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]
