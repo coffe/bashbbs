@@ -1,0 +1,21 @@
+[Unit]
+Description=Reverse tunnel that lets the BBS reach the LiveChat door
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=livechat
+EnvironmentFile=/etc/livechat-tunnel.env
+ExecStart=/usr/bin/ssh -N -F none -i /var/lib/livechat/.ssh/tunnel \
+    -o IdentitiesOnly=yes -o BatchMode=yes -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/livechat/.ssh/known_hosts \
+    -R 127.0.0.1:2277:localhost:22 coffe@${LIVECHAT_BBS_HOST}
+Restart=always
+RestartSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

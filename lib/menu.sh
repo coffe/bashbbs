@@ -2542,9 +2542,11 @@ sysop_menu() {
         menu_item 7 "Mail all" "One message to every active account"
         menu_item 8 "Caller stats" "Calls per user, weekday and hour"
         menu_item 9 "Export callers" "A browser link to callers.log"
+        menu_item L "LiveChat" "Chat with other boards (test)"
         echo
         keyline "Q) Back"
-        menu_key "> " "123456789Qq" "1-9: pick a screen
+        menu_key "> " "123456789LlQq" "1-9: pick a screen
+L: LiveChat
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -2559,8 +2561,34 @@ B M P W: jump   G: log out" || return
             7) sysop_mail_all ;;
             8) sysop_callers_stats ;;
             9) sysop_callers_export ;;
+            [Ll]) sysop_livechat ;;
         esac
     done
+}
+
+LIVECHAT_DIR=$BBS_ROOT/livechat
+LIVECHAT_SSH=ssh
+[[ -z ${BASHBBS_TEST:-} ]] || LIVECHAT_SSH=$BBS_ROOT/bin/livechat-ssh
+
+# LiveChat68, sysop only while it is being tried out. Level 255 enables its setup screen.
+# The door runs on another machine, which keeps a tunnel open to port 2277 here.
+sysop_livechat() {
+    if [[ ! -r $LIVECHAT_DIR/id_ed25519 ]]; then
+        echo "LiveChat is not installed on this BBS."
+        pause
+        return
+    fi
+    local rc=0
+    "$LIVECHAT_SSH" -F none -tt -q -p 2277 -i "$LIVECHAT_DIR/id_ed25519" \
+        -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$LIVECHAT_DIR/known_hosts" \
+        livechat@127.0.0.1 "$me 255" 2>/dev/null || rc=$?
+    stty sane 2>/dev/null || true
+    drain_input
+    if (( rc == 255 )); then
+        echo "LiveChat cannot be reached right now."
+        pause
+    fi
 }
 
 sysop_status() {

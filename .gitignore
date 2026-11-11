@@ -20,3 +20,6 @@ log.md
 nevidia_bashbbs_optimisera.md
 nvidia-bashbbs-*.md
 tests/demo.sh
+
+# Built on the machine that runs it, see doors/livechat/build.sh
+doors/livechat/livechat68
