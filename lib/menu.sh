@@ -3711,7 +3711,8 @@ count_text() { # count_text <n> <singular> <plural>
 # <file> may be a|b|c: one of them is picked at random for each login. It is shown as it is when the terminal is at least as wide as its widest line,
 # otherwise <narrow-file>; with no fitting file the screen is skipped. <caption-file>
 # is printed under the file with one empty line between, each of its lines centred on
-# the art shown above it (the spaces a caption line starts with do not matter). The art
+# the art shown above it (the spaces a caption line starts with do not matter), and left
+# out when art and caption together are taller than the terminal. The art
 # itself is never wrapped or changed (a CR from a DOS file is dropped, empty lines at the
 # end are not shown). Space ends a screen at once, any other key is ignored. File
 # names are plain names in the intro directory.
@@ -4034,6 +4035,8 @@ intro_run() {
             c=$(intro_file "${ncaption:--}") || c=""
             [[ -z $c ]] || (( $(intro_width "$c") <= cols )) || c=""
         fi
+        # Tall art keeps its top on screen: the caption goes when both do not fit.
+        [[ -n $c ]] && (( $(intro_height "$f") + 1 + $(intro_height "$c") > rows )) && c=""
         (( shown )) && drain_input
         redraw
         mid=$(intro_mid "$f") fshift=0

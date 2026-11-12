@@ -41,7 +41,7 @@ code = f'''export BBS_ROOT="{root}" BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 TER
 mkdir -p "$HOME"; source "{here}/lib/menu.sh"
 intro_run; echo; echo SENTINEL; IFS= read -rsn1 -t 3 k; echo "KEY=[$k]"'''
 m, s = pty.openpty()
-fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack("HHHH", 40, int(cols), 0, 0))
+fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack("HHHH", int(os.environ.get("ROWS", "40")), int(cols), 0, 0))
 pid = os.fork()
 if pid == 0:
     os.setsid(); fcntl.ioctl(s, termios.TIOCSCTTY, 0); os.dup2(s, 0); os.dup2(s, 1); os.dup2(s, 2)
@@ -86,6 +86,14 @@ t = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', open(sys.argv[1], 'rb').read().decode(
 want = ['This BBS sends greetings to', 'the Up Rough Crew (c) and is', 'made in collab with the', 'BashBBS Beta Party (tm)', 'For maximum laz0r experience,', 'please haz the supreme Topaz', 'font handy.']
 sys.exit(0 if all(w in t for w in want) else 1)" "$root/real.out"
 check "caption below the art" bash -c "tr -d '\r' < '$root/real.out' | grep -q 'CRASH THE PARTY!.*SMASH THE SPACEBAR!'"
+
+# 1b. Tall art: the caption is left out when art + caption do not fit the height.
+for i in $(seq 22); do echo "tall art line $i"; done > "$root/etc/intro/tall.txt"
+printf '1 tall.txt - caption.txt\n' > "$root/etc/intro/intro.conf"
+ROWS=24 TAIL=3 run 80 "" "$root/tall24.out"
+check "tall art at 24 rows: no caption, top line kept" bash -c "tr -d '\r' < '$root/tall24.out' | grep -q 'tall art line 1\$' && ! grep -q 'SMASH THE SPACEBAR' '$root/tall24.out'"
+ROWS=40 TAIL=3 run 80 "" "$root/tall40.out"
+check "tall art at 40 rows: caption shown" grep -q 'SMASH THE SPACEBAR' "$root/tall40.out"
 
 # 2. At 80 columns exactly one of the two arts is on screen, unchanged.
 # (the escape bytes are removed from the screen text first)
