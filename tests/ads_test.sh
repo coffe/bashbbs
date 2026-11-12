@@ -110,14 +110,14 @@ art_ok = int(art.replace(b"\r", b"") in out.replace(b"\r", b"")) if ads else 0
 first = art.replace(b"\r", b"").split(b"\n")[0]
 cat_at = out.find(b"bye bye")
 cleared = cat_at >= 0 and re.search(rb"\x1b\[[0-3]?J", out[cat_at:]) is not None
-cat_ok = int(cat_at >= 0 and not cleared and (not ads or cat_at < out.find(first)))
+cat_ok = int(cat_at >= 0 and cleared == bool(ads) and (not ads or cat_at < out.find(first)))
 end_ok = int(b"Bye." in out and (not ads or out.rfind(b"Bye.") > out.find(first)))
 print("RESULT %s rc=%s art=%d bye=%d done=%d cat=%d end=%d" % (MODE, rc, art_ok, int(b"[Space] Bye" in out), int(b"DONE" in out), cat_ok, end_ok))
 PY
 pty_root=$root/pty; mkdir -p "$pty_root/etc/ads" "$pty_root/home"
 cp "$ads/a.txt" "$pty_root/etc/ads/"
 check "the ad is 80 columns or less" bash -c 'test "$(awk "{ if (length > m) m = length } END { print m }" "$1")" -le 80' x "$ads/a.txt"
-check "space: cat stays, ad below it, Space ends it, Bye. last" eq \
+check "space: cat, then a clear and the ad, Space ends it, Bye. last" eq \
     "$(python3 "$drv" "$lib" "$pty_root" "$pty_root/home" space)" "RESULT space rc=0 art=1 bye=1 done=1 cat=1 end=1"
 # Input closed mid-screen: the shell gets SIGHUP (rc=-1) and must not hang (rc=HANG).
 check "end of input: logout does not hang" bash -c \
