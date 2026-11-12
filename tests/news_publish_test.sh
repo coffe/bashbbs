@@ -44,6 +44,14 @@ has_ledger() { grep -q "^$1	$2	[0-9]*	$3\$" "$root/state/news-ids.tsv"; }
 in_rejected() { compgen -G "$rej/$1.post" >/dev/null; }
 eq() { [[ $1 == "$2" ]]; }
 
+# ---- 0. tracking parameters come off the link -----------------------------
+cl() { bash -c 'source <(sed -n "/^clean_link()/,/^}/p" "$1"); clean_link "$2"' _ "$here/sbin/bbs-publish" "$1"; }
+check "clean_link: utm_* and fbclid go, the rest stays in order" eq "$(cl 'https://e.com/a?utm_source=x&id=7&fbclid=y&p=2#s')" 'https://e.com/a?id=7&p=2#s'
+check "clean_link: only trackers leaves no ?" eq "$(cl 'https://e.com/a?utm_medium=rss&utm_campaign=z')" 'https://e.com/a'
+check "clean_link: no query is unchanged" eq "$(cl 'https://e.com/a#utm_source=x')" 'https://e.com/a#utm_source=x'
+check "clean_link: lookalike names stay" eq "$(cl 'https://e.com/a?utm=1&xfbclid=2&ref=3')" 'https://e.com/a?utm=1&xfbclid=2&ref=3'
+check "clean_link: empty stays empty" eq "$(cl '')" ''
+
 # ---- 1. a valid post is published -----------------------------------------
 newroot
 id=$(sha one)

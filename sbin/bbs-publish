@@ -156,6 +156,21 @@ category_ok() { # category_ok <name>
 # each header occurs at most once.
 hfield() { sed -n "s/^$2: *//p" "$1" | head -n 1; }
 
+# The link without tracking parameters (utm_*, fbclid, ...): shorter to read and to
+# scan. Other parameters, their order and a #fragment are kept as they were.
+clean_link() { # clean_link <url>
+    local url=$1 frag= base p out= ps=()
+    [[ $url == *'#'* ]] && { frag=#${url#*#}; url=${url%%#*}; }
+    [[ $url == *'?'* ]] || { printf '%s' "$1"; return; }
+    base=${url%%\?*}
+    IFS='&' read -ra ps <<< "${url#*\?}"
+    for p in "${ps[@]}"; do
+        [[ ${p%%=*} =~ ^(utm_[A-Za-z_]+|fbclid|gclid|dclid|gbraid|wbraid|msclkid|mc_cid|mc_eid|igshid|yclid|_hsenc|_hsmktg|mkt_tok|ref_src)$ ]] && continue
+        out+=${out:+&}$p
+    done
+    printf '%s%s%s' "$base" "${out:+?$out}" "$frag"
+}
+
 # Append one ledger row. Caller holds the lock. Returns 1 on write failure.
 ledger_add() { # ledger_add <id> <status> <epoch> <reason>
     printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$LEDGER" || return 1
@@ -274,7 +289,7 @@ handle_news_post() {
     subject=$(hfield "$hdr" Subject | head -c 100 | iconv -c -f UTF-8 -t UTF-8)
     source=$(hfield "$hdr" Source)
     published=$(hfield "$hdr" Published)
-    link=$(hfield "$hdr" Link)
+    link=$(clean_link "$(hfield "$hdr" Link)")
     lede=$(hfield "$hdr" Lede)
     lang=$(hfield "$hdr" Original-Language)
 

@@ -192,6 +192,7 @@ install -m 0644 "$src/web/index.html" /var/www/bbs/index.html
 install -m 0644 "$src/web/style.css" /var/www/bbs/style.css
 install -m 0755 "$src/web/apply.cgi" /var/www/bbs/apply.cgi
 install -m 0755 "$src/web/x.cgi" /var/www/bbs/x.cgi
+install -m 0755 "$src/web/n.cgi" /var/www/bbs/n.cgi
 # x.cgi (www-data) keeps its uploads, its transfer slots and its log markers here.
 install -d -m 0700 -o www-data -g www-data /srv/bashbbs/webup /srv/bashbbs/state/xfer-done /srv/bashbbs/state/xfer-slots
 if command -v lighttpd >/dev/null; then

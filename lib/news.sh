@@ -746,15 +746,20 @@ news_read() {
 # Show the article's link as text on its own lines, wrapped hard to W, and R for a
 # QR code when qrencode is there. The link is never opened.
 news_show_link() {
-    local f=${NEWS_PATH[$1]:-} line link=
+    local f=${NEWS_PATH[$1]:-} line link= aid= qr
     if [[ -n $f && -f $f && ! -L $f ]]; then
         while IFS= read -r line; do
             line=${line%$'\r'}
             [[ -n $line ]] || break
-            [[ $line == 'Link: '* ]] && { link=${line#Link: }; break; }
+            [[ $line == 'Link: '* ]] && link=${line#Link: }
+            [[ $line == 'Article-Id: '* ]] && aid=${line#Article-Id: }
         done < "$f"
     fi
     [[ $link =~ ^https?://[^[:space:]]+$ ]] || link=
+    # The QR code points at web/n.cgi, which redirects: a short link keeps the code
+    # small enough for 24 rows whatever the article's link is.
+    qr=$link
+    [[ $aid =~ ^[0-9a-f]{8} ]] && qr=https://${BBS_PUBLIC_HOST:-bbs.piewpiew.se}/n.cgi/${BASH_REMATCH[0]}
     clear
     {
         paint HEAD Link; echo
@@ -777,11 +782,12 @@ news_show_link() {
     }
     news_getkey
     [[ -n $link && $KEY == R ]] || return 0
-    # The QR code gets its own screen: a long link makes it too tall to share one.
+    # The QR code gets its own screen: it does not fit beside the rest.
     clear
     while IFS= read -r line; do
         printf '%s%s%s\n' "${C_SUBJ:-}" "$line" "${C_RST:-}"
-    done < <(qrencode -t UTF8 -m 2 -- "$link" 2>/dev/null)
+    done < <(qrencode -t UTF8 -m 2 -- "$qr" 2>/dev/null)
+    printf '%s\n' "$qr" | safe | news_wrap "$NEWS_W"
     paint_bar "[Any key] Back"; echo
     news_getkey
 }
