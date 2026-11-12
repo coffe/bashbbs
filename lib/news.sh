@@ -7,7 +7,7 @@
 # name of such an array plus a position and knows nothing about categories, so
 # "all news", "unread" or "search" can reuse it with a different array.
 #
-# All text shown to the user passes safe(). Links are shown as text only.
+# All text shown to the user passes safe(). Links are shown as text or a QR code only.
 
 BBS_ROOT=${BBS_ROOT:-/srv/bashbbs}
 NEWS_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -743,8 +743,8 @@ news_read() {
     done
 }
 
-# Show the article's link as text on its own lines, wrapped hard to W.
-# The link is never opened.
+# Show the article's link as text on its own lines, wrapped hard to W, and R for a
+# QR code when qrencode is there. The link is never opened.
 news_show_link() {
     local f=${NEWS_PATH[$1]:-} line link=
     if [[ -n $f && -f $f && ! -L $f ]]; then
@@ -767,7 +767,21 @@ news_show_link() {
         fi
         echo
         news_rule
-        paint_bar "[Any key] Back"; echo
+        if [[ -n $link ]] && type -P qrencode >/dev/null; then
+            paint_bar "[R] QR code  [Any key] Back"
+        else
+            link=
+            paint_bar "[Any key] Back"
+        fi
+        echo
     }
+    news_getkey
+    [[ -n $link && $KEY == R ]] || return 0
+    # The QR code gets its own screen: a long link makes it too tall to share one.
+    clear
+    while IFS= read -r line; do
+        printf '%s%s%s\n' "${C_SUBJ:-}" "$line" "${C_RST:-}"
+    done < <(qrencode -t UTF8 -m 2 -- "$link" 2>/dev/null)
+    paint_bar "[Any key] Back"; echo
     news_getkey
 }

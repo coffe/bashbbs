@@ -155,7 +155,7 @@ class Term:
             pass
 
 def env_for(cols, rows="14", **kw):
-    e = {"PATH": os.environ["PATH"], "HOME": root, "USER": "bbs-tester", "TERM": "xterm",
+    e = {"PATH": os.path.join(os.path.dirname(root), "qrbin") + ":" + os.environ["PATH"], "HOME": root, "USER": "bbs-tester", "TERM": "xterm",
          "LC_ALL": "C.UTF-8", "BBS_ROOT": root, "BASHBBS_TEST": "1", "BASHBBS_TEST_ID": "bbs-tester", "BBS_ROWS": rows}
     if cols:
         e["BBS_COLS"] = str(cols)
@@ -260,6 +260,15 @@ check(ok and "https://example.org/very/long/path/" in link_screen and "end?id=12
       "A: O shows the full link as text", link_screen[:300])
 check(all(wr.vwidth(l) <= W for l in link_screen.split("\n")), "A: link lines wrapped to W")
 check("https://" not in page1, "A: link is not embedded in the article text")
+# A stub qrencode on PATH (see the shell part): R offered, drawn once from the link.
+check("[R] QR code" in link_screen, "A: link view offers R for a QR code")
+ok = t.send("r", "QRSTUB")
+qr_args = open(os.path.join(os.path.dirname(root), "qrbin", "args")).read()
+check(ok and qr_args.startswith("-t UTF8 -m 2 -- https://example.org/very/long/path/") and qr_args.rstrip().endswith("end?id=123456789&x=y"),
+      "A: R draws the QR code of the link on its own screen", t.screen[:300])
+ok = t.send("x", "Article 1 of 10")
+check(ok, "A: any key leaves the QR screen")
+t.send("O", "Link")
 ok = t.send("x", "Article 1 of 10")
 check(ok, "A: any key leaves the link view")
 ok = t.send("\x1b[B", "Article 2 of 10")
@@ -352,6 +361,8 @@ for ok, name, detail in results:
 sys.exit(0)
 PY
 
+mkdir -p "$tmp/qrbin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/qrbin/args"\necho QRSTUB\n' "$tmp" > "$tmp/qrbin/qrencode"; chmod +x "$tmp/qrbin/qrencode"
 for cols in 40 60 80; do
     root=$tmp/root$cols
     mkdir -p "$root/boards" "$root/meta"
