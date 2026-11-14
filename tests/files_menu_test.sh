@@ -48,7 +48,7 @@ printf 'orphan' > "$root/published/1500000500-eeeeeeee"     # no .meta: incomple
 
 run_as() { local who=$1 seen=$2; shift 2
     ( export BBS_ROOT="$root" HOME="$root/home" BASHBBS_TEST=1 BASHBBS_TEST_ID=$who TERM=dumb \
-          BASHBBS_COLOR=0 COLUMNS=100 BASHBBS_SEEN_PREV=$seen
+          BASHBBS_COLOR=${COLOR:-0} COLUMNS=100 BASHBBS_SEEN_PREV=$seen
       source "$here/lib/menu.sh"; "$@" ); }
 alice() { run_as bbs-alice "" "$@"; }
 bob() { run_as bbs-bob "" "$@"; }
@@ -293,6 +293,37 @@ for t in "plain name.zip" "räksmörgås på måndag" "ÅÄÖ åäö éèü ÿ �
     $'bad\xe5byte' $'\xc3' $'tab\tx' 'pct %s \n * ? [a]'; do
     for w in 1 3 4 8 40; do check "list_fit same at $w: $t" fit_same "$w" "$t"; done
 done
+
+# Search, the newest files and tags.
+mkdir -p "$root/queue/filetags"
+file 1500000950 99999999 bbs-alice chip.mod 300 5
+printf 'desc=A Funky Chiptune\ntags=amiga tracker\n' >> "$root/published/1500000950-99999999.meta"
+out=$(printf 'sTRACKER\nqq' | bob files_menu)
+check "search: finds a tag, any case" has "$out" "chip.mod"
+check "search: says what it looked for" has "$out" "search for TRACKER"
+hits=${out#*search for}; hits=${hits%%Also works*}
+check "search: only what matches" not has "$hits" "old.zip"
+check "search: finds the description" has "$(printf 'sfunky\nqq' | bob files_menu)" "chip.mod"
+check "search: finds the name" has "$(printf 'sboss\nqq' | bob files_menu)" "boss.mod"
+check "search: nothing found" has "$(printf 'szzzz\nqq' | bob files_menu)" "Nothing found."
+check "search: a backslash is plain text" has "$(printf 's\\n\nqq' | bob files_menu)" "Nothing found."
+out=$(printf 'nqq' | bob files_menu)
+check "newest: title" has "$out" "the newest 20"
+check "newest: newest first" before "${out#*the newest}" chip.mod boss.mod
+check "newest: no S or N inside" eq "$(grep -c 'S) Search' <<< "$out")" 2
+out=$(printf 'nqq' | COLOR=1 bob files_menu)
+out=${out#*the newest 20}; out=${out%%Also works*}
+check "newest: rows without colour" eq "$(grep -c $'^ 1).*chip.mod' <<< "$out")" 1
+check "newest: no colour on any row" eq "$(grep $'\e' <<< "$out" | grep -c '\.mod\|\.zip')" 0
+check "newest: no description line" not has "$out" "A Funky Chiptune"
+check "list: the description stays" has "$(printf 'qq' | bob files_menu)" "A Funky Chiptune"
+row=$(bob files_rows | grep chip.mod)
+out=$(printf 'q' | bob file_view "$row")
+check "tags: shown on the page" has "$out" "Tags:       amiga tracker"
+check "tags: not offered to others" not has "$out" "T) Tags"
+check "tags: offered to the uploader" has "$(printf 'q' | alice file_view "$row")" "T) Tags"
+printf 'tdemo scene\nxq' | alice file_view "$row" >/dev/null
+check "tags: T asks the sorter" eq "$(cat "$root/queue/filetags/1500000950-99999999.tags" 2>/dev/null)" "demo scene"
 
 echo "files_menu_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

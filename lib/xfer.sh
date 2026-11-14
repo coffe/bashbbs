@@ -57,7 +57,7 @@ xfer_wait() {
 }
 
 XFER_SEEN=0 XFER_OK=0 XFER_BAD=0 XFER_QR=
-XFER_NEW_IDS=() XFER_NEW_NAMES=()
+XFER_NEW_IDS=() XFER_NEW_NAMES=() XFER_ALL_IDS=() XFER_ALL_NAMES=()
 
 # Prints the result lines not shown yet. Yes when the page has said it is finished.
 # The sorter's note says what it found: "archive" opened, "archive+diz" also had a
@@ -76,6 +76,10 @@ xfer_check_up() { # xfer_check_up <token>
                     *) said=OK ;;
                 esac
                 printf '  Testing %s... %s\n' "$(safe <<< "$name")" "$said"
+                if [[ $why =~ ^[0-9]+-[0-9a-f]{8}$ ]]; then
+                    XFER_ALL_IDS+=("$why")
+                    XFER_ALL_NAMES+=("$name")
+                fi
                 if [[ $note != archive+diz && $why =~ ^[0-9]+-[0-9a-f]{8}$ ]]; then
                     XFER_NEW_IDS+=("$why")
                     XFER_NEW_NAMES+=("$name")
@@ -250,13 +254,14 @@ xfer_upload() { # xfer_upload [area]
     echo "Each file is tested for name, size, your quota and duplicates, and zip and"
     echo "lha archives for whether they open. This is not a virus scan."
     echo
-    XFER_SEEN=0 XFER_OK=0 XFER_BAD=0 XFER_NEW_IDS=() XFER_NEW_NAMES=()
+    XFER_SEEN=0 XFER_OK=0 XFER_BAD=0 XFER_NEW_IDS=() XFER_NEW_NAMES=() XFER_ALL_IDS=() XFER_ALL_NAMES=()
     xfer_wait "$XFER_TTL_UP" xfer_check_up "$token" || return 1
     case $XFER_OUTCOME in
         done)
             echo
             echo "Finished: $XFER_OK published, $XFER_BAD rejected. New files show within a minute."
             xfer_describe_new || return 1
+            xfer_tag_new || return 1
             pause ;;
         expired)
             echo "The link has run out. Press U for a new one."
@@ -282,6 +287,7 @@ xfer_ask_desc() { # xfer_ask_desc <name>
 # Hands the text to the sorter, which alone can write the .meta: written beside the
 # final name first, so it never reads half a request. Empty text removes the description.
 xfer_send_desc() { xfer_request filedesc "$1.desc" "$2"; } # xfer_send_desc <id> <text>
+xfer_send_tags() { xfer_request filetags "$1.tags" "$2"; } # xfer_send_tags <id> <tags>
 xfer_send_area() { xfer_request filearea "$1.area" "$2"; } # xfer_send_area <id> <slug>
 
 # M in a file's view: sets XFER_AREA, empty when nothing was picked. Needs fa_load.
@@ -311,6 +317,29 @@ xfer_request() { # xfer_request <queue> <file name> <text>
         return 1
     fi
     { : > "$BBS_ROOT/queue/kick/$login.$$"; } 2>/dev/null
+    return 0
+}
+
+# One line of tags into XFER_TAGS; empty skips. The sorter cleans and caps them.
+# Returns 1 at end of input.
+xfer_ask_tags() { # xfer_ask_tags <name>
+    XFER_TAGS=
+    echo "Tags for $1, so it is easier to find? Words split by spaces, up to 5."
+    echo "Enter alone skips."
+    rline XFER_TAGS "Tags> " || return 1
+    XFER_TAGS=${XFER_TAGS:0:120}
+}
+
+# After an upload: tags for every published file, not required. Returns 1 at end of input.
+xfer_tag_new() {
+    local i
+    for i in "${!XFER_ALL_IDS[@]}"; do
+        echo
+        xfer_ask_tags "$(safe <<< "${XFER_ALL_NAMES[i]}")" || return 1
+        [[ -n ${XFER_TAGS// } ]] || continue
+        xfer_send_tags "${XFER_ALL_IDS[i]}" "$XFER_TAGS" \
+            || echo "Could not save that right now. T on the file's page tries again."
+    done
     return 0
 }
 

@@ -17,7 +17,7 @@ not() { ! "$@"; }
 [[ $(id -u) -ne 0 ]] || { echo "Run as a normal user, not root." >&2; exit 2; }
 
 root=$(mktemp -d "$scratch/xfermenu.XXXXXX")
-mkdir -p "$root"/{published,state/xfer-results,queue/xfer,queue/filedel,queue/filedesc,queue/filearea,queue/kick,users/alice,home}
+mkdir -p "$root"/{published,state/xfer-results,queue/xfer,queue/filedel,queue/filedesc,queue/filearea,queue/filetags,queue/kick,users/alice,home}
 printf 'name=Alice\n' > "$root/users/alice/profile"
 : > "$root/state/transfers.log"
 ID=1500000100-aaaaaaaa
@@ -134,7 +134,11 @@ printf 'done\n' >> "$res"
 check "results: done ends the wait with no key" seen "Finished: 1 published, 2 rejected."
 check "results: asks for a description" seen "Enter a description for first.zip."
 keys $'\n'
+check "results: asks for tags too" seen "Tags for first.zip"
+keys $'demo amiga\n'
 sleep 0.3
+check "results: tags go to the sorter" eq "$(cat "$root/queue/filetags/1500000200-bbbbbbbb.tags" 2>/dev/null)" "demo amiga"
+rm -f "$root/queue/filetags/1500000200-bbbbbbbb.tags"
 keys x
 keys q; check "results: back and out" finish
 check "results: each line shown once" bash -c '[[ $(grep -c "Testing first.zip... OK" "$1") == 1 ]]' _ "$out"
@@ -177,7 +181,7 @@ mv "$root/queue/xfer.away" "$root/queue/xfer"
 start
 seen "1)" >/dev/null
 keys 1
-check "view: offers D" seen "D) Download   F) Flag   E) Describe   R) Remove   Q) Back"
+check "view: offers D" seen "D) Download   F) Flag   E) Describe   T) Tags   R) Remove   Q) Back"
 check "view: scp is only a side note" seen "scp -O -P 6464 bbs-alice@bbs.piewpiew.se:mid.lha ."
 keys d
 check "download: last chance first" seen "LAST CHANCE!"
@@ -403,7 +407,7 @@ check "view: F saved" grep -qx "$ID2" "$flags"
 keys f
 keys q; sleep 0.3
 keys 3
-check "view: E on your own" seen "D) Download   F) Flag   E) Describe   R) Remove   Q) Back"
+check "view: E on your own" seen "D) Download   F) Flag   E) Describe   T) Tags   R) Remove   Q) Back"
 keys e
 check "describe: asks" seen "Enter a description for mid.lha."
 long=$(printf 'y%.0s' {1..70})
@@ -496,20 +500,20 @@ keys x; sleep 0.3
 keys q; check "options: back and out" finish
 
 # 20. Many files with descriptions: a page holds what fits. No tty counts as 24 lines,
-# so 14 lines for the list: 7 files with a description each. And at most 20 flags.
+# so 13 lines for the list: 6 files with a description each. And at most 20 flags.
 for n in {10..30}; do
     i=15000010$n-eeeeeeee
     printf 'x' > "$root/published/$i"
     printf 'user=bbs-bob\nname=many%s.txt\nsize=1\ndate=2026-11-04T09:00:00Z\nsha256=0\ndesc=About %s\n' "$n" "$n" > "$root/published/$i.meta"
 done
 start
-check "page: seven fit" seen " 7) many24.txt"
+check "page: six fit" seen " 6) many25.txt"
 sleep 0.2
-check "page: the eighth does not" not grep -q ' 8) many23' "$out"
+check "page: the seventh does not" not grep -q ' 7) many24' "$out"
 check "page: Space offered" seen "Space) More"
 mark=$(wc -l < "$out")
 keys ' '
-check "page: Space goes on from the next file" after "$mark" " 8) many23.txt"
+check "page: Space goes on from the next file" after "$mark" " 7) many24.txt"
 keys q; finish
 : > "$flags"
 for n in {10..29}; do echo "15000010$n-eeeeeeee" >> "$flags"; done

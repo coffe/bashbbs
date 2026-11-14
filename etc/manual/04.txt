@@ -15,7 +15,8 @@ as private among users, not as a vault.
 Reading and writing:
 - Pick a board by number, then a thread by number.
 - A new thread asks for a subject, then the text. End it with a single .
-- You can edit and delete your own posts.
+- You can edit and delete your own posts. Sysops and the owner of a private
+  board can also delete a post with every reply below it (type THREAD).
 - # jumps to a post by its number inside a thread.
 
 Some boards are read-only (for example automatic news). You can read them

@@ -278,6 +278,20 @@ mkfifo "$req"
 timeout 20 env BBS_ROOT="$root" BBS_UPLOAD_NOCHOWN=1 BBS_UPLOAD_TEST_OWNER=bbs-alice bash "$here/sbin/bbs-upload" >>"$log" 2>&1; rc=$?
 check "desc: a pipe does not hold up the sorter" eq "$rc" 0
 check "desc: pipe gone" test ! -e "$req"
+
+# --- tag requests ---
+mkdir -p "$root/queue/filetags"
+treq=$root/queue/filetags/$D.tags
+printf 'Amiga, MOD  tracker,amiga,x\001y,a-very-long-tag-name-over-twenty,six,seven' > "$treq"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "tags: cleaned and capped" grep -qx 'tags=amiga mod tracker xy a-very-long-tag-name' "$dm"
+check "tags: request gone" test ! -e "$treq"
+printf 'evil' > "$treq"
+up BBS_UPLOAD_TEST_OWNER=bbs-mallory
+check "tags: someone else may not" not_grep '^tags=evil$' "$dm"
+printf -- '-' > "$treq"
+up BBS_UPLOAD_TEST_OWNER=bbs-alice
+check "tags: a single - removes them" not_grep '^tags=' "$dm"
 printf 'bad' > "$root/queue/filedesc/..evil.desc"
 printf 'bad' > "$root/queue/filedesc/1500000901-00000000.desc"
 printf 'being written' > "$root/queue/filedesc/.tmp.fresh"

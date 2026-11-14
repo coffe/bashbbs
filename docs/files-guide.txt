@@ -19,6 +19,7 @@ Files are sorted into areas:
   Grafix     Pictures, pixel art and ANSI
 
 Type the number of an area to open it. A * marks an area with new files.
+S searches and N shows the newest 20 files, both over every area.
 
 
 THE FILE LIST
@@ -33,6 +34,8 @@ A + in front means you have flagged the file. A * means it is new.
   D       Download
   A       Flag or unflag a file (C clears all flags)
   O       Options: shows the ways to transfer
+  S       Search names, descriptions and tags in every area
+  N       The newest 20 files in every area
   Q       Back
 
 
@@ -83,14 +86,18 @@ Descriptions: a zip or lha with a FILE_ID.DIZ inside gets that as its
 description. Without one, the BBS asks you for up to 3 lines of 60
 characters. An empty line skips it.
 
+Tags: after that the BBS asks for tags for each file, words like "amiga mod".
+Up to 5 tags, a-z, 0-9 and -. They help S find the file. Enter skips.
+
 New files show up for everybody within a minute. There is no review queue.
 
 
 YOUR OWN FILES
 --------------
-Open one of your files to get three more keys:
+Open one of your files to get four more keys:
 
   E  Describe: write a new description (empty text removes it)
+  T  Tags: new tags for the file (a single - removes them)
   M  Move it to another area
   R  Remove it. It goes away within a minute and the space is yours again.
 
@@ -104,11 +111,12 @@ Use scp -O (the old scp mode). Plain scp and sftp do not work.
   Download:  scp -O -P PORT LOGIN@HOST:NAME .
 
 Files sent with scp land in General. Move them with M. Add a description
-with E. If an scp upload fails, nothing from it is saved, and the reason is
-not shown. Use the web link when you want to see why.
+with E and tags with T. If an scp upload fails, nothing from it is saved,
+and the reason is not shown. Use the web link when you want to see why.
 
 
 QUICK REFERENCE
 ---------------
   8 Files   U Upload   D Download   A/F Flag   E Describe   M Move
-  R Remove  O Options  Space More     Q Back     ? Help
+  R Remove  O Options  Space More     S Search   N Newest     T Tags
+  Q Back    ? Help

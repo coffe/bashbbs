@@ -94,6 +94,25 @@ echo "2026-01-01 post keep" > "$AL"
 lib activity_backfill
 check "backfill not rerun when the log exists" eq "$(cat "$AL")" "2026-01-01 post keep"
 
+# 3b. Empty posts never count; after a delete the post lines are counted again from disk.
+printf 'Board: pub\nSubject: Blank\n\n  \n\n' > "$root/p6"
+check "empty post rejected" not lib handle_post "$root/p6" bbs-alice
+check "empty post not logged" not grep -q 'keep2' "$AL"
+{ printf 'Msgid: y\nAuthor: blank\nNode: n\nDate: 2026-10-09T10:00:00Z\nSubject: s\n\n \n'; } > "$root/boards/general/8-h.msg"
+rm -f "$AL"; lib activity_backfill
+check "backfill: empty body skipped" not grep -q blank "$AL"
+printf '2026-10-01 post alice\n2026-10-01 post alice\n2026-10-01 post gone\n2026-10-10 wall erin\n2026-10-10 call zed\n' > "$AL"
+mkmsg "$root/boards/general/2-b.msg" bob 2026-10-02T10:00:00Z deleted
+check "recount runs" lib activity_recount
+check "recount: one post per live post" eq "$(grep -c 'post alice' "$AL")" 1
+check "recount: a removed post is gone" not grep -q 'post gone' "$AL"
+check "recount: a deleted post does not count" not grep -q 'post bob' "$AL"
+check "recount: empty post does not count" not grep -q 'post blank' "$AL"
+check "recount: wall kept" grep -qx '2026-10-10 wall erin' "$AL"
+check "recount: call kept" grep -qx '2026-10-10 call zed' "$AL"
+check "recount: log stays readable" eq "$(stat -c %a "$AL")" 644
+rm -f "$root/boards/general/8-h.msg"
+
 # 4. Most Active: order, hidden, cap at 10.
 : > "$AL"
 for i in 1 2 3; do echo "2026-10-01 post zed"; done >> "$AL"

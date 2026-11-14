@@ -1651,6 +1651,9 @@ post_actions() { # post_actions <board> <file>
         if [[ $author == "$me" ]] || is_sysop || manages "$board"; then
             cmds+="${cmds:+  }D) Delete"; keys+=Dd; hint+="  D: delete"
         fi
+    elif [[ -n ${HDR[Deleted]-} ]] && ! is_readonly "$board" && { is_sysop || manages "$board"; }; then
+        # A stub is only listed while replies live below it; sysop and owner can take those too.
+        cmds="D) Delete thread"; keys+=Dd; hint+="D: delete the replies below"
     fi
     # Two lines: the full line does not fit in 40 columns.
     # Both lines are built first and written at once (a test harness reacts to "Prev").
@@ -1715,11 +1718,20 @@ Q: cancel the edit" local || return
 
 # Delete needs the word DELETE. A yes/no key is not enough.
 delete_post() { # delete_post <board> <file>
-    local answer
+    local answer action=delete-post
     echo
-    rline answer "Type DELETE ([Enter] Back): " || return
-    [[ $answer == DELETE ]] || return
-    printf 'Action: delete-post\nBoard: %s\nMsgid: %s\n\n' "$1" "$(post_hdr "$2" Msgid)" | queue_request
+    if is_sysop || manages "$1"; then
+        if [[ -n $(post_hdr "$2" Deleted) ]]; then
+            rline answer "Type THREAD to delete all replies below ([Enter] Back): " || return
+        else
+            rline answer "DELETE = this post, THREAD = with all replies ([Enter] Back): " || return
+        fi
+        [[ $answer == THREAD ]] && action=delete-thread
+    else
+        rline answer "Type DELETE ([Enter] Back): " || return
+    fi
+    [[ $answer == DELETE && -z $(post_hdr "$2" Deleted) || $answer == THREAD && $action == delete-thread ]] || return
+    printf 'Action: %s\nBoard: %s\nMsgid: %s\n\n' "$action" "$1" "$(post_hdr "$2" Msgid)" | queue_request
     echo "Sent. Appears within a minute."
     pause
 }
@@ -1751,11 +1763,14 @@ quote_lines() { # quote_lines <file>
     sed '1,/^$/d' "$1" | safe | grep -v -e '^>' -e '^[[:space:]]*$' | head -n 6 | sed 's/^/> /'
 }
 
+# Said when a wall greeting or a board post has no text; nothing is sent.
+empty_post() { echo "Empty - no text! Nothing sent, the void thanks you for your silence."; pause; }
+
 # Write one post into the queue. The publisher checks it and copies it
 # into boards/. Users cannot write into boards/ themselves.
 # A reply passes a default subject and the post to quote; Enter keeps the subject.
 compose() { # compose <board> <parent> [default subject] [post to quote]
-    local board=$1 parent=$2 defsub=${3:-} quote=${4:-} subject tmp ql=""
+    local board=$1 parent=$2 defsub=${3:-} quote=${4:-} subject tmp ql="" body
     if [[ -n $defsub ]]; then
         rline subject "Subject [Enter keeps \"$(list_fit "$(( $(list_width) - 32 ))" "$defsub")\"]: " || return
     else
@@ -1770,6 +1785,8 @@ compose() { # compose <board> <parent> [default subject] [post to quote]
         [[ $MKEY == [Nn] ]] || ql=$(quote_lines "$quote")
     fi
     echo "Write text. End with a single dot (.)."
+    body=$(read_body)
+    [[ -n ${body//[[:space:]]/} ]] || { empty_post; return; }
     tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX") || return
     {
         printf 'Board: %s\n' "$board"
@@ -1777,7 +1794,7 @@ compose() { # compose <board> <parent> [default subject] [post to quote]
         [[ -n $parent ]] && printf 'Parent: %s\n' "$parent"
         printf '\n'
         [[ -n $ql ]] && printf '%s\n\n' "$ql"
-        read_body
+        printf '%s\n' "$body"
     } > "$tmp"
     mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
     echo "Sent. Appears within a minute."
@@ -2170,6 +2187,7 @@ B M P W: jump" || { nav_req=quit; return; }
 # the file's owner against the uploader and the sysops, then moves the file to
 # state/expired/. Nothing is deleted.
 FILES_PAGE=10
+FILES_NEWEST=20     # N: the newest files from every area
 AREAS_PAGE=${AREAS_PAGE:-12}
 BBS_PUBLIC_HOST=${BBS_PUBLIC_HOST:-bbs.piewpiew.se}
 BBS_PUBLIC_PORT=${BBS_PUBLIC_PORT:-6464}
@@ -2207,6 +2225,32 @@ files_rows() { # files_rows [area]
         [[ -z $want || $area == "$want" ]] || continue
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$user" "$size" "$date" "${dls[$id]:-0}" "$name" "$area" "$desc"
     done < <(find "$pub" -maxdepth 1 -type f -name '*.meta' -printf '%f\n' 2>/dev/null | sort -t- -k1,1nr -k2,2r) | safe_rows
+}
+
+# The rows of files_rows whose name, description or tags hold <text>, from every area.
+# shortcut: upper and lower case only match for a-z (mawk), fine until names need more.
+files_found() { # files_found <text>
+    local f row
+    local -A hit=()
+    while IFS= read -r f; do
+        f=${f##*/}
+        hit[${f%.meta}]=1
+    done < <(Q=$1 awk -F= 'BEGIN { q = tolower(ENVIRON["Q"]) }
+        ($1 == "name" || $1 == "desc" || $1 == "tags") && index(tolower(substr($0, length($1) + 2)), q) { print FILENAME }' \
+        "$BBS_ROOT"/published/*.meta 2>/dev/null)
+    (( ${#hit[@]} )) || return 0
+    while IFS= read -r row; do
+        [[ -n ${hit[${row%%$'\t'*}]:-} ]] && printf '%s\n' "$row"
+    done < <(files_rows)
+}
+
+# S: asks what to look for and shows what was found. Returns 1 at end of input.
+files_search() {
+    local q
+    rline q "Search names, descriptions and tags for: " || return 1
+    q=${q:0:40}
+    [[ -n ${q// } ]] || return 0
+    files_menu "" search "$q"
 }
 
 # True when a file newer than the last login exists. First login: nothing counts as new.
@@ -2288,7 +2332,8 @@ file_areas() {
         if (( ${#FLAGS[@]} )); then
             down="D) Download   " keys+=Dd hint="D: download what is flagged   $hint"
         fi
-        keyline "$more${down}Q) Back"
+        keys+=SsNn hint="S: search   N: the newest $FILES_NEWEST   $hint"
+        keyline "$more${down}S) Search   N) Newest   Q) Back"
         menu_key "> " "$keys$(digit_keys "$total")" \
 "Number: open an area (* = new files)
 $hint
@@ -2298,6 +2343,8 @@ B M P W: jump   G: log out" || return
             [Qq]) return 0 ;;
             ' ') start=$next ;;
             [Dd]) echo; xfer_download "${FLAGS[@]}" || return ;;
+            [Ss]) echo; files_search || return; [[ -n $nav_req ]] && return ;;
+            [Nn]) files_menu "" newest || return; [[ -n $nav_req ]] && return ;;
             [1-9])
                 read_num "$total" || continue
                 files_menu "${FA_SLUGS[NUM - 1]}" || return
@@ -2313,53 +2360,70 @@ file_desc_lines() { # file_desc_lines <id>
     sed -n 's/^desc=//p' "$BBS_ROOT/published/$1.meta" 2>/dev/null | head -n 10 | safe
 }
 
-files_menu() { # files_menu [area]
-    local area=${1:-} title
+# With "newest" the newest files of every area, with "search" those files_found finds.
+files_menu() { # files_menu [area] [newest | search <text>]
+    local area=${1:-} mode=${2:-} query=${3:-} title
     local rows=() total start=0 next i row id user size date dls name desc w width isnew keys hint
-    local height room used need mark descs=() line
+    local height room used need mark descs=() line page
     while true; do
         fa_load
         fa_known "$area" || area=$FA_DEFAULT
         title=Files
         (( ${#FA_SLUGS[@]} > 1 )) && title="Files: $(fa_title "$area")"
+        case $mode in
+            newest) title="Files: the newest $FILES_NEWEST"
+                    mapfile -t rows < <(files_rows | head -n "$FILES_NEWEST") ;;
+            search) title="Files: search for $(safe <<< "$query")"
+                    mapfile -t rows < <(files_found "$query") ;;
+            *) mapfile -t rows < <(files_rows "$area") ;;
+        esac
         redraw
         screen_header "$title" "[Q] Back"
         flags_load
-        mapfile -t rows < <(files_rows "$area")
         total=${#rows[@]}
         (( start >= total )) && start=0
         width=$(list_width)
         w=$(( width - 40 ))
         # Ten files at most; each description line takes a line more, so fewer may fit. The
         # first file on a page is always shown whole. The rest of the screen is 10 lines:
-        # top 3, foot 6, and one for the flag count.
+        # top 3, foot 7, and one for the flag count.
         height=$(stty size 2>/dev/null | awk '{print $1}')
         [[ $height =~ ^[0-9]+$ ]] || height=24
-        room=$(( height - 10 ))
+        room=$(( height - 11 ))
         (( room < FILES_PAGE )) && room=$FILES_PAGE
         used=0
         if (( total == 0 )); then
-            echo "No files yet. Be the first!"
+            if [[ $mode == search ]]; then echo "Nothing found."; else echo "No files yet. Be the first!"; fi
         fi
-        for (( i = start; i < total && i < start + FILES_PAGE; i++ )); do
+        # newest: one plain line per file, no colour and no description, as many as fit.
+        page=$FILES_PAGE
+        [[ $mode == newest ]] && page=$room
+        for (( i = start; i < total && i < start + page; i++ )); do
             IFS=$'\t' read -r id user size date dls name _ desc <<< "${rows[i]}"
             descs=()
-            [[ -n $desc ]] && mapfile -t descs < <(file_desc_lines "$id")
+            [[ -n $desc && $mode != newest ]] && mapfile -t descs < <(file_desc_lines "$id")
             need=$(( 1 + ${#descs[@]} ))
             (( i > start && used + need > room )) && break
             used=$(( used + need ))
             isnew=0
             [[ -n $SEEN_PREV ]] && (( ${id%%-*} > SEEN_PREV )) && isnew=1
             mark=' '
-            flag_has "$id" && mark=$(paint ACC '+')
-            printf '%s%s' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")" "$mark"
+            if [[ $mode == newest ]]; then
+                flag_has "$id" && mark='+'
+                printf '%2d)%s' $(( i + 1 )) "$mark"
+            else
+                flag_has "$id" && mark=$(paint ACC '+')
+                printf '%s%s' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")" "$mark"
+            fi
             if (( w >= 12 )); then
                 printf '%-*s %8s %-10s %s %3s' "$w" "$(list_fit "$w" "$name")" "$(files_size "$size")" \
                     "$(list_fit 10 "${user#bbs-}")" "${date:0:10}" "$dls"
             else
                 printf '%-*s %8s' "$(( width - 15 ))" "$(list_fit $(( width - 15 )) "$name")" "$(files_size "$size")"
             fi
-            (( isnew )) && printf ' %s' "$(paint ACC '*')"
+            if (( isnew )); then
+                if [[ $mode == newest ]]; then printf ' *'; else printf ' %s' "$(paint ACC '*')"; fi
+            fi
             echo
             for line in "${descs[@]}"; do
                 printf '     %s\n' "$(list_fit $(( width - 5 )) "$line")"
@@ -2383,6 +2447,11 @@ files_menu() { # files_menu [area]
         else
             keyline "U) Upload   O) Options   Q) Back"
         fi
+        if [[ -z $mode ]]; then
+            keyline "S) Search   N) The newest $FILES_NEWEST in every area"
+            keys+=SsNn hint+="
+S: search names, descriptions and tags   N: the newest files"
+        fi
         menu_key "> " "$keys$(digit_keys "$total")" \
 "Number: open a file (* = new, + = flagged)
 $hint
@@ -2393,6 +2462,8 @@ B M P W: jump   G: log out" || return
             ' ') start=$next; continue ;;
             [Uu]) echo; xfer_upload "$area" || return; continue ;;
             [Oo]) echo; xfer_options; continue ;;
+            [Ss]) echo; files_search || return; [[ -n $nav_req ]] && return; continue ;;
+            [Nn]) files_menu "" newest || return; [[ -n $nav_req ]] && return; continue ;;
             [Aa])
                 echo
                 printf 'Flag which number? (C) clears all: '
@@ -2429,7 +2500,7 @@ B M P W: jump   G: log out" || return
 # Returns 1 at end of input.
 file_view() { # file_view <row from files_rows>
     local id user size date dls name area desc keys=Qq can=0 pending=0 req flagword line descs=()
-    local mover areas
+    local mover areas tags
     IFS=$'\t' read -r id user size date dls name area desc <<< "$1"
     req=$BBS_ROOT/queue/filedel/$id.del
     [[ $login == "$user" ]] || is_sysop && can=1
@@ -2444,6 +2515,7 @@ file_view() { # file_view <row from files_rows>
         # A move is carried out while this screen is open, so the area comes from the .meta.
         area=$(sed -n 's/^area=//p' "$BBS_ROOT/published/$id.meta" 2>/dev/null | head -n 1)
         area=$(fa_pick "$area")
+        tags=$(sed -n 's/^tags=//p' "$BBS_ROOT/published/$id.meta" 2>/dev/null | head -n 1 | safe)
         redraw
         local_header "$name" "[Q] Back"
         printf '%-11s %s\n' "Size:" "$(files_size "$size")"
@@ -2451,6 +2523,7 @@ file_view() { # file_view <row from files_rows>
         printf '%-11s %s\n' "Uploaded:" "${date:0:10}"
         printf '%-11s %s\n' "Downloads:" "$dls"
         (( areas > 1 )) && printf '%-11s %s\n' "Area:" "$(fa_title "$area")"
+        [[ -n $tags ]] && printf '%-11s %s\n' "Tags:" "$tags"
         echo
         if (( ${#descs[@]} )); then
             for line in "${descs[@]}"; do printf '  %s\n' "$line"; done
@@ -2464,18 +2537,18 @@ file_view() { # file_view <row from files_rows>
             echo "Removal requested. The file goes away within a minute."
             keyline "Q) Back"
         elif (( can )); then
-            keys+=DdFfEeRr mover=""
+            keys+=DdFfEeTtRr mover=""
             if (( areas > 1 )); then
                 keys+=Mm mover="M) Move   "
             fi
-            keyline "D) Download   F) $flagword   E) Describe   ${mover}R) Remove   Q) Back"
+            keyline "D) Download   F) $flagword   E) Describe   T) Tags   ${mover}R) Remove   Q) Back"
         else
             keys+=DdFf
             keyline "D) Download   F) $flagword   Q) Back"
         fi
         menu_key "> " "$keys" "D: download through your browser
 F: flag it, so a D in the list takes it   Q: back
-E: describe   M: move to another area   R: remove (uploader and sysops)" local || return 1
+E: describe   T: tags   M: move to another area   R: remove (uploader and sysops)" local || return 1
         case $MKEY in
             [Qq]) return 0 ;;
             [Dd])
@@ -2490,6 +2563,18 @@ E: describe   M: move to another area   R: remove (uploader and sysops)" local |
                 # Nothing typed and nothing there: nothing to do.
                 [[ -n $XFER_DESC || ${#descs[@]} -gt 0 ]] || continue
                 if xfer_send_desc "$id" "$XFER_DESC"; then
+                    echo "Saved. It shows within a minute."
+                else
+                    echo "Could not save that right now. Try again later."
+                fi
+                pause
+                ;;
+            [Tt])
+                echo
+                [[ -n $tags ]] && echo "Now: $tags. A single - takes them away."
+                xfer_ask_tags "$name" || return 1
+                [[ -n ${XFER_TAGS// } ]] || continue
+                if xfer_send_tags "$id" "$XFER_TAGS"; then
                     echo "Saved. It shows within a minute."
                 else
                     echo "Could not save that right now. Try again later."
@@ -3505,7 +3590,7 @@ wall_write() {
     echo "Greeting, max $WALL_MAX_CHARS chars. [Enter] Back."
     rline text "> " || return
     text=$(printf '%s' "$text" | safe)
-    [[ -n $text ]] || return
+    [[ -n ${text//[[:space:]]/} ]] || { empty_post; return; }
     len=$(printf '%s' "$text" | LC_ALL=C.UTF-8 wc -m)
     if (( len > WALL_MAX_CHARS )); then
         echo "Too long ($len/$WALL_MAX_CHARS characters)."

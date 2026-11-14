@@ -421,6 +421,8 @@ handle_post() { # handle_post <file> <owner account>
     # Board names come from a fixed pattern and an existing directory, never as a raw path.
     [[ $board =~ ^[a-z0-9_-]{1,32}$ && -d $BBS_ROOT/boards/$board && ! -L $BBS_ROOT/boards/$board ]] || return 1
     [[ -n $subject ]] || return 1
+    # A post with no text is not published (the menu says so before it is sent).
+    awk 'found && /[^[:space:]]/ { t = 1 } /^$/ && !found { found = 1 } END { exit !t }' "$f" || return 1
     [[ -z $parent || $parent =~ ^[0-9a-f-]{36}$ ]] || return 1
     # A private board takes posts only from its members.
     if is_private "$board"; then
@@ -516,25 +518,46 @@ activity_add() { # activity_add <post|wall|call> <account>
     return 0
 }
 
+# One activity line per message file on stdin's list: not deleted, not news, and with
+# text in the body (an empty post never counts).
+ACTIVITY_PROG='function out() { if (a != "" && !x && has && a != "news" && a != "newsstatus") print substr(d, 1, 10), kind, a }
+    FNR == 1 { if (NR > 1) out(); body = 0; a = ""; d = ""; x = 0; has = 0 }
+    body { if ($0 ~ /[^[:space:]]/) has = 1; next }
+    /^$/ { body = 1; next }
+    /^Author: / { a = $2 } /^Date: / { d = $2 } /^Deleted: / { x = 1 }
+    END { if (NR) out() }'
+
+# The "post" lines for the posts on public boards on disk right now (not news).
+activity_posts() {
+    local b name
+    for b in "$BBS_ROOT"/boards/*/; do
+        name=$(basename "$b")
+        [[ $name == news ]] && continue
+        is_private "$name" && continue
+        find "$b" -maxdepth 1 -type f -name '*.msg' -exec awk -v kind=post "$ACTIVITY_PROG" {} +
+    done
+}
+
 # Built once, when the log does not exist: the posts on public boards still on disk
 # (not deleted, not news), the Wall (newest 100) and the callers log (newest 500).
 activity_backfill() {
     [[ -e $ACTIVITY_LOG ]] && return 0
-    local tmp=$ACTIVITY_LOG.tmp.$$ b name files
-    local prog='FNR == 1 { body = 0; a = ""; d = ""; x = 0 }
-        body { next }
-        /^$/ { body = 1; if (a != "" && !x && a != "news" && a != "newsstatus") print substr(d, 1, 10), kind, a; next }
-        /^Author: / { a = $2 } /^Date: / { d = $2 } /^Deleted: / { x = 1 }'
+    local tmp=$ACTIVITY_LOG.tmp.$$
     {
-        for b in "$BBS_ROOT"/boards/*/; do
-            name=$(basename "$b")
-            [[ $name == news ]] && continue
-            is_private "$name" && continue
-            find "$b" -maxdepth 1 -type f -name '*.msg' -exec awk -v kind=post "$prog" {} +
-        done
-        [[ -d $WALL ]] && find "$WALL" -maxdepth 1 -type f -name '*.msg' -exec awk -v kind=wall "$prog" {} +
+        activity_posts
+        [[ -d $WALL ]] && find "$WALL" -maxdepth 1 -type f -name '*.msg' -exec awk -v kind=wall "$ACTIVITY_PROG" {} +
         [[ -r $CALLERS_LOG ]] && awk 'NF == 2 { print substr($1, 1, 10), "call", $2 }' "$CALLERS_LOG"
     } | sort > "$tmp" && chmod 0644 "$tmp" && mv -f -- "$tmp" "$ACTIVITY_LOG" || rm -f -- "$tmp"
+}
+
+# After a delete: the post lines are counted again from the boards, so a deleted post
+# no longer counts. Wall and call lines stay as logged. Never fails the delete.
+activity_recount() {
+    [[ -e $ACTIVITY_LOG ]] || { activity_backfill; return 0; }
+    local tmp=$ACTIVITY_LOG.tmp.$$
+    { { awk '$2 != "post"' "$ACTIVITY_LOG"; activity_posts; } | sort > "$tmp" && chmod 0644 "$tmp" \
+        && mv -f -- "$tmp" "$ACTIVITY_LOG"; } 2>/dev/null || rm -f -- "$tmp"
+    return 0
 }
 
 hdr_get() { # hdr_get <file> <Name>
@@ -635,6 +658,37 @@ change_post() { # change_post <action> <request> <owner account> <board> <msgid>
     mv -f -- "$tmp" "$old"
 }
 
+# Msgids of a post and every reply below it, at any depth, in one board.
+subtree_msgids() { # subtree_msgids <board> <msgid>
+    local f
+    for f in "$BBS_ROOT/boards/$1"/*.msg; do
+        [[ -f $f && ! -L $f ]] && printf '%s\t%s\n' "$(hdr_get "$f" Msgid)" "$(hdr_get "$f" Parent)"
+    done | awk -F '\t' -v top="$2" '
+        { kids[$2] = kids[$2] " " $1 }
+        END { todo[1] = top; n = 1; seen[top] = 1
+              for (i = 1; i <= n; i++) {
+                  print todo[i]
+                  k = split(kids[todo[i]], c, " ")
+                  for (j = 1; j <= k; j++) if (!(c[j] in seen)) { seen[c[j]] = 1; todo[++n] = c[j] }
+              } }'
+}
+
+# delete-thread: a sysop or board owner deletes a post and all replies below it. Each
+# live post becomes a stub through change_post (backup and moderation log as for one
+# post); stubs with nothing active below are hidden, so the thread is gone from view.
+delete_thread() { # delete_thread <request> <owner account> <board> <msgid>
+    local id f
+    can_manage "${2#bbs-}" "$3" || return 1
+    if is_private "$3"; then in_group "$2" "bbsb-$3" || return 1; fi
+    post_file "$3" "$4" >/dev/null || return 1
+    while read -r id; do
+        [[ $id =~ $UUID_RE ]] || continue
+        f=$(post_file "$3" "$id") || continue
+        sed '/^$/q' "$f" | grep -q '^Deleted: ' && continue
+        change_post delete-post "$1" "$2" "$3" "$id" || return 1
+    done < <(subtree_msgids "$3" "$4")
+}
+
 handle_req() { # handle_req <file> <owner account>
     local f=$1 owner=$2 me action board user msgid rc
     me=${owner#bbs-}
@@ -665,14 +719,19 @@ handle_req() { # handle_req <file> <owner account>
                 pkill -TERM -u "bbs-$user" 2>/dev/null || true
             fi
             ;;
-        edit-post|delete-post)
+        edit-post|delete-post|delete-thread)
             msgid=$(hdr_get "$f" Msgid)
             [[ $msgid =~ $UUID_RE ]] || return 1
             [[ -d $BBS_ROOT/boards/$board && ! -L $BBS_ROOT/boards/$board ]] || return 1
             [[ ! -f $META/$board.readonly ]] || return 1
             # Lock timeout is temporary: the request stays in the queue for a retry.
             lock_take || return 2
-            change_post "$action" "$f" "$owner" "$board" "$msgid"; rc=$?
+            if [[ $action == delete-thread ]]; then
+                delete_thread "$f" "$owner" "$board" "$msgid"; rc=$?
+            else
+                change_post "$action" "$f" "$owner" "$board" "$msgid"; rc=$?
+            fi
+            (( rc == 0 )) && [[ $action != edit-post ]] && activity_recount
             lock_drop
             return $rc
             ;;

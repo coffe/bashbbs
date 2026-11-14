@@ -128,8 +128,11 @@ req d1 delete-post general "$id" < /dev/null
 lib handle_req "$RQ" bbs-bob; check "delete by other user: rejected" eq $? 1
 check "delete by other user: post still shown" eq "$(hval "$A" Subject)" "Ny rubrik två"
 
+printf '2026-01-01 post alice\n2026-01-01 post alice\n2026-01-01 post alice\n' > "$root/state/activity.log"
 req d2 delete-post general "$id" < /dev/null
 lib handle_req "$RQ" bbs-alice; check "delete by author: accepted" eq $? 0
+check "delete: activity counted again from disk" eq "$(grep -c "post alice" "$root/state/activity.log")" \
+    "$(grep -l '^Author: alice$' "$root"/boards/general/*.msg | xargs grep -L '^Deleted:' | wc -l)"
 check "delete: subject [deleted]" eq "$(hval "$A" Subject)" "[deleted]"
 check "delete: Deleted set" test -n "$(hval "$A" Deleted)"
 check "delete: Msgid kept" eq "$(hval "$A" Msgid)" "$id"
@@ -254,6 +257,41 @@ check "concurrent: history 1 holds the original" grep -qxF "Subject: $orig" "$ro
 check "concurrent: post is one of the two edits" eq "$(hval "$CP" Subject | grep -cxE 'Först|Sist')" 1
 check "concurrent: no temp files left" eq "$(ls -a "$root/boards/general" | grep -c '^\.tmp\.')" 0
 
+# ---- G. delete-thread: sysop or owner takes a post and every reply below ----
+# mkreply <board> <owner> <parent msgid> <body>: like mkpost, with a Parent.
+mkreply() {
+    local n=$((seq + 1)) f
+    seq=$n
+    f=$root/t/post$n.post
+    printf 'Board: %s\nSubject: Rubrik %s\nParent: %s\n\n%s\n' "$1" "$n" "$3" "$4" > "$f"
+    lib handle_post "$f" "$2" || return 1
+    MP=$(grep -l "^Subject: Rubrik $n\$" "$root"/boards/"$1"/*.msg)
+}
+newroot
+mkpost general bbs-alice "trådstart"; T0=$MP; t0=$(hval "$T0" Msgid)
+mkreply general bbs-bob "$t0" "svar ett"; T1=$MP; t1=$(hval "$T1" Msgid)
+mkreply general bbs-dave "$t1" "svar på svar"; T2=$MP
+mkpost general bbs-bob "annan tråd"; OT=$MP
+req g1 delete-thread general "$t0" < /dev/null
+lib handle_req "$RQ" bbs-bob; check "delete-thread by a non-sysop: rejected" eq $? 1
+check "delete-thread rejected: reply still live" eq "$(hval "$T1" Subject)" "Rubrik $((seq - 2))"
+req g2 delete-post general "$t0" < /dev/null
+lib handle_req "$RQ" bbs-alice; check "thread start deleted by author: stub" eq "$(hval "$T0" Subject)" "[deleted]"
+req g3 delete-thread general "$t0" < /dev/null
+lib handle_req "$RQ" bbs-carol; check "delete-thread on a stub by sysop: accepted" eq $? 0
+check "delete-thread: reply is a stub" eq "$(hval "$T1" Subject)" "[deleted]"
+check "delete-thread: reply to reply is a stub" eq "$(hval "$T2" Subject)" "[deleted]"
+check "delete-thread: other thread untouched" eq "$(hval "$OT" Subject)" "Rubrik $seq"
+check "delete-thread: replies are logged as moderation" eq "$(grep -c $'\tcarol\tgeneral\t' "$root/state/mod.log")" 2
+check "delete-thread: nothing of it is listed" eq "$( (export BBS_ROOT=$root BASHBBS_TEST=1 USER=bbs-carol BASHBBS_TEST_ID=bbs-carol HOME=$root; source "$here/lib/menu.sh" >/dev/null 2>&1; visible_posts general) | grep -c .)" 1
+newroot
+printf 'owner=alice\n' > "$root/meta/priv.meta"
+mkpost priv bbs-bob "privat start"; P0=$MP; p0=$(hval "$P0" Msgid)
+mkreply priv bbs-dave "$p0" "privat svar"; P1=$MP
+req g4 delete-thread priv "$p0" < /dev/null
+lib handle_req "$RQ" bbs-alice; check "delete-thread by the board owner: accepted" eq $? 0
+check "owner's delete-thread: start and reply are stubs" eq "$(hval "$P0" Subject)$(hval "$P1" Subject)" "[deleted][deleted]"
+
 # ---- D. menu (lib/menu.sh): commands under a post, width -------------------
 # menuf <user> <function> [args]: runs a menu function as bbs-<user>, input on stdin.
 menuf() {
@@ -261,6 +299,7 @@ menuf() {
     mkdir -p "$root/home/bbs-$u"
     ( export BBS_ROOT="$root" USER="bbs-$u" BASHBBS_TEST_ID="bbs-$u" HOME="$root/home/bbs-$u" BASHBBS_TEST=1
       source "$here/lib/menu.sh"
+      n=1 root=""  # post_actions reads these locals of _thread_view
       "$@" ) >>"$log" 2>&1
 }
 queued() { ls "$root/queue/incoming" | grep -c '\.req$'; }
@@ -286,6 +325,11 @@ printf 'e\nn.\n' | menuf alice post_actions general "$A"
 check "menu: empty new text: nothing queued" eq "$(queued)" 0
 printf 'e\nd\nDELETE\n' | menuf bob post_actions general "$A"
 check "menu: other user cannot edit or delete" eq "$(queued)" 0
+printf 'dTHREAD\n' | menuf carol post_actions general "$A"
+check "menu: sysop THREAD queues delete-thread" grep -qxF 'Action: delete-thread' "$(ls "$root"/queue/incoming/*.req)"
+sent
+printf 'dTHREAD\n' | menuf alice post_actions general "$A"
+check "menu: author typing THREAD queues nothing" eq "$(queued)" 0
 printf 'dja\n' | menuf alice post_actions general "$A"
 check "menu: wrong confirm word: nothing queued: nothing queued" eq "$(queued)" 0
 printf 'ddelete\n' | menuf alice post_actions general "$A"

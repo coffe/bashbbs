@@ -316,6 +316,18 @@ apply_area() { # apply_area <request> <account> <id> <meta>
     meta_replace "$4" area "area=$area" && echo "bbs-upload: $2 moved $3 to the area $area"
 }
 
+# Tags: lower case a-z, 0-9 and -, split on spaces or commas, at most 5 of 20 characters.
+tags_clean() {
+    tr 'A-Z,\t\n' 'a-z   ' | tr -cd 'a-z0-9 -' | tr -s ' ' '\n' | cut -c1-20 \
+        | awk 'NF && !/^-+$/ && !seen[$0]++' | head -n 5 | paste -sd ' '
+}
+
+apply_tags() { # apply_tags <request> <account> <id> <meta>
+    local tags
+    tags=$(read_as_user "$1" "$2" 256 | tags_clean) || return 1
+    meta_replace "$4" tags "${tags:+tags=$tags}" && echo "bbs-upload: $2 changed the tags of $3"
+}
+
 # Changes to a published file asked for in the menu: queue/<dir>/<id>.<ext>, one file per
 # change, for the uploader and the sysops. The owner of the request says who is asking,
 # and the queue is open to all accounts, so what is there may not be a plain file. Every
@@ -458,6 +470,7 @@ process_removals      # before the sorting below, so a removal frees quota at on
 # Without the cleaner the description requests wait, so none is wiped by mistake.
 [[ -n $DIZ ]] && process_requests filedesc desc apply_desc
 process_requests filearea area apply_area
+process_requests filetags tags apply_tags
 process_webup
 expire_xfer
 

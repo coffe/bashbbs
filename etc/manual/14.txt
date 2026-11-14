@@ -10,7 +10,7 @@ Use scp -O, the old protocol. Plain scp and sftp do not work here.
 
 Notes:
 - Files sent with scp land in the General area. Move them with M and add a
-  description with E in the menu.
+  description with E and tags with T in the menu.
 - If an scp upload fails, nothing from it is saved and the reason is not
   shown. Use the web link when you want to see why.
 - The same limits and checks apply as for web uploads (chapter 13).

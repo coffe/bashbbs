@@ -10,7 +10,7 @@ Files are sorted into areas:
   Utilities  tools and useful programs
   Grafix     pictures, pixel art and ANSI
 
-Type an area's number to open it. Inside you get ten files per page. Each
+Type an area's number to open it. Inside you get a page of files. Each
 row shows name, size, who uploaded it, the date and how many times it has
 been downloaded, with the description underneath. A + in front means you
 flagged it, a * means it is new.
@@ -20,9 +20,11 @@ flagged it, a * means it is new.
   D       download
   A       flag or unflag a file (C clears all flags)
   O       show the ways to transfer
+  S       search names, descriptions and tags
+  N       the newest 20 files in every area
   Q       back
 
-Opening your own file gives three more keys: E describe, M move to another
-area, R remove it.
+S and N also work from the list of areas. Opening your own file gives four
+more keys: E describe, T tags, M move to another area, R remove it.
 
 Next: how to download (12) and upload (13).

@@ -177,6 +177,12 @@ STEPS=('Subject=>nytt\n' 'Write text=>hej\n.\n' 'Any key=>x')
 check "new thread: runs without a Quote question" drive "compose general ''"
 check "new thread: no Parent, no quote, no Quote? prompt" bash -c "! grep -q '^Parent' '$(lastq)' && ! grep -q Quote '$out/c.txt' && ! grep -q '^>' '$(lastq)'"
 
+sleep 1.1; before=$(lastq)
+STEPS=('Subject=>tom\n' 'Write text=>  \n.\n' 'Any key=>x')
+check "empty post: runs" drive "compose general ''"
+check "empty post: nothing queued" eq "$(lastq)" "$before"
+check "empty post: gets the empty message" grep -q 'Empty - no text!' "$out/c.txt"
+
 # 5. Reply mail switch in My Account > 3 Settings.
 mkdir -p "$root/users/alice"; printf 'name=alice\nuuid=x\n' > "$root/users/alice/profile"
 check "prefs: default is on" eq "$(lib eval 'prefs_load; echo $REPLYMAIL')" 1

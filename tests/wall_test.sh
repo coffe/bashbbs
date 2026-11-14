@@ -215,6 +215,10 @@ check "the greeting shows in wall/" present 'Hej från menyn'
 printf '%s\n\n' "$(python3 -c 'print("å" * 141)')" | menu_run "$o5" wall_write
 check "write: 141 characters are not queued" eq "$(ls "$root"/queue/incoming/*.wall 2>/dev/null | wc -l)" 0
 
+printf '   \n\n' | menu_run "$o5" wall_write
+check "write: blank greeting is not queued" eq "$(ls "$root"/queue/incoming/*.wall 2>/dev/null | wc -l)" 0
+check "write: blank greeting gets the empty message" grep -q 'Empty - no text!' "$o5"
+
 o6=$scratch/wall-top.out
 menu_run "$o6" top_bar ""
 check "header: [W] Wall" grep -q '\[W\] Wall' "$o6"

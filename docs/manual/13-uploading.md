@@ -26,5 +26,9 @@ Descriptions: a zip or lha with a FILE_ID.DIZ inside gets that text as its
 description. Without one the BBS asks for up to 3 lines of 60 characters.
 An empty line skips it. You can change it later with E.
 
+Tags: after that the BBS asks for up to 5 tags, words split by spaces,
+so the file is easier to find with S. Enter alone skips. Change them
+later with T on the file's page; a single - removes them.
+
 New files show up for everybody within a minute. There is no review queue,
 so share things you are happy to be named on.
