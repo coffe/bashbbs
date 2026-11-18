@@ -77,6 +77,10 @@ Before you run it, read these gotchas:
   `home_mailbox` is not `Maildir/`. It prints the command to fix `home_mailbox`. `etc/nftables-egress.example.nft` and
   `etc/sshd-hardening.example.conf` are templates for the host's own firewall and
   sshd settings. They are not installed.
+- **lighttpd answers the whole LAN unless you limit it.** Copy
+  `etc/web-proxy.example.nft` to `/etc/bashbbs-web.nft` and set `PROXY` to your reverse
+  proxy's address. The lighttpd drop-in loads it before every start, so only the proxy
+  (and the host itself) reaches port 80.
 - **The sshd `Match` block is appended once** and must stay at the end of
   `sshd_config`. The installer copies the original to
   `/etc/ssh/sshd_config.pre-bashbbs.<date>` first.

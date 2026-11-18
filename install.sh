@@ -35,10 +35,13 @@ install -d -m 0755 /usr/local/lib/bashbbs
 install -m 0755 "$src/lib/menu.sh" /usr/local/lib/bashbbs/menu.sh
 install -m 0644 "$src/lib/upload-common.sh" /usr/local/lib/bashbbs/upload-common.sh
 install -m 0644 "$src/lib/xfer.sh" /usr/local/lib/bashbbs/xfer.sh
+install -m 0644 "$src/lib/features.sh" /usr/local/lib/bashbbs/features.sh
 install -m 0644 "$src/lib/diz.py" /usr/local/lib/bashbbs/diz.py
+install -m 0644 "$src/lib/cp437.py" /usr/local/lib/bashbbs/cp437.py
 install -m 0755 "$src/bin/bbs-shell" /usr/local/sbin/bbs-shell
 install -m 0755 "$src/sbin/bbs-provision" /usr/local/sbin/bbs-provision
 install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
+install -m 0755 "$src/sbin/bbs-fido" /usr/local/sbin/bbs-fido
 install -m 0755 "$src/bin/bbs-ingest" /usr/local/sbin/bbs-ingest
 install -m 0755 "$src/sbin/bbs-drop" /usr/local/sbin/bbs-drop
 install -m 0755 "$src/sbin/bbs-upload" /usr/local/sbin/bbs-upload
@@ -110,6 +113,8 @@ install -d -m 0755 /srv/bashbbs/state /srv/bashbbs/state/tmp /srv/bashbbs/lib
 # The sysop may edit this file, so it is copied only when missing. A re-run keeps the edits.
 [[ -e /srv/bashbbs/lib/news-categories.conf ]] || install -m 0644 "$src/lib/news-categories.conf" /srv/bashbbs/lib/news-categories.conf
 install -d -m 1733 /srv/bashbbs/queue/incoming
+# Feature switches: written by root, read by the menu at every login.
+features_merge "$src/etc/features.example" /srv/bashbbs/features
 
 # Protected history (old versions of edited posts) and admin backups, written by
 # bbs-publish. Root only. install -d sets the mode only on the last level, so each is listed.
@@ -168,7 +173,7 @@ install -d -m 0750 -o root -g root /srv/bashbbs/drop/rejected
 
 # Timers: the publisher and the key handler every minute, the drop folder every
 # 5 minutes, history retention daily at 04:10.
-for u in bbs-publish.service bbs-publish.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer bbs-upload.service bbs-upload.timer bbs-upload.path; do
+for u in bbs-publish.service bbs-publish.timer bbs-fido.service bbs-fido.timer bbs-drop.service bbs-drop.timer bbs-history-expire.service bbs-history-expire.timer bbs-keys.service bbs-keys.timer bbs-upload.service bbs-upload.timer bbs-upload.path; do
     install -m 0644 "$src/systemd/$u" "/etc/systemd/system/$u"
 done
 # Admin sorter units, one line each so bbs-deploy can find them.
@@ -176,7 +181,7 @@ install -m 0644 "$src/systemd/bbs-admin-apply.path" /etc/systemd/system/bbs-admi
 install -m 0644 "$src/systemd/bbs-admin-apply.service" /etc/systemd/system/bbs-admin-apply.service
 install -m 0644 "$src/systemd/bbs-admin-apply.timer" /etc/systemd/system/bbs-admin-apply.timer
 systemctl daemon-reload
-systemctl enable --now bbs-publish.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer bbs-upload.timer bbs-upload.path bbs-admin-apply.timer bbs-admin-apply.path
+systemctl enable --now bbs-publish.timer bbs-fido.timer bbs-drop.timer bbs-history-expire.timer bbs-keys.timer bbs-upload.timer bbs-upload.path bbs-admin-apply.timer bbs-admin-apply.path
 
 # Application form. www-data writes new applications into incoming/ (write only,
 # no listing). The sysop moves them to done/ or rejected/ with bbs-approve.

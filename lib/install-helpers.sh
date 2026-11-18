@@ -72,3 +72,25 @@ keep_or_note() { # keep_or_note <repo file> <target>
         echo "KEPT $2: differs from $1. New version: $2.new. Compare: diff $2 $2.new" >&2
     fi
 }
+
+# Seeds the features file. A missing file is copied from the template (every feature off).
+# An existing file keeps every line and value; a feature it lacks is appended, off, with
+# the comment line above it in the template.
+features_merge() { # features_merge <template> <target>
+    if [[ ! -e $2 ]]; then
+        install -m 0644 "$1" "$2"
+        echo "NEW $2: every feature is off. Change off to on there to switch one on." >&2
+        return
+    fi
+    local line prev="" k
+    while IFS= read -r line; do
+        if [[ $line =~ ^([a-z.]+)= ]]; then
+            k=${BASH_REMATCH[1]}
+            if ! grep -q "^[[:space:]]*${k//./\\.}[[:space:]]*=" "$2"; then
+                printf '%s%s=off\n' "${prev:+$prev$'\n'}" "$k" >> "$2"
+                echo "ADDED $k=off to $2" >&2
+            fi
+        fi
+        if [[ $line == '# '* ]]; then prev=$line; else prev=""; fi
+    done < "$1"
+}

@@ -225,7 +225,8 @@ check "message: Q goes back to the folder, then the menu (folder, message, folde
 check "message: the open message shows no jump bar" eq "$(grep -c '\[B\] Boards' "$o")" 2
 check "local header has no jump keys" not grep -q 'Boards' <(run_as carol local_header Test '[Q] Back')
 mkdir -p "$root/boards/general"; printf 'Author: bbs-bob\nSubject: Hej\nMsgid: <x@y>\n\nText\n' > "$root/boards/general/1-a.msg"
-pa() { post_actions general "$root/boards/general/1-a.msg"; echo "RC=$? NAV=[$nav_req]"; }
+pa() { local n=1  # n is a local of _thread_view in real use
+    post_actions general "$root/boards/general/1-a.msg"; echo "RC=$? NAV=[$nav_req]"; }
 o=$root/jump3.txt; printf 'bmwgq' | run_as carol pa > "$o" 2>>"$log"
 check "open post: jump keys ignored (P is Previous), no logout question, Q returns 0" grep -q 'RC=0 NAV=\[\]$' "$o"
 check "open post: no logout question" not grep -q 'Log out' "$o"

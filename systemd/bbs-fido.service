@@ -1,0 +1,10 @@
+[Unit]
+Description=BashBBS fsxNet poll (scan, binkd session with the hub, toss)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/bbs-fido poll

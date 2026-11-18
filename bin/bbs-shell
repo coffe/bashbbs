@@ -137,4 +137,9 @@ if [[ -n ${SSH_ORIGINAL_COMMAND:-} ]]; then
     fi
     exit $rc
 fi
+# CP437 for SyncTERM and other classic clients: the saved choice, else TERM=syncterm.
+cs=$(sed -n 's/^charset=//p' "$HOME/.bashbbs-prefs" 2>/dev/null | head -n 1)
+if [[ -t 0 ]] && [[ $cs == cp437 || ( -z $cs && ${TERM:-} == syncterm ) ]]; then
+    exec python3 -I /usr/local/lib/bashbbs/cp437.py /usr/local/lib/bashbbs/menu.sh
+fi
 exec /usr/local/lib/bashbbs/menu.sh

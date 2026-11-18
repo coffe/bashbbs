@@ -466,7 +466,7 @@ news_board() {
     while true; do
         news_width
         news_load_index
-        clear
+        clear 2>/dev/null || printf '\033[H\033[2J'
         {
             paint HEAD NEWS; echo
             news_rule
@@ -590,7 +590,7 @@ news_draw_list() {
             done | news_wrap "$tw"
         )
     fi
-    clear
+    clear 2>/dev/null || printf '\033[H\033[2J'
     {
         paint HEAD "NEWS / $(printf '%s' "$title" | safe)"; echo
         news_rule
@@ -716,7 +716,7 @@ news_read() {
         fi
         status="Article $((pos + 1)) of $total"
         (( pages > 1 )) && status+="  -  Page $page of $pages"
-        clear
+        clear 2>/dev/null || printf '\033[H\033[2J'
         {
             printf '%s\n' "${NEWS_HEAD[@]}"
             news_rule
@@ -760,7 +760,7 @@ news_show_link() {
     # small enough for 24 rows whatever the article's link is.
     qr=$link
     [[ $aid =~ ^[0-9a-f]{8} ]] && qr=https://${BBS_PUBLIC_HOST:-bbs.piewpiew.se}/n.cgi/${BASH_REMATCH[0]}
-    clear
+    clear 2>/dev/null || printf '\033[H\033[2J'
     {
         paint HEAD Link; echo
         news_rule
@@ -783,7 +783,7 @@ news_show_link() {
     news_getkey
     [[ -n $link && $KEY == R ]] || return 0
     # The QR code gets its own screen: it does not fit beside the rest.
-    clear
+    clear 2>/dev/null || printf '\033[H\033[2J'
     while IFS= read -r line; do
         printf '%s%s%s\n' "${C_SUBJ:-}" "$line" "${C_RST:-}"
     done < <(qrencode -t UTF8 -m 2 -- "$qr" 2>/dev/null)

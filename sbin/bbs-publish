@@ -430,6 +430,8 @@ handle_post() { # handle_post <file> <owner account>
     fi
     # A read-only board (the news board) takes posts only from the news account.
     if [[ -f $META/$board.readonly && $owner != bbs-news ]]; then return 1; fi
+    # A fido board (fsxNet echomail) takes local posts only from sysops.
+    if [[ -f $META/$board.fido ]] && ! is_sysop "${owner#bbs-}"; then return 1; fi
 
     # A closed thread (meta/<board>.pins) takes replies only from sysops.
     if [[ -n $parent ]] && thread_is_closed "$board" "$parent" && ! is_sysop "${owner#bbs-}"; then
@@ -618,6 +620,8 @@ change_post() { # change_post <action> <request> <owner account> <board> <msgid>
     if is_private "$board"; then in_group "$owner" "bbsb-$board" || return 1; fi
 
     author=$(hdr_get "$old" Author)
+    # Fido boards keep imported text as it came: no edits, by anyone.
+    [[ $action == edit-post && -f $META/$board.fido ]] && return 1
     if [[ $action == edit-post ]]; then
         [[ $author == "$me" ]] || return 1
     else

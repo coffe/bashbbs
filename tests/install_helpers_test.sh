@@ -72,5 +72,24 @@ check "newsstatus forces bbs-news-status" grep -qx '    ForceCommand /usr/local/
 check "newsstatus block has no pty" bash -c 'awk "/^Match User newsstatus/{f=1;next} /^Match /{f=0} f" "$1" | grep -qx "    PermitTTY no"' _ "$frag"
 check "newsstatus block has no forwarding" bash -c 'awk "/^Match User newsstatus/{f=1;next} /^Match /{f=0} f" "$1" | grep -qx "    AllowTcpForwarding no"' _ "$frag"
 
+# features_merge: a missing file is the template; an existing one keeps its values and
+# gets only the missing names, off, with their comment.
+tmpl="$here/etc/features.example"
+features_merge "$tmpl" "$root/features" 2>/dev/null
+check "features: missing file is the template" cmp -s "$tmpl" "$root/features"
+check "features: template has every feature off" bash -c '! grep -E "^[a-z.]+=" "$1" | grep -qv "=off$"' _ "$tmpl"
+printf 'wall=on
+ news = on
+games.turf=off
+' > "$root/features2"
+features_merge "$tmpl" "$root/features2" 2>/dev/null
+check "features: existing values kept" bash -c 'head -n 3 "$1" | cmp -s - <(printf "wall=on\n news = on\ngames.turf=off\n")' _ "$root/features2"
+check "features: missing name appended off" grep -qx 'fame=off' "$root/features2"
+check "features: comment comes along" bash -c 'grep -B1 -x "fame=off" "$1" | grep -q "^# fame:"' _ "$root/features2"
+check "features: no name twice" bash -c '[[ -z $(grep -oE "^ *[a-z.]+ *=" "$1" | tr -d " =" | sort | uniq -d) ]]' _ "$root/features2"
+check "features: every template name present" bash -c 'for k in $(grep -oE "^[a-z.]+" <(grep -E "^[a-z.]+=" "$2")); do grep -qE "^ *${k//./\\.} *=" "$1" || exit 1; done' _ "$root/features2" "$tmpl"
+cp "$root/features2" "$root/features3"; features_merge "$tmpl" "$root/features2" 2>/dev/null
+check "features: second run changes nothing" cmp -s "$root/features2" "$root/features3"
+
 echo "install_helpers_test: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

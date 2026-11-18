@@ -225,7 +225,8 @@ rm -rf "$adir"
 # any key finishes it, file text never run, a missing file skipped by intro_run.
 bdir=$(mktemp -d "$scratch/boot.XXXXXX"); mkdir -p "$bdir/etc/intro"
 cp "$here/examples/intro/boot.txt" "$bdir/etc/intro/boot.txt"
-printf 'HEAD\n$(touch %s/pwned) `touch %s/pwned2`\n' "$bdir" "$bdir" > "$bdir/etc/intro/evil.txt"
+# One payload per line: a long scratch path must not make a line too wide to show.
+printf 'HEAD\n$(touch %s/pwned)\n`touch %s/pwned2`\n' "$bdir" "$bdir" > "$bdir/etc/intro/evil.txt"
 boot() { # boot <keydelay|-> <file> <hold>: runs intro_boot on a pipe, prints output and time
     ( [[ $1 != - ]] && sleep "$1" && echo x; sleep 6 ) | BBS_ROOT="$bdir" BASHBBS_TEST_ID=bbs-alice BASHBBS_TEST=1 BASHBBS_COLOR=1 TERM=xterm bash -c "
 source '$here/lib/menu.sh'; COLOR=1; S=\$EPOCHREALTIME; intro_boot '$bdir/etc/intro/$2' $3; rc=\$?; echo; echo \"rc=\$rc ms=\$(( (\${EPOCHREALTIME/./} - \${S/./}) / 1000 ))\"" 2>&1

@@ -19,6 +19,8 @@
 #   bbs-admin users remove <name> [--ja]
 #   bbs-admin alias check <name>              may <name> become a short login name (read-only)
 #   bbs-admin alias add|remove <name> [--ja]  short name for bbs-<name> (bbs-alias)
+#   bbs-admin features list                   name=value from the features file
+#   bbs-admin features on|off <name> [--ja]   switch one feature (must already be in the file)
 #
 # Without --ja every change only prints what it would do and exits 0.
 # Nothing is deleted: a removed home dir, key file and users/<name> are
@@ -63,6 +65,7 @@ usage: bbs-admin status
        bbs-admin mod list [n] | delete <board> <msgid> [--ja]
        bbs-admin users list | disable|enable <name> [--ja] | remove <name> [--ja]
        bbs-admin alias check <name> | add|remove <name> [--ja]
+       bbs-admin features list | on|off <name> [--ja]
        (root only, no sudo: --as <sysop>)
 EOF
     exit 64
@@ -335,6 +338,28 @@ case $cmd in
                 log_admin "alias remove $name"
                 exec "$SBIN/bbs-alias" remove "$name"
                 ;;
+            *) usage ;;
+        esac
+        ;;
+
+    features)
+        ff=$BBS_ROOT/features; name=${args[2]:-}
+        case $sub in
+            list)
+                [[ -r $ff ]] || die "no features file"
+                grep -E '^[^#[:space:]]+=' -- "$ff" ;;
+            on|off)
+                [[ $name =~ ^[a-z][a-z0-9.]*$ ]] || die "bad feature name"
+                grep -q -- "^$name=" "$ff" 2>/dev/null || die "unknown feature $name"
+                need_ja "switch feature $name $sub"
+                tmp=$(mktemp "$BBS_ROOT/.features.XXXXXX") || die "cannot create temp file"
+                while IFS= read -r line || [[ -n $line ]]; do
+                    [[ $line == "$name="* ]] && line=$name=$sub
+                    printf '%s\n' "$line"
+                done < "$ff" > "$tmp" && chmod 0644 "$tmp" && "$CHOWN" root "$tmp" && mv -f -- "$tmp" "$ff" \
+                    || { rm -f -- "$tmp"; die "cannot write features"; }
+                log_admin "features $sub $name"
+                echo "feature $name is $sub" ;;
             *) usage ;;
         esac
         ;;

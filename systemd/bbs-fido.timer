@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll the fsxNet hub hourly (bbs-fido does nothing while fido=off)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

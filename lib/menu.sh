@@ -49,6 +49,8 @@ safe_rows() { LC_ALL=C.UTF-8 sed 's/[^[:print:]\t]//g'; }
 # coloured token ends with C_RST on the same line.
 COLOR=0 COLOR_ASK=0
 REPLYMAIL=1   # replymail=1|0 in the same file: mail me when someone replies to my post
+# charset=utf8|cp437 in the same file; bbs-shell reads it at login (empty: cp437 when TERM=syncterm)
+CHARSET=
 C_HEAD= C_KEY= C_ACC= C_SUBJ= C_BAD= C_RST=
 
 color_init() { # color_init: set the palette from COLOR
@@ -85,6 +87,7 @@ prefs_load() {
     COLOR_ASK=0
     REPLYMAIL=$(sed -n 's/^replymail=\([01]\)$/\1/p' "$f" 2>/dev/null | head -n 1)
     [[ $REPLYMAIL == 0 ]] || REPLYMAIL=1
+    CHARSET=$(sed -n 's/^charset=\(utf8\|cp437\)$/\1/p' "$f" 2>/dev/null | head -n 1)
     if [[ -n ${BASHBBS_TEST:-} && ${BASHBBS_COLOR:-} == [01] ]]; then
         COLOR=$BASHBBS_COLOR
     else
@@ -101,7 +104,7 @@ prefs_load() {
 prefs_save() {
     local tmp
     tmp=$(mktemp "$HOME/.bashbbs-prefs.XXXXXX") || return 0
-    printf 'color=%s\nreplymail=%s\n' "$COLOR" "$REPLYMAIL" > "$tmp" && mv -f "$tmp" "$HOME/.bashbbs-prefs" || rm -f "$tmp"
+    { printf 'color=%s\nreplymail=%s\n' "$COLOR" "$REPLYMAIL"; [[ -z $CHARSET ]] || printf 'charset=%s\n' "$CHARSET"; } > "$tmp" && mv -f "$tmp" "$HOME/.bashbbs-prefs" || rm -f "$tmp"
     return 0
 }
 
@@ -420,13 +423,13 @@ show_help() { # show_help <text, lines separated by newlines>
     redraw
     local_header "Help"
     printf '%s\n' "$1"
-    if (( ${IN_MANUAL:-0} )); then
+    if (( ${IN_MANUAL:-0} )) || ! feature_on manual; then
         paint_bar "[Any key] Back"; echo
     else
         paint_bar "[H] Manual  [Any key] Back"; echo
     fi
     read_key_raw || true   # redraw drained before the help was drawn
-    if [[ $MKEY == [Hh] ]] && ! (( ${IN_MANUAL:-0} )); then manual_menu; fi
+    if [[ $MKEY == [Hh] ]] && ! (( ${IN_MANUAL:-0} )) && feature_on manual; then manual_menu; fi
     MKEY='?'
 }
 
@@ -451,6 +454,11 @@ menu_key() { # menu_key <prompt> <chars> <help text> [local]
 
 # Log out? One key; only y or Y says yes.
 confirm_logout() { read_confirm "Log out? [y/N] "; }
+
+# Feature switches ($BBS_ROOT/features), read once per login.
+# shellcheck source=features.sh
+source "$(dirname "${BASH_SOURCE[0]}")/features.sh"
+features_load
 
 # News reader (sections, article list, article view).
 # shellcheck source=news.sh
@@ -493,12 +501,15 @@ my_account() {
         redraw
         screen_header "My Account" "[Q] Back"
         menu_item 1 "Profile"
-        menu_item 2 "SSH Keys"
+        feat_item account.sshkeys 2 "SSH Keys"
         menu_item 3 "Settings"
-        menu_item 4 "Manual"
+        feat_item manual 4 "Manual"
         echo
         keyline "Q) Back"
-        menu_key "> " "1234Qq" "1-4: pick a section (4: the Manual)
+        local keys=13Qq
+        feature_on account.sshkeys && keys+=2
+        feature_on manual && keys+=4
+        menu_key "> " "$keys" "1-4: pick a section (4: the Manual)
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -593,11 +604,14 @@ account_settings() {
         local_header "Settings"
         echo "[C] Colour: $( ((COLOR)) && echo on || echo off )"
         echo "[N] Reply mail: $( ((REPLYMAIL)) && echo on || echo off )"
+        echo "[T] Characters: $( [[ ${BBS_CHARSET:-} == cp437 ]] && echo "CP437 (SyncTERM)" || echo UTF-8 )"
+        [[ -n $CHARSET && $CHARSET != "${BBS_CHARSET:-utf8}" ]] && echo "    $( [[ $CHARSET == cp437 ]] && echo CP437 || echo UTF-8 ) from the next login"
         read_key "$(paint_bar "[Any key] ")" || true
         echo
         case $MKEY in
             [Cc]) COLOR=$(( 1 - COLOR )); color_init; prefs_save ;;
             [Nn]) REPLYMAIL=$(( 1 - REPLYMAIL )); prefs_save ;;
+            [Tt]) [[ ${CHARSET:-${BBS_CHARSET:-utf8}} == cp437 ]] && CHARSET=utf8 || CHARSET=cp437; prefs_save ;;
             *) return 0 ;;
         esac
     done
@@ -950,18 +964,19 @@ nav_req=
 # The [P] Mail label only fits from 50 columns. The key works at every width.
 # When the bar is wider than the terminal, Goodbye goes to a second line.
 top_bar() {
-    local mail="" cols line tag="" n=0 f p1 p2=""
+    local mail="" cols line tag="" n=0 f p1 p2="" wall=""
     cols=$(term_width)
     # Unread mail on every screen, recomputed on each redraw (glob, no subshell per file).
     for f in "$HOME"/Maildir/new/*; do [[ -f $f ]] && n=$((n + 1)); done
     (( n > 0 )) && tag="Mail ($n)"
     (( cols >= 50 )) && mail=" [P] ${tag:-Mail}"
-    line="[B] Boards [M] Main${mail} [W] Wall [G] Goodbye${1:+  $1}"
+    feature_on wall && wall=" [W] Wall"
+    line="[B] Boards [M] Main${mail}${wall} [G] Goodbye${1:+  $1}"
     # The width is that of the plain text; the colour is added only when printing.
     if (( ${#line} <= cols )); then
         p1=$(paint_bar "$line")
     else
-        p1=$(paint_bar "[B] Boards [M] Main${mail} [W] Wall")
+        p1=$(paint_bar "[B] Boards [M] Main${mail}${wall}")
         p2=$(paint_bar "[G] Goodbye${1:+  $1}")
     fi
     # The unread count is the accent colour.
@@ -976,7 +991,7 @@ nav_key() {
         [Bb]) nav_req=boards ;;
         [Mm]) nav_req=main ;;
         [Pp]) nav_req=mail ;;
-        [Ww]) nav_req=wall ;;
+        [Ww]) feature_on wall || return 1; nav_req=wall ;;
         # The question reads its own key into MKEY. A "no" must not reach the caller's
         # case as a command (n = New post, q = Back), so MKEY is put back to G.
         [Gg]) if confirm_logout; then nav_req=quit; else MKEY=$1; return 1; fi ;;
@@ -1065,6 +1080,7 @@ board_order() { # board_order public|private <array>
         b=${b%/}; name=$(basename "$b")
         # Private boards stay hidden from users who are not members.
         [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
+        is_fido "$name" && ! feature_on fido && continue
         [[ $kind == public && $name =~ ^(general|sharednews|whatsup|news)$ ]] && continue
         if board_is_private "$b"; then
             [[ $kind == private ]] && rest+=("$name")
@@ -1245,7 +1261,7 @@ show_post() {
         val=$(printf '%s' "${line#*: }" | safe)
         case $key in
             Subject) subject=$val ;;
-            Author|From) author=${val#bbs-}; author=${author%%@*} ;;
+            Author|From) author=${val#bbs-}; [[ $author == *@fsx ]] || author=${author%%@*} ;;  # @fsx marks a fsxNet author
             Date) date=$val ;;
             Edited) edited=$val ;;
             Deleted) deleted=$val ;;
@@ -1347,7 +1363,7 @@ board_threads() { # board_threads <board> [since] [root-file]
         { file[++n] = $0; id[n] = ""; par[n] = ""; del[n] = 0; au[n] = ""
           while ((getline line < $0) > 0 && line != "" && line != "\r") {
               if (line ~ /^Msgid:/) id[n] = hdr(line)
-              else if (line ~ /^Author:/) { au[n] = hdr(line); sub(/^bbs-/, "", au[n]); sub(/@.*/, "", au[n]) }
+              else if (line ~ /^Author:/) { au[n] = hdr(line); sub(/^bbs-/, "", au[n]); if (au[n] !~ /@fsx$/) sub(/@.*/, "", au[n]) }
               else if (line ~ /^Parent:/) par[n] = hdr(line)
               else if (line ~ /^Deleted:/) del[n] = 1
           }
@@ -1500,7 +1516,7 @@ board_view() {
             i=$((i + 1))
         done
         keys=Qq hint="Q: back"
-        if is_readonly "$board"; then
+        if is_readonly "$board" || { is_fido "$board" && ! is_sysop; }; then
             keyline "Q) Back"
         elif manages "$board"; then
             keyline "N) New post   S) Members   Q) Back"
@@ -1510,7 +1526,7 @@ board_view() {
             keys+=Nn hint="N: new post   Q: back"
         fi
         # A read-only board has no N. Its owner can still reach S.
-        is_readonly "$board" && manages "$board" && keys+=Ss
+        { is_readonly "$board" || { is_fido "$board" && ! is_sysop; }; } && manages "$board" && keys+=Ss
         menu_key "> " "$keys$(digit_keys "${#roots[@]}")" \
 "Number: read a thread (* = new)
 $hint
@@ -1518,7 +1534,7 @@ B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return ;;
-            [Nn]) is_readonly "$board" || compose "$board" ""; continue ;;
+            [Nn]) is_readonly "$board" || { is_fido "$board" && ! is_sysop; } || compose "$board" ""; continue ;;
             [Ss]) manages "$board" && members_menu "$board"; continue ;;
             [1-9]) read_num "${#roots[@]}" || continue ;;
             *) continue ;;
@@ -1644,10 +1660,10 @@ post_actions() { # post_actions <board> <file>
     author=${HDR[Author]-}
     if [[ -z ${HDR[Deleted]-} ]] && ! is_readonly "$board"; then
         # $root is the thread being read, a local of _thread_view.
-        if ! thread_closed "$board" "$root" || is_sysop; then
+        if { ! thread_closed "$board" "$root" || is_sysop; } && { ! is_fido "$board" || is_sysop; }; then
             cmds+="R) Reply"; keys+=Rr hint+="R: reply"
         fi
-        [[ $author == "$me" ]] && { cmds+="${cmds:+  }E) Edit"; keys+=Ee; hint+="  E: edit"; }
+        [[ $author == "$me" ]] && ! is_fido "$board" && { cmds+="${cmds:+  }E) Edit"; keys+=Ee; hint+="  E: edit"; }
         if [[ $author == "$me" ]] || is_sysop || manages "$board"; then
             cmds+="${cmds:+  }D) Delete"; keys+=Dd; hint+="  D: delete"
         fi
@@ -1813,6 +1829,8 @@ manages() {
 
 # A read-only board has a .readonly marker in meta/. Only the news account posts there.
 is_readonly() { [[ -f $BBS_ROOT/meta/$1.readonly ]]; }
+# A fido board (fsxNet echomail) has a .fido marker: sysops post, nobody edits.
+is_fido() { [[ -f $BBS_ROOT/meta/$1.fido ]]; }
 
 # Requests go through the queue. The publisher runs as root and does the work.
 queue_request() {
@@ -2147,17 +2165,19 @@ main_menu() {
         screen_header "BashBBS"
         local un; un=$(mail_unread)
         menu_item 1 "Boards" "" "$( (( UNREAD_PUB || UNREAD_PRIV )) && echo '*')"
-        menu_item 2 "Wall"
-        menu_item 3 "News"
-        menu_item 4 "Fame & Glory"
+        feat_item wall 2 "Wall"
+        feat_item news 3 "News"
+        feat_item fame 4 "Fame & Glory"
         menu_item 5 "Mail" "" "$( (( un > 0 )) && echo "($un unread)")"
         menu_item 6 "My Account"
-        menu_item 7 "Games"
-        menu_item 8 "Files" "" "$(files_any_new && echo '*')"
+        feat_item games 7 "Games"
+        feat_item files 8 "Files" "" "$(feature_on files && files_any_new && echo '*')"
         sysop_menu_on && menu_item 9 "Sysop" "Status, applications, posts, users"
         echo
         keyline "Q) Log out"
-        local keys="12345678Qq"; sysop_menu_on && keys+=9
+        local keys=156Qq f
+        for f in 2:wall 3:news 4:fame 7:games 8:files; do feature_on "${f#*:}" && keys+=${f%%:*}; done
+        sysop_menu_on && keys+=9
         menu_key "> " "$keys" "1-8: pick a section (Manual: 6, then 4)
 9: Sysop (sysops only)
 Q or G: log out
@@ -2611,7 +2631,12 @@ E: describe   T: tags   M: move to another area   R: remove (uploader and sysops
 # Read-only status screens for the names in the sysops file. Nothing here writes.
 # The menu item is hidden when $BBS_ROOT/sysop-menu says "off" (root writes that file).
 # A missing file means on. Shell access for scripts is a separate path (bin/bbs-ctl).
-sysop_menu_on() { is_sysop && [[ $(sed -n 1p "$BBS_ROOT/sysop-menu" 2>/dev/null) != off ]]; }
+# The old sysop-menu file counts only while the features file has no sysop line.
+sysop_menu_on() {
+    is_sysop || return 1
+    [[ -v FEAT[sysop] ]] && { feature_on sysop; return; }
+    [[ $(sed -n 1p "$BBS_ROOT/sysop-menu" 2>/dev/null) != off ]]
+}
 
 sysop_menu() {
     sysop_menu_on || return 0
@@ -2627,10 +2652,13 @@ sysop_menu() {
         menu_item 7 "Mail all" "One message to every active account"
         menu_item 8 "Caller stats" "Calls per user, weekday and hour"
         menu_item 9 "Export callers" "A browser link to callers.log"
-        menu_item L "LiveChat" "Chat with other boards (test)"
+        feat_item sysop.livechat L "LiveChat" "Chat with other boards (test)"
+        menu_item F "Features" "Switch parts of the BBS on and off"
         echo
         keyline "Q) Back"
-        menu_key "> " "123456789LlQq" "1-9: pick a screen
+        local keys=123456789QqFf
+        feature_on sysop.livechat && keys+=Ll
+        menu_key "> " "$keys" "1-9: pick a screen
 L: LiveChat
 Q: back
 B M P W: jump   G: log out" || return
@@ -2647,7 +2675,57 @@ B M P W: jump   G: log out" || return
             8) sysop_callers_stats ;;
             9) sysop_callers_export ;;
             [Ll]) sysop_livechat ;;
+            [Ff]) features_menu ;;
         esac
+    done
+}
+
+# Sysop -> Features: every name=value line of $BBS_ROOT/features in file order, with the
+# comment line above it as description. A number toggles it through the admin queue.
+features_menu() {
+    local f=$BBS_ROOT/features line desc w n i name val
+    local -a names=() vals=() descs=()
+    while true; do
+        names=(); vals=(); descs=(); desc=
+        if [[ ! -r $f ]]; then echo "There is no features file."; pause; return; fi
+        while IFS= read -r line || [[ -n $line ]]; do
+            if [[ $line == '# '*:* ]]; then desc=${line#\# *: }
+            elif [[ $line == *=* && $line != \#* ]]; then
+                names+=("${line%%=*}"); vals+=("${line#*=}"); descs+=("$desc"); desc=
+            fi
+        done < "$f"
+        redraw
+        screen_header "Features" "[Q] Back"
+        w=$(list_width)
+        for (( i = 0; i < ${#names[@]}; i++ )); do
+            val=off; [[ ${vals[i]} == on ]] && val=on
+            printf '%s) %-16s %-3s' "$((i + 1))" "${names[i]}" "$val"
+            if (( w >= 50 )); then
+                desc=${descs[i]}; n=$(( w - 28 ))
+                (( ${#desc} > n )) && desc=$(list_fit "$n" "$desc")
+                [[ -z $desc ]] || printf '  %s' "$desc"
+            fi
+            echo
+        done
+        echo
+        keyline "Number: switch   Q) Back"
+        menu_key "> " "Qq$(digit_keys "${#names[@]}")" "Number: switch that feature on or off
+Q: back" local || return
+        case $MKEY in
+            [Qq]) return ;;
+            [1-9]) read_num "${#names[@]}" || continue ;;
+            *) continue ;;
+        esac
+        name=${names[NUM - 1]}; val=on
+        [[ ${vals[NUM - 1]} == on ]] && val=off
+        if [[ $name == sysop && $val == off ]]; then
+            echo
+            echo "This hides the Sysop menu. Switch it back on with: sudo bbs-admin features on sysop"
+            read_confirm "Switch sysop off? [y/N] " || continue
+        fi
+        echo
+        admin_request "features-$val" "name=$name" && features_load
+        pause
     done
 }
 
@@ -2808,7 +2886,7 @@ sysop_posts() {
         hdr_read "$b/$f"
         [[ -n ${HDR[Deleted]-} ]] && continue
         board=$(basename "$b")
-        author=${HDR[Author]-}; author=${author#bbs-}; author=${author%%@*}
+        author=${HDR[Author]-}; author=${author#bbs-}; [[ $author == *@fsx ]] || author=${author%%@*}
         subject=${HDR[Subject]-}
         printf '%-12s %-16s %s\n' "$(list_fit 12 "$board")" "$(list_fit 16 "$author")" "$(list_fit "$w" "$subject")"
         shown=$((shown + 1))
@@ -3152,11 +3230,14 @@ games_menu() {
     while true; do
         redraw
         screen_header "Games" "[Q] Back"
-        menu_item 1 "Hisingen Hustle" "Buy low. Sell high. Stay off the bridge."
-        menu_item 2 "Hisingen Turf Wars" "Take on the other callers. Rule the streets!"
+        feat_item games.dopewars 1 "Hisingen Hustle" "Buy low. Sell high. Stay off the bridge."
+        feat_item games.turf 2 "Hisingen Turf Wars" "Take on the other callers. Rule the streets!"
         echo
         keyline "Q) Back"
-        menu_key "> " "12Qq" "1: play alone   2: Turf Wars against other callers
+        local keys=Qq
+        feature_on games.dopewars && keys+=1
+        feature_on games.turf && keys+=2
+        menu_key "> " "$keys" "1: play alone   2: Turf Wars against other callers
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -3682,9 +3763,9 @@ EOF
 
 # The whole logout: Goodbye art, then an ad if any, and "Bye." after the last art.
 logout_screen() {
-    goodbye
+    ! feature_on goodbye || goodbye
     # Nobody may be there after (G)oodbye after transfer, and the ad waits for Space.
-    (( ${LOGOUT_QUIET:-0} )) || ad_run
+    (( ${LOGOUT_QUIET:-0} )) || ! feature_on ads || ad_run
     printf '%s\n' "${C_RST}Bye."
 }
 
@@ -3759,6 +3840,7 @@ new_board_posts() { # new_board_posts <since>
         [[ $(basename "$b") == news ]] && continue
         # Same visibility rule as board_menu: private boards stay hidden.
         [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
+        is_fido "$(basename "$b")" && ! feature_on fido && continue
         for f in "$b"/*.msg; do
             [[ -f $f && ! -L $f ]] || continue
             pre=$(basename "$f"); pre=${pre%%-*}
@@ -4179,6 +4261,7 @@ welcome_screen() {
     printf 'login=%s\n' "$(date +%s)" > "$seen" 2>/dev/null || true
     local callno; callno=$(caller_number)
     caller_queue
+    feature_on welcome || { nav_req=main; return; }
     while true; do
         redraw
         welcome_art
@@ -4190,14 +4273,14 @@ welcome_screen() {
             echo
             echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
             echo "  $(count_text "$(new_board_posts "$prev")" "new post" "new posts") on Public boards"
-            echo "  $(count_text "$(new_wall_greetings "$prev")" "new greeting" "new greetings") on the Wall"
+            ! feature_on wall || echo "  $(count_text "$(new_wall_greetings "$prev")" "new greeting" "new greetings") on the Wall"
         else
             echo "First visit. Welcome to BashBBS."
             echo
             echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
         fi
-        flags_load
-        if (( ${#FLAGS[@]} )); then
+        feature_on files && flags_load
+        if feature_on files && (( ${#FLAGS[@]} )); then
             echo
             echo "** Flagged File(s) Exist **"
         fi
@@ -4221,7 +4304,7 @@ welcome_screen() {
 
 # The tests source this file for its functions and skip the start loop.
 if [[ -z ${BASHBBS_TEST:-} ]]; then
-    prefs_ask; intro_run
+    prefs_ask; ! feature_on intro || intro_run
     welcome_screen
     # A section that returns without a nav request (Q) goes back to the main menu.
     while true; do
@@ -4232,9 +4315,9 @@ if [[ -z ${BASHBBS_TEST:-} ]]; then
             main) main_menu ;;
             boards) board_menu public ;;
             boardshome) boards_home ;;
-            news) news_open ;;
-            fame) fame_menu ;;
-            wall) wall_menu ;;
+            news) ! feature_on news || news_open ;;
+            fame) ! feature_on fame || fame_menu ;;
+            wall) ! feature_on wall || wall_menu ;;
             mail) mail_menu ;;
         esac
         [[ -n $nav_req ]] || nav_req=main

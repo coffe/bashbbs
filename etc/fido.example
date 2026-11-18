@@ -1,0 +1,16 @@
+# $BBS_ROOT/fido.conf: fsxNet (FidoNet-style) echomail through binkd. One setting per line.
+# Needs fido=on in $BBS_ROOT/features, and meta/<board>.fido (empty file) on each public board.
+address 21:9/999
+hub 21:1/100
+# hubhost <host>[:port]: where binkd reaches the hub (bbs-fido poll writes state/fido/binkd.cfg from this file)
+hubhost net1.fsxnet.nz:24554
+password CHANGEME
+bbsname Example BBS
+# sysop and location are optional (binkd session info)
+sysop Sysop
+location City, Country
+inbound /var/spool/binkd/inbound
+outbound /var/spool/binkd/outbound
+# area <ECHO TAG> <board>   (one line per echo; the tag is matched case-insensitively)
+area FSX_GEN fsx_gen
+area FSX_BBS fsx_bbs

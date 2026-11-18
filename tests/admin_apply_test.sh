@@ -211,5 +211,18 @@ check "done list: written for sysop coffe" eq "$(cat "$root/state/apps-done/coff
 check "done list: mode 0400" eq "$(stat -c %a "$root/state/apps-done/coffe")" 400
 check "done list: waiting list untouched" eq "$(wc -l < "$lst/coffe")" 0
 
+# features-on / features-off
+printf '# wall: the Wall\nwall=off\nnews=on\n' > "$root/features"
+req h1 id=1-h1 action=features-on name=wall
+req h2 id=1-h2 action=features-off name=news
+req h3 id=1-h3 action=features-on 'name=Wall;x'
+req h4 id=1-h4 action=features-on name=nosuch
+apply
+check "features-on is dispatched" has "$res/1-h1" "status=0"
+check "features-on flips the line" has "$root/features" "wall=on"
+check "features-off flips the line" has "$root/features" "news=off"
+check "features bad name gets status 65" has "$res/1-h3" "status=65"
+check "features unknown name is refused by bbs-admin" not_has "$res/1-h4" "status=0"
+
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

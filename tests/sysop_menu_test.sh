@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sysop menu: shown only to sysops, hidden by sysop-menu=off, read-only screens with
+# Sysop menu: shown only to sysops, hidden by sysop=off in features (or the old sysop-menu=off), read-only screens with
 # plain-English status, red only when colour is on. Everything runs in a temporary BBS_ROOT
 # with a stubbed systemctl. Usage: tests/sysop_menu_test.sh [logfile]
 set -u
@@ -57,11 +57,16 @@ lib_colour() { ( export BBS_ROOT="$root" HOME="$root/home" BASHBBS_TEST=1 BASHBB
 # 1. Visibility in the main menu.
 check "bob (not a sysop): no Sysop item" not has "$(printf 'q' | lib_as bbs-bob main_menu)" "Sysop"
 check "sys0p: Sysop item shown" has "$(printf 'q' | lib main_menu)" "Sysop"
-echo off > "$root/sysop-menu"
-check "sysop-menu=off: Sysop item hidden" not has "$(printf 'q' | lib main_menu)" "Sysop"
-check "sysop-menu=off: sysop_menu prints nothing" bash -c '[[ -z $("$@") ]]' _ lib sysop_menu
+echo 'sysop=off' > "$root/features"
+check "sysop=off: Sysop item hidden" not has "$(printf 'q' | lib main_menu)" "Sysop"
+check "sysop=off: sysop_menu prints nothing" bash -c '[[ -z $("$@") ]]' _ lib sysop_menu
+echo on > "$root/sysop-menu"
+check "sysop=off wins over the old sysop-menu file" not has "$(printf 'q' | lib main_menu)" "Sysop"
+echo 'wall=on' > "$root/features"; echo off > "$root/sysop-menu"
+check "no sysop line: old sysop-menu=off still hides" not has "$(printf 'q' | lib main_menu)" "Sysop"
 rm -f "$root/sysop-menu"
-check "sysop-menu missing: Sysop item shown (default on)" has "$(printf 'q' | lib main_menu)" "Sysop"
+check "no sysop line, no old file: Sysop item shown" has "$(printf 'q' | lib main_menu)" "Sysop"
+rm -f "$root/features"
 
 # 2. The sysop screen has six read-only items and goes back on Q.
 out=$(printf 'q' | lib sysop_menu)
@@ -336,6 +341,29 @@ out=$(printf 'lxq' | lib sysop_menu)
 check "livechat: a dead tunnel gives a message" has "$out" "LiveChat cannot be reached"
 mv "$root/bin/livechat-ssh" "$root/livechat-ssh.stub"
 mv "$root/livechat" "$root/livechat.stub"
+
+# Features: F in the sysop menu, a number queues the toggle, sysop-off asks first.
+out=$(printf 'q' | lib sysop_menu)
+check "features: F listed in the sysop menu" has "$out" "F) Features"
+out=$(printf 'q' | lib_as bbs-bob sysop_menu)
+check "features: hidden from non-sysops" not has "$out" "Features"
+printf '# wall: the Wall\nwall=off\n# sysop: the Sysop menu\nsysop=on\n' > "$root/features"
+fake_root 30 & fake2=$!
+clear_seen
+out=$(printf 'f1 qq' | lib sysop_menu)
+check "features: list shows names, state and description" bash -c '[[ $1 == *"1) wall"*off*"the Wall"* && $1 == *"2) sysop"*on* ]]' _ "$out"
+check "features: picking 1 queues features-on wall" bash -c 'grep -qx action=features-on "$1"/seen/*.req && grep -qx name=wall "$1"/seen/*.req' _ "$root"
+clear_seen
+out=$(printf 'f2nqq' | lib sysop_menu)
+check "features: sysop off asks first" has "$out" "sudo bbs-admin features on sysop"
+check "features: answering n queues nothing" nothing_queued
+out=$(printf 'f2y qq' | lib sysop_menu)
+check "features: answering y queues features-off sysop" bash -c 'grep -qx action=features-off "$1"/seen/*.req && grep -qx name=sysop "$1"/seen/*.req' _ "$root"
+narrow() { list_width() { echo 40; }; sysop_menu; }
+out=$(printf 'fq' | lib narrow)
+check "features: 40 columns drops the description" not has "$out" "the Wall"
+kill $fake2 2>/dev/null; rm -f "$root/features"
+clear_seen
 
 echo "sysop_menu_test: $pass passed, $fail failed (log: $log)"
 [[ $fail -eq 0 ]]

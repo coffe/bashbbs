@@ -548,7 +548,7 @@ def s_jump(w):
         s.send("n"); s.expect(r"Subject: $")
         s.send("bmpwBMPWgG\n")
         s.expect(r"Write text\. End with a single dot \(\.\)\.\r\n")
-        s.send(".\n")
+        s.send("x\n.\n")
         s.expect(PAUSE)
         chk("4 text input: B M P W G typed as text are in the subject",
             any("Subject: bmpwBMPWgG\n" in rd(f) for f in files(root, "*.post")))
@@ -827,7 +827,7 @@ def s_text(w):
         chk("11 wall write: queued, text intact (Q, B M P W G and CJK are text)", any(rd(x).strip() == txt for x in files(root, "*.wall")))
         s.k("x", WALL)
         n0 = len(files(root, "*.wall"))
-        t = s.k("n", r"Back\.\r\n> $"); t = s.k("\n", WALL)
+        t = s.k("n", r"Back\.\r\n> $"); t = s.k("\n", PAUSE) + s.k("x", WALL)  # empty line: "Empty - no text!" pause since fd9dad2
         chk("8 wall: empty line cancels, nothing saved (as in 1.3)", len(files(root, "*.wall")) == n0 and "Sent." not in t)
         s.k("q", MAIN)
         # mail

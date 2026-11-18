@@ -1,0 +1,47 @@
+# BashBBS features. Change off to on to switch a feature on; it takes effect at the
+# next login. Only an exact "on" counts. A name with a dot (games.turf) is on only when
+# the part before the dot (games) is on too. Boards, mail, the account settings and
+# the colour/charset question are always on.
+#
+# showoff: show switched-off menu items as "(off)" instead of hiding them
+showoff=off
+# wall: the Wall, one-line greetings (main menu 2, W)
+wall=off
+# news: the News reader (main menu 3); news posts keep arriving while it is off
+news=off
+# news.qr: a QR code with a short link under each news post (needs web)
+news.qr=off
+# fame: Fame & Glory, user lists and top lists (main menu 4)
+fame=off
+# games: the Games menu (main menu 7)
+games=off
+# games.dopewars: Hisingen Hustle, single player (needs /usr/games/dopewars)
+games.dopewars=off
+# games.turf: Hisingen Turf Wars, multiplayer (needs dopewars-server.service)
+games.turf=off
+# fido: fsxNet echomail boards (boards marked meta/<board>.fido); off hides them
+fido=off
+# files: the Files section, file areas and scp uploads/downloads (main menu 8)
+files=off
+# files.xfer.web: U) and D) in Files, transfers through a browser link (needs web)
+files.xfer.web=off
+# account.sshkeys: My Account -> SSH keys, log in with a key
+account.sshkeys=off
+# manual: My Account -> Manual
+manual=off
+# sysop: the Sysop menu for sysops (main menu 9)
+sysop=off
+# sysop.livechat: Sysop -> L) Live chat (test)
+sysop.livechat=off
+# web: the web front page and its CGIs (lighttpd)
+web=off
+# apply: the account application form on the web page (needs web)
+apply=off
+# intro: the intro art before the welcome screen
+intro=off
+# welcome: the welcome screen with caller number and news since the last login
+welcome=off
+# goodbye: the goodbye art at logout
+goodbye=off
+# ads: an ad from etc/ads at logout
+ads=off

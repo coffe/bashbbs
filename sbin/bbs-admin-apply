@@ -230,6 +230,9 @@ run_request() {
             only_fields name && ok_name || return 2
             ok_target "$who" || return 3
             argv=(alias remove "$R_name") ;;
+        features-on|features-off)
+            only_fields name && [[ $R_name =~ ^[a-z][a-z0-9.]*$ ]] || return 2
+            argv=(features "${R_action#features-}" "$R_name") ;;
         *) return 4 ;;
     esac
     (( ja )) && argv+=(--ja)

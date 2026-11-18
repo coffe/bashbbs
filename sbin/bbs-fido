@@ -1,0 +1,534 @@
+#!/usr/bin/env python3
+"""bbs-fido: exchange fsxNet (FTN) echomail between binkd and BashBBS board files.
+
+  bbs-fido toss   binkd inbound (.pkt, or ZIP bundles of .pkt) -> boards/<board>/*.msg
+  bbs-fido scan   new local posts of the configured boards -> one packet for the hub,
+                  queued in binkd's outbound (.flo)
+  bbs-fido poll   scan, one binkd session with the hub ("hubhost" in fido.conf), toss
+                  (what the hourly bbs-fido.timer runs; binkd.cfg is written from fido.conf)
+
+Runs as root. BBS_ROOT from the environment (default /srv/bashbbs). Config:
+$BBS_ROOT/fido.conf (see etc/fido.example). Needs "fido=on" in $BBS_ROOT/features.
+Nothing is deleted: handled packets go to state/fido/done/, rejected ones to state/fido/bad/.
+Everything that comes from a packet is data; no value from a packet is ever used in a path.
+"""
+import fcntl
+import hashlib
+import hmac
+import io
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import uuid
+import zipfile
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path[:0] = [os.path.join(HERE, "..", "lib"), "/usr/local/lib/bashbbs"]  # repo checkout, then installed
+import cp437  # noqa: E402,F401  (registers the "bbs_cp437" error handler)
+import wrap  # noqa: E402
+
+NS = uuid.UUID("6f1d3a52-8c47-4b0e-9a1e-5d2b7c4e9f10")  # fixed: ids must be stable across hosts
+MAX_BODY = 11000
+MAX_BUNDLE, MAX_MEMBER, MAX_MEMBERS, MAX_TOTAL = 10 << 20, 4 << 20, 200, 20 << 20
+MIN_AGE = 10
+MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+ADDR = re.compile(r"^(\d{1,5}):(\d{1,5})/(\d{1,5})(?:\.(\d{1,5}))?(?:@\S*)?$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+MEMBER = re.compile(r"[0-9A-Za-z_-]{1,64}\.pkt", re.I)
+BOARD = re.compile(r"^[a-z0-9_-]{1,32}$")
+CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+ROOT = os.environ.get("BBS_ROOT", "/srv/bashbbs")
+STATE = os.path.join(ROOT, "state", "fido")
+
+
+class Bad(Exception):
+    pass
+
+
+def clean(s):
+    return CTRL.sub("", s)
+
+
+def log(msg):
+    with open(os.path.join(STATE, "fido.log"), "a") as f:
+        f.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), clean(msg)[:300]))
+
+
+def parse_addr(s):
+    m = ADDR.match(s.strip())
+    if not m:
+        raise ValueError("bad address %r" % s)
+    z, n, f, p = m.groups()
+    return int(z), int(n), int(f), int(p or 0)
+
+
+def load_conf():
+    c = {"area": {}}
+    with open(os.path.join(ROOT, "fido.conf")) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            k, _, v = line.partition(" ")
+            v = v.strip()
+            if k == "area":
+                parts = v.split()
+                if len(parts) == 2 and BOARD.match(parts[1]):
+                    c["area"][parts[0].upper()] = parts[1]
+            else:
+                c[k] = v
+    for k in ("address", "hub", "password", "bbsname", "inbound", "outbound"):
+        if not c.get(k):
+            raise SystemExit("fido.conf: %s missing" % k)
+    c["addr"], c["hubaddr"] = parse_addr(c["address"]), parse_addr(c["hub"])
+    return c
+
+
+def feature_on():
+    on = False
+    try:
+        with open(os.path.join(ROOT, "features")) as f:
+            for line in f:
+                k, _, v = "".join(line.split()).partition("=")
+                if k == "fido":
+                    on = v == "on"
+    except OSError:
+        pass
+    return on
+
+
+# ---------- toss ----------
+
+def decode_text(raw, chrs):
+    enc = "cp437"
+    if chrs in ("UTF-8", "UTF8"):
+        enc = "utf-8"
+    elif chrs in ("LATIN-1", "LATIN1", "ISO-8859-1"):
+        enc = "latin-1"
+    return raw.decode(enc, "replace")
+
+
+def read_z(buf, pos):
+    end = buf.find(b"\0", pos)
+    if end < 0:
+        raise Bad("unterminated string")
+    return buf[pos:end], end + 1
+
+
+def parse_packet(data, conf):
+    """Return the list of messages of a packet; raise Bad when the packet is not acceptable."""
+    if len(data) < 58 or data[18:20] != b"\x02\x00":
+        raise Bad("not a Type 2 packet")
+    onode, = struct.unpack_from("<H", data, 0)
+    onet, = struct.unpack_from("<H", data, 20)
+    zone = struct.unpack_from("<H", data, 34)[0] or struct.unpack_from("<H", data, 46)[0]
+    point, = struct.unpack_from("<H", data, 50)
+    if onet == 0xFFFF:
+        onet = struct.unpack_from("<H", data, 38)[0]
+    if (zone, onet, onode, point) != conf["hubaddr"]:
+        raise Bad("packet from %d:%d/%d.%d, not the hub" % (zone, onet, onode, point))
+    want = conf["password"].upper().encode("latin-1", "replace")[:8].ljust(8, b"\0")
+    if not hmac.compare_digest(data[26:34].upper(), want):
+        raise Bad("wrong packet password")
+    msgs, pos = [], 58
+    while pos + 2 <= len(data):
+        if data[pos:pos + 2] == b"\0\0":
+            break
+        if data[pos:pos + 2] != b"\x02\x00" or pos + 14 > len(data):
+            raise Bad("bad message header")
+        pos += 14
+        date, pos = read_z(data, pos)
+        _to, pos = read_z(data, pos)
+        frm, pos = read_z(data, pos)
+        subj, pos = read_z(data, pos)
+        text, pos = read_z(data, pos)
+        msgs.append((date, frm, subj, text, "%d:%d/%d" % (zone, onet, onode)))
+    return msgs
+
+
+def parse_date(s, tz):
+    m = re.match(r"^(\d\d) ([A-Za-z]{3}) (\d\d)\s+(\d\d):(\d\d):(\d\d)", s)
+    try:
+        d, mon, y, H, M, S = m.groups()
+        y = int(y)
+        y += 2000 if y < 80 else 1900
+        t = time.struct_time((y, MON.index(mon.capitalize()) + 1, int(d), int(H), int(M), int(S), 0, 0, 0))
+        epoch = calendar_timegm(t) - tz
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+    except (AttributeError, ValueError):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def calendar_timegm(t):
+    import calendar
+    return calendar.timegm(t)
+
+
+def headers_of(path):
+    h = {}
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                line = line.decode("utf-8", "replace").rstrip("\n")
+                if not line:
+                    break
+                k, _, v = line.partition(": ")
+                h.setdefault(k, v)
+    except OSError:
+        pass
+    return h
+
+
+def find_local(bdir, msgid):
+    import glob
+    return glob.glob(os.path.join(bdir, "*-%s.msg" % msgid))
+
+
+def board_ok(board):
+    d = os.path.join(ROOT, "boards", board)
+    if os.path.islink(d) or not os.path.isdir(d) or not os.path.isfile(os.path.join(ROOT, "meta", board + ".fido")):
+        return None
+    try:
+        import grp
+        if grp.getgrgid(os.stat(d).st_gid).gr_name.startswith("bbsb-"):
+            return None
+    except KeyError:
+        pass
+    return d
+
+
+def toss_msg(conf, date, frm, subj, text, porig):
+    text = text.replace(b"\n", b"").replace(b"\x8d", b"")
+    lines = text.split(b"\r")
+    area, chrs, msgid, reply, tz = None, "", None, None, 0
+    kl, body = [], []
+    for i, ln in enumerate(lines):
+        if i == 0 and ln.upper().startswith((b"AREA:", b"\x01AREA:")):
+            area = ln.split(b":", 1)[1].decode("ascii", "replace").strip().upper()
+        elif ln.startswith(b"\x01"):
+            kl.append(ln[1:])
+        elif ln.startswith((b"SEEN-BY:", b"\x01SEEN-BY")):
+            pass
+        else:
+            body.append(ln)
+    if area is None:
+        return log("skip: message without AREA")
+    board = conf["area"].get(area)
+    if not board:
+        return log("skip: unknown area %s" % area)
+    d = board_ok(board)
+    if not d:
+        return log("skip: board %s of %s is missing, not fido or private" % (board, area))
+    for k in kl:
+        k = k.decode("latin-1")
+        tag, _, v = k.partition(":")
+        v = v.strip()
+        tag = tag.upper()
+        if tag == "MSGID":
+            msgid = clean(v)[:100]
+        elif tag == "REPLY":
+            reply = clean(v)[:100]
+        elif tag == "CHRS":
+            chrs = v.split(" ")[0].upper()
+        elif tag == "TZUTC":
+            m = re.match(r"^([+-]?)(\d\d)(\d\d)$", v)
+            if m:
+                tz = (int(m.group(2)) * 3600 + int(m.group(3)) * 60) * (-1 if m.group(1) == "-" else 1)
+    dec = lambda b: decode_text(b, chrs)  # noqa: E731
+    frm_s, subj_s = clean(dec(frm)), clean(dec(subj))
+    body_s = "\n".join(l.replace("\t", " ") for l in (dec(b) for b in body))
+    body_s = CTRL.sub(lambda m: "\n" if m.group() == "\n" else "", body_s).strip("\n")
+    if msgid:
+        uid = uuid.uuid5(NS, "%s|%s" % (area, msgid))
+    else:
+        h = hashlib.sha256(("%s|%s|%s|%s" % (frm_s, subj_s, date.decode("latin-1"), body_s)).encode()).hexdigest()
+        uid = uuid.uuid5(NS, "%s|nomsgid|%s" % (area, h))
+    if find_local(d, str(uid)):
+        return log("dup: %s %s" % (area, uid))
+    parent = None
+    if reply:
+        parent = str(uuid.uuid5(NS, "%s|%s" % (area, reply)))
+        try:
+            if parse_addr(reply.split(" ")[0]) == conf["addr"]:
+                for p in os.listdir(d):
+                    if p.endswith(".msg") and headers_of(os.path.join(d, p)).get("Fido-Msgid") == reply:
+                        mid = headers_of(os.path.join(d, p)).get("Msgid", "")
+                        if UUID_RE.match(mid):
+                            parent = mid
+        except ValueError:
+            pass
+    node = porig
+    for ln in reversed(body):
+        m = re.match(rb"^ \* Origin: .*\((\d+:\d+/\d+(?:\.\d+)?)(?:@[^)]*)?\)\s*$", ln)
+        if m:
+            node = m.group(1).decode("ascii")
+            break
+    author = (frm_s.strip()[:36] or "unknown") + "@fsx"
+    subject = subj_s.strip()[:72] or "(no subject)"
+    body_b = body_s.encode("utf-8")[:MAX_BODY].decode("utf-8", "ignore")
+    out = "Msgid: %s\nAuthor: %s\nNode: %s\nDate: %s\nSubject: %s\n" % (
+        uid, author, node, parse_date(date.decode("latin-1"), tz), subject)
+    if parent:
+        out += "Parent: %s\n" % parent
+    if msgid:
+        out += "Fido-Msgid: %s\n" % msgid
+    out += "\n" + body_b + "\n"
+    final = os.path.join(d, "%d-%s.msg" % (time.time(), uid))
+    tmp = os.path.join(d, ".tmp.%s" % uid)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(out)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, final)
+    log("toss: %s -> %s %s" % (area, board, uid))
+
+
+def park(path, where, why=""):
+    dest = os.path.join(STATE, where, "%d-%s" % (time.time(), os.path.basename(path)))
+    shutil.move(path, dest)
+    log("%s: %s %s" % (where, os.path.basename(path), why))
+
+
+def packets_of(path, conf):
+    """The parsed messages of an inbound file; Bad if the file or any member is unacceptable."""
+    with open(path, "rb") as f:
+        head = f.read(4)
+        size = os.fstat(f.fileno()).st_size
+        f.seek(0)
+        if head == b"PK\x03\x04":
+            if size > MAX_BUNDLE:
+                raise Bad("bundle over %d bytes" % MAX_BUNDLE)
+            zf = zipfile.ZipFile(io.BytesIO(f.read()))
+            infos = zf.infolist()
+            if len(infos) > MAX_MEMBERS:
+                raise Bad("too many members")
+            msgs, total = [], 0
+            for i in infos:
+                if i.is_dir() or not MEMBER.fullmatch(i.filename) or i.file_size > MAX_MEMBER:
+                    raise Bad("bad member %r" % clean(i.filename)[:80])
+                with zf.open(i) as m:
+                    data = m.read(MAX_MEMBER + 1)
+                total += len(data)
+                if len(data) > MAX_MEMBER or total > MAX_TOTAL:
+                    raise Bad("member too large")
+                msgs += parse_packet(data, conf)
+            return msgs
+        if not path.lower().endswith(".pkt"):
+            return None
+        if size > MAX_MEMBER:
+            raise Bad("packet too large")
+        return parse_packet(f.read(), conf)
+
+
+def cmd_toss(conf, min_age=MIN_AGE):
+    for e in sorted(os.scandir(conf["inbound"]), key=lambda e: e.name):
+        if not e.is_file(follow_symlinks=False) or time.time() - e.stat(follow_symlinks=False).st_mtime < min_age:
+            continue
+        try:
+            msgs = packets_of(e.path, conf)
+        except (Bad, zipfile.BadZipFile, struct.error, OSError, RuntimeError, NotImplementedError) as x:
+            park(e.path, "bad", str(x))
+            continue
+        if msgs is None:
+            continue
+        for m in msgs:
+            toss_msg(conf, *m)
+        park(e.path, "done", "%d messages" % len(msgs))
+
+
+# ---------- scan ----------
+
+def fdate(epoch):
+    t = time.gmtime(epoch)
+    return "%02d %s %02d  %02d:%02d:%02d" % (t.tm_mday, MON[t.tm_mon - 1], t.tm_year % 100, t.tm_hour, t.tm_min, t.tm_sec)
+
+
+def enc(s, n=None):
+    b = s.encode("cp437", "bbs_cp437")
+    return b[:n] if n else b
+
+
+def seen_by(a, b):
+    out, prev = [], None
+    for net, node in sorted({(a[1], a[2]), (b[1], b[2])}):
+        out.append(str(node) if net == prev else "%d/%d" % (net, node))
+        prev = net
+    return " ".join(out)
+
+
+def build_msg(conf, area, h, body, reply, uid):
+    our, hub = conf["addr"], conf["hubaddr"]
+    try:
+        t = time.strptime(h.get("Date", ""), "%Y-%m-%dT%H:%M:%SZ")
+        import calendar
+        epoch = calendar.timegm(t)
+    except ValueError:
+        epoch = time.time()
+    lines = [("AREA:" + area).encode(),
+             b"\x01MSGID: " + ("%s %s" % (conf["address"], uid[:8])).encode()]
+    if reply:
+        lines.append(b"\x01REPLY: " + reply.encode("latin-1", "replace"))
+    lines += [b"\x01CHRS: CP437 2", b"\x01TZUTC: 0000", b"\x01PID: BashBBS"]
+    for ln in wrap.wrap_keep_lines(body, 79):
+        ln = CTRL.sub("", ln)
+        if ln.startswith(("---", " * Origin:", "SEEN-BY:", "AREA:")):
+            ln = " " + ln
+        lines.append(enc(ln))
+    pre = " * Origin: "
+    suf = " (%s)" % conf["address"]
+    name = "".join(c for c in conf["bbsname"] if " " <= c <= "~")
+    lines += [b"--- BashBBS", (pre + name[:79 - len(pre) - len(suf)] + suf).encode("ascii"),
+              ("SEEN-BY: " + seen_by(our, hub)).encode(), ("\x01PATH: %d/%d" % (our[1], our[2])).encode()]
+    text = b"\r".join(lines) + b"\r\0"
+    who = enc(CTRL.sub("", h.get("Author", "")), 35)
+    subj = enc(CTRL.sub("", h.get("Subject", "")), 71)
+    hdr = struct.pack("<7H", 2, our[2], hub[2], our[1], hub[1], 0, 0)
+    return hdr + fdate(epoch).encode() + b"\0" + b"All\0" + who + b"\0" + subj + b"\0" + text
+
+
+def packet_header(conf):
+    our, hub = conf["addr"], conf["hubaddr"]
+    t = time.gmtime()
+    pw = conf["password"].upper().encode("latin-1", "replace")[:8].ljust(8, b"\0")
+    onet, aux = (0xFFFF, our[1]) if our[3] else (our[1], 0)
+    return (struct.pack("<8H", our[2], hub[2], t.tm_year, t.tm_mon - 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
+            + struct.pack("<HH", 0, 2) + struct.pack("<HH", onet, hub[1]) + b"\xfe\x01" + pw
+            + struct.pack("<HHH", our[0], hub[0], aux) + b"\x00\x01" + b"\x00\x00" + b"\x01\x00"
+            + struct.pack("<HHHH", our[0], hub[0], our[3], hub[3]) + b"\0" * 4)
+
+
+def rewrite_marked(path, value):
+    st = os.stat(path)
+    with open(path, "rb") as f:
+        raw = f.read()
+    i = raw.find(b"\n\n")
+    new = raw[:i + 1] + b"Fido-Msgid: " + value.encode("latin-1", "replace") + b"\n" + raw[i + 1:] if i >= 0 else raw
+    tmp = os.path.join(os.path.dirname(path), ".tmp.fido-%s" % uuid.uuid4())
+    with open(tmp, "wb") as f:
+        f.write(new)
+    os.chmod(tmp, st.st_mode & 0o7777)
+    try:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except PermissionError:
+        pass
+    os.replace(tmp, path)
+
+
+def cmd_scan(conf):
+    host = os.environ.get("BBS_FIDO_HOST") or open("/etc/hostname").read().strip()
+    todo = []
+    for area, board in sorted(conf["area"].items()):
+        d = board_ok(board)
+        if not d:
+            continue
+        for fn in sorted(os.listdir(d)):
+            p = os.path.join(d, fn)
+            if not fn.endswith(".msg") or fn.startswith(".") or os.path.islink(p):
+                continue
+            h = headers_of(p)
+            uid = h.get("Msgid", "")
+            if ("Fido-Msgid" in h or "Deleted" in h or "@" in h.get("Author", "")
+                    or h.get("Node") != host or not UUID_RE.match(uid)):
+                continue
+            with open(p, "rb") as f:
+                raw = f.read()
+            i = raw.find(b"\n\n")
+            body = raw[i + 2:].decode("utf-8", "replace") if i >= 0 else ""
+            reply = None
+            par = h.get("Parent", "")
+            if UUID_RE.match(par):
+                for q in find_local(d, par):
+                    reply = headers_of(q).get("Fido-Msgid")
+            todo.append((p, area, h, body, reply, uid))
+    if not todo:
+        return
+    hub = conf["hubaddr"]
+    flo = os.path.join(conf["outbound"], "%04x%04x" % (hub[1], hub[2]))
+    try:
+        fd = os.open(flo + ".bsy", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        if time.time() - os.stat(flo + ".bsy").st_mtime < 3600:
+            return log("scan: %s.bsy busy, retry next run" % os.path.basename(flo))
+        os.unlink(flo + ".bsy")  # stale after an hour: a crashed holder
+        fd = os.open(flo + ".bsy", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    os.close(fd)
+    try:
+        pkt = packet_header(conf) + b"".join(build_msg(conf, a, h, b, r, u) for _, a, h, b, r, u in todo) + b"\0\0"
+        out = os.path.join(STATE, "out", "%s.pkt" % uuid.uuid4().hex[:8])
+        with open(out + ".tmp", "wb") as f:
+            f.write(pkt)
+        os.replace(out + ".tmp", out)
+        with open(flo + ".flo", "a") as f:
+            f.write("^%s\n" % os.path.realpath(out))
+    finally:
+        os.unlink(flo + ".bsy")
+    for p, a, h, b, r, u in todo:
+        rewrite_marked(p, "%s %s" % (conf["address"], u[:8]))
+    log("scan: %d messages -> %s" % (len(todo), os.path.basename(out)))
+
+
+HOSTPORT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$")
+CFGWORD = re.compile(r"^[^\s\"]+$")
+
+
+def cmd_poll(conf):
+    """Scan, one binkd session with the hub, toss. binkd.cfg is generated so fido.conf stays the one config."""
+    host = conf.get("hubhost", "")
+    if not HOSTPORT.match(host):
+        raise SystemExit("fido.conf: hubhost missing or bad (host or host:port)")
+    for k in ("password", "inbound", "outbound"):
+        if not CFGWORD.match(conf[k]):
+            raise SystemExit("fido.conf: %s must be one word without quotes" % k)
+    tmp = os.path.join(STATE, "binkd-tmp")
+    os.makedirs(tmp, exist_ok=True)
+    zone = conf["addr"][0]
+    cfg = "\n".join((
+        "domain fsxnet %s %d" % (conf["outbound"], zone),
+        "address %s@fsxnet" % conf["address"],
+        'sysname "%s"' % clean(conf["bbsname"]).replace('"', "'"),
+        'sysop "%s"' % clean(conf.get("sysop", "Sysop")).replace('"', "'"),
+        'location "%s"' % clean(conf.get("location", "NA")).replace('"', "'"),
+        "nodeinfo 115200,TCP,BINKP",
+        "inbound %s" % conf["inbound"],
+        "temp-inbound %s" % tmp,
+        "log %s" % os.path.join(STATE, "binkd.log"),
+        "loglevel 4",
+        "node %s@fsxnet %s %s" % (conf["hub"], host, conf["password"]), ""))
+    path = os.path.join(STATE, "binkd.cfg")
+    fd = os.open(path + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # holds the session password
+    with os.fdopen(fd, "w") as f:
+        f.write(cfg)
+    os.replace(path + ".new", path)
+    cmd_scan(conf)
+    binkd = os.environ.get("BBS_FIDO_BINKD", "binkd")
+    try:
+        r = subprocess.run([binkd, "-p", "-P", conf["hub"] + "@fsxnet", path], timeout=900,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log("poll: binkd exit %d" % r.returncode)
+    except (OSError, subprocess.TimeoutExpired) as x:
+        log("poll: binkd failed: %s" % x)
+    cmd_toss(conf, 0)  # binkd has exited and writes through temp-inbound: nothing in inbound is half-written
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] not in ("toss", "scan", "poll"):
+        print("usage: bbs-fido toss|scan|poll", file=sys.stderr)
+        return 2
+    for d in ("done", "bad", "out"):
+        os.makedirs(os.path.join(STATE, d), exist_ok=True)
+    if not feature_on():
+        log("fido=off, %s does nothing" % argv[1])
+        return 0
+    lock = open(os.path.join(STATE, ".lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    conf = load_conf()
+    {"toss": cmd_toss, "scan": cmd_scan, "poll": cmd_poll}[argv[1]](conf)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

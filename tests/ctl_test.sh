@@ -54,6 +54,7 @@ printf 'user=bbs-bob\nname=second "x".lha\nsize=200\nsha256=11\ndate=2026-11-04T
 printf 'x' > "$root/published/1500000001-aaaaaaaa"
 printf 'y' > "$root/published/1500000002-bbbbbbbb"
 
+printf '# wall: the Wall\nwall=on\nnews.qr=off\nweird=yes\n' > "$root/features"
 before=$(snapshot)
 
 out=$(ctl status); check "status: valid JSON" json_ok "$out"
@@ -89,6 +90,11 @@ check "files: data files and bodies never printed" not has "$out" "sha256"
 
 out=$(ctl users); check "users: valid JSON" json_ok "$out"
 check "users: unknown prefix is fine (empty or bbs- only)" bash -c 'grep -q "\"users\"" <<< "$1"' _ "$out"
+
+out=$(ctl features); check "features: valid JSON" json_ok "$out"
+check "features: file order, on true/false" bash -c '[[ $1 == "{\"features\":[{\"name\":\"wall\",\"on\":true},{\"name\":\"news.qr\",\"on\":false},{\"name\":\"weird\",\"on\":false}]}" ]]' _ "$out"
+out=$(env BBS_ROOT="$root/none" "$here/bin/bbs-ctl" features); rc=$?
+check "features: missing file fails with error JSON" bash -c '[[ $1 == 2 && $2 == *error* ]]' _ "$rc" "$out"
 
 out=$(ctl bogus 2>/dev/null); check "unknown subcommand prints usage to stderr, no JSON" not has "$out" '"users"'
 

@@ -5,6 +5,7 @@
 #   bbs-ctl apps          applications waiting in applications/incoming
 #   bbs-ctl users         bbs-* accounts with uid and login shell
 #   bbs-ctl transfers [N] the N newest file transfers (default 50, max 500) from state/transfers.log
+#   bbs-ctl features      the feature switches in file order: name and on (true/false)
 #   bbs-ctl files         published file areas: id, uploader, name, size, date, download count
 # Writes nothing and never calls sudo. A failure prints {"error": "..."} and exits 2.
 # Forced command for a future read-only account; see README before adding a write subcommand.
@@ -121,12 +122,25 @@ cmd_files() {
     printf ']}\n'
 }
 
+cmd_features() {
+    local f=$BBS_ROOT/features line k v sep=""
+    [[ -r $f ]] || fail "no features file"
+    printf '{"features":['
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line == *=* && $line != \#* ]] || continue
+        k=${line%%=*}; v=${line#*=}
+        printf '%s{"name":%s,"on":%s}' "$sep" "$(jstr "$k")" "$([[ $v == on ]] && echo true || echo false)"; sep=","
+    done < "$f"
+    printf ']}\n'
+}
+
 case ${1:-} in
+    features)  cmd_features ;;
     status)    cmd_status ;;
     posts)     cmd_posts "${2:-20}" ;;
     apps)      cmd_apps ;;
     users)     cmd_users ;;
     transfers) cmd_transfers "${2:-50}" ;;
     files)     cmd_files ;;
-    *)         echo "usage: bbs-ctl {status | posts [N] | apps | users | transfers [N] | files}" >&2; exit 1 ;;
+    *)         echo "usage: bbs-ctl {status | posts [N] | apps | users | transfers [N] | files | features}" >&2; exit 1 ;;
 esac

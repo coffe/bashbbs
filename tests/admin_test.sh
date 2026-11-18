@@ -236,5 +236,27 @@ check "unknown alias subcommand prints usage" rc_is "$rc" 64
 run alias add bob --as carol --ja
 check "--as refused for a non-root caller" rc_is "$rc" 1
 
+# 9. features
+printf '# a header\n# wall: the Wall\nwall=off\n# news: News\nnews=on\nnews.qr=off\n' > "$root/features"
+cp "$root/features" "$scratch/adm-feat.orig"
+run features list
+check "features list prints name=value" has "$out" "news=on"
+check "features list skips comments" not_has "$out" "header"
+run features on wall
+check "features on without --ja is a dry run" has "$root/features" "wall=off"
+run features on wall --ja
+check "features on flips the line" has "$root/features" "wall=on"
+check "features on is logged" has "$root/state/admin.log" "features on wall"
+check "features on changes only that line" eq "$(diff "$scratch/adm-feat.orig" "$root/features" | grep -c '^[<>]')" 2
+check "features on keeps comments" has "$root/features" "# wall: the Wall"
+check "features file is 0644" eq "$(stat -c %a "$root/features")" 644
+run features off news --ja
+check "features off flips the line" has "$root/features" "news=off"
+run features on nosuch --ja
+check "features on refuses an unknown name" rc_is "$rc" 1
+check "features on adds no junk line" not_has "$root/features" "nosuch"
+run features on 'Bad;name' --ja
+check "features on refuses a bad name" rc_is "$rc" 1
+
 echo "pass=$pass fail=$fail" | tee -a "$log"
 [[ $fail -eq 0 ]]

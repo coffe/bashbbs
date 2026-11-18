@@ -1,0 +1,15 @@
+#!/usr/sbin/nft -f
+# lighttpd listens on all interfaces, but only the reverse proxy (Caddy) needs port 80.
+# Copy to /etc/bashbbs-web.nft and set PROXY to the proxy's address; the lighttpd
+# drop-in loads it before every start. Own table, re-loading is safe.
+define PROXY = 192.0.2.10
+add table inet bashbbs_web
+delete table inet bashbbs_web
+table inet bashbbs_web {
+  chain input {
+    type filter hook input priority 0; policy accept;
+    iif "lo" accept
+    tcp dport 80 ip saddr $PROXY accept
+    tcp dport 80 drop
+  }
+}
