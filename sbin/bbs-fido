@@ -497,7 +497,8 @@ def cmd_poll(conf):
         "temp-inbound %s" % tmp,
         "log %s" % os.path.join(STATE, "binkd.log"),
         "loglevel 4",
-        "node %s@fsxnet %s %s" % (conf["hub"], host, conf["password"]), ""))
+        # -md: refuse a session without CRAM-MD5, so the password never crosses the wire in clear text
+        "node %s@fsxnet -md %s %s" % (conf["hub"], host, conf["password"]), ""))
     path = os.path.join(STATE, "binkd.cfg")
     fd = os.open(path + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # holds the session password
     with os.fdopen(fd, "w") as f:

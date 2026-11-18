@@ -184,7 +184,7 @@ BBS_ROOT=$top/E BBS_FIDO_HOST=hoste BBS_FIDO_BINKD=$top/fakebinkd python3 -I "$f
 cfg=$top/E/state/fido/binkd.cfg
 check "poll: binkd -p -P hub with the generated config" test "$(cat "$top/E/args")" = "-p -P 21:1/100@fsxnet $cfg"
 check "poll: binkd.cfg is 0600" test "$(stat -c %a "$cfg")" = 600
-check "poll: node line from fido.conf" has "$(cat "$cfg")" "node 21:1/100@fsxnet net1.example:24554 secret"
+check "poll: node line from fido.conf, CRAM-MD5 required" has "$(cat "$cfg")" "node 21:1/100@fsxnet -md net1.example:24554 secret"
 check "poll: domain zone 21 on the outbound" has "$(cat "$cfg")" "domain fsxnet $top/E/out 21"
 check "poll: quote in sysop cannot break the config" has "$(cat "$cfg")" "sysop \"Kris 'K'\""
 check "poll: scanned before binkd" test -n "$(find "$top/E/out" -name '*.flo')"
