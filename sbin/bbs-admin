@@ -21,6 +21,7 @@
 #   bbs-admin alias add|remove <name> [--ja]  short name for bbs-<name> (bbs-alias)
 #   bbs-admin features list                   name=value from the features file
 #   bbs-admin features on|off <name> [--ja]   switch one feature (must already be in the file)
+#   bbs-admin fido poll                       poll the fsxNet hub now (starts bbs-fido.service)
 #
 # Without --ja every change only prints what it would do and exits 0.
 # Nothing is deleted: a removed home dir, key file and users/<name> are
@@ -66,6 +67,7 @@ usage: bbs-admin status
        bbs-admin users list | disable|enable <name> [--ja] | remove <name> [--ja]
        bbs-admin alias check <name> | add|remove <name> [--ja]
        bbs-admin features list | on|off <name> [--ja]
+       bbs-admin fido poll
        (root only, no sudo: --as <sysop>)
 EOF
     exit 64
@@ -363,6 +365,13 @@ case $cmd in
             *) usage ;;
         esac
         ;;
+
+    fido)
+        [[ $sub == poll ]] || usage
+        log_admin "fido poll"
+        # Through systemd: same user and limits as the timer, and never two polls at once.
+        systemctl start bbs-fido.service || die "poll failed, see journalctl -u bbs-fido"
+        journalctl -u bbs-fido.service -n 5 --no-pager -o cat ;;
 
     *) usage ;;
 esac

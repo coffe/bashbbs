@@ -5,7 +5,7 @@
   bbs-fido scan   new local posts of the configured boards -> one packet for the hub,
                   queued in binkd's outbound (.flo)
   bbs-fido poll   scan, one binkd session with the hub ("hubhost" in fido.conf), toss
-                  (what the hourly bbs-fido.timer runs; binkd.cfg is written from fido.conf)
+                  (what bbs-fido.timer runs every 15 minutes; binkd.cfg is written from fido.conf)
 
 Runs as root. BBS_ROOT from the environment (default /srv/bashbbs). Config:
 $BBS_ROOT/fido.conf (see etc/fido.example). Needs "fido=on" in $BBS_ROOT/features.

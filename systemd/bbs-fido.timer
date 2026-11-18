@@ -1,9 +1,9 @@
 [Unit]
-Description=Poll the fsxNet hub hourly (bbs-fido does nothing while fido=off)
+Description=Poll the fsxNet hub every 15 minutes (bbs-fido does nothing while fido=off)
 
 [Timer]
-OnCalendar=hourly
-RandomizedDelaySec=10min
+OnCalendar=*:0/15
+RandomizedDelaySec=2min
 Persistent=true
 
 [Install]
