@@ -1064,8 +1064,9 @@ board_desc() { # board_desc <name>
 
 # Boards of one kind, in a fixed order. Public: The Pub, Shared News, What's up?!, then
 # the rest alphabetically; the news board has its own place in the main menu. Private:
-# the boards the user is a member of. Fills the array named by $2.
-board_order() { # board_order public|private <array>
+# the boards the user is a member of. Fido: the fsxNet echo boards (meta/<b>.fido),
+# alphabetically, none when fido is off; they are not in Public. Fills the array named by $2.
+board_order() { # board_order public|private|fido <array>
     local kind=$1 b name d
     local -n _out=$2
     local -a rest=()
@@ -1080,7 +1081,11 @@ board_order() { # board_order public|private <array>
         b=${b%/}; name=$(basename "$b")
         # Private boards stay hidden from users who are not members.
         [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
-        is_fido "$name" && ! feature_on fido && continue
+        if is_fido "$name"; then
+            [[ $kind == fido ]] && feature_on fido && rest+=("$name")
+            continue
+        fi
+        [[ $kind == fido ]] && continue
         [[ $kind == public && $name =~ ^(general|sharednews|whatsup|news)$ ]] && continue
         if board_is_private "$b"; then
             [[ $kind == private ]] && rest+=("$name")
@@ -1096,19 +1101,19 @@ board_order() { # board_order public|private <array>
 # main menu when either has. Only boards the user can see are scanned (board_order). One
 # scan per visit: UNREAD_STALE is set when a menu opens and after a board was read, so
 # redraws do not scan again.
-UNREAD_STALE=1 UNREAD_PUB=0 UNREAD_PRIV=0
+UNREAD_STALE=1 UNREAD_PUB=0 UNREAD_PRIV=0 UNREAD_FIDO=0
 declare -A UNREAD=()
 unread_refresh() {
     local b kind
     local -a list=()
     [[ $UNREAD_STALE == 1 ]] || return 0
-    UNREAD=() UNREAD_PUB=0 UNREAD_PRIV=0
-    for kind in public private; do
+    UNREAD=() UNREAD_PUB=0 UNREAD_PRIV=0 UNREAD_FIDO=0
+    for kind in public private fido; do
         board_order "$kind" list
         for b in "${list[@]}"; do
             board_threads "$b" "$SEEN_PREV" | grep -q $'\t1$' || continue
             UNREAD[$b]=1
-            if [[ $kind == public ]]; then UNREAD_PUB=1; else UNREAD_PRIV=1; fi
+            case $kind in public) UNREAD_PUB=1 ;; private) UNREAD_PRIV=1 ;; fido) UNREAD_FIDO=1 ;; esac
         done
     done
     UNREAD_STALE=0
@@ -1138,21 +1143,33 @@ B M P W: jump   G: log out" || return
     done
 }
 
-# One list of boards: Public boards, or Private boards (only those you belong to).
-board_menu() { # board_menu [public|private]
-    local kind=${1:-public} boards b title=${1:-public}
-    [[ $kind == private ]] && title="Private boards" || title="Public boards"
+# One list of boards: Public boards, Private boards (only those you belong to), or the
+# fsxNet echoes, which Public boards opens with F.
+board_menu() { # board_menu [public|private|fido]
+    local kind=${1:-public} boards b title fido=()
+    case $kind in
+        private) title="Private boards" ;;
+        fido) title="fsxNet echomail" ;;
+        *) title="Public boards" ;;
+    esac
     UNREAD_STALE=1
     while true; do
         unread_refresh
         redraw
         banner_header boards "$title" "[Q] Back"
         board_order "$kind" boards
+        [[ $kind == public ]] && board_order fido fido
         local i=1
+        # shortcut: one flat page; past ~15 echoes it needs paging or a split per network
         for b in "${boards[@]}"; do
-            menu_item "$i" "$(board_label "$b")" "" "$( [[ -n ${UNREAD[$b]:-} ]] && echo '*')"
+            if [[ $kind == fido ]]; then
+                menu_item "$i" "${b^^}" "$(board_desc "$b")" "$( [[ -n ${UNREAD[$b]:-} ]] && echo '*')"
+            else
+                menu_item "$i" "$(board_label "$b")" "" "$( [[ -n ${UNREAD[$b]:-} ]] && echo '*')"
+            fi
             i=$((i + 1))
         done
+        (( ${#fido[@]} )) && { echo; menu_item F "fsxNet" "" "$( (( UNREAD_FIDO )) && echo '*')"; }
         echo
         if [[ $kind == private ]]; then
             (( ${#boards[@]} )) || echo "You are not in any private boards yet."
@@ -1160,14 +1177,15 @@ board_menu() { # board_menu [public|private]
         else
             keyline "Q) Back"
         fi
-        menu_key "> " "$([[ $kind == private ]] && echo Kk)Qq$(digit_keys "${#boards[@]}")" \
+        menu_key "> " "$([[ $kind == private ]] && echo Kk)$( (( ${#fido[@]} )) && echo Ff)Qq$(digit_keys "${#boards[@]}")" \
 "Number: open a board
-$([[ $kind == private ]] && echo 'K: new private board   ')Q: back
+$([[ $kind == private ]] && echo 'K: new private board   ')$( (( ${#fido[@]} )) && echo 'F: fsxNet echomail   ')Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return ;;
             [Kk]) new_private_board; continue ;;
+            [Ff]) board_menu fido; UNREAD_STALE=1; [[ -n $nav_req ]] && return; continue ;;
             [1-9]) read_num "${#boards[@]}" || continue ;;
             *) continue ;;
         esac
@@ -2164,7 +2182,7 @@ main_menu() {
         redraw
         screen_header "BashBBS"
         local un; un=$(mail_unread)
-        menu_item 1 "Boards" "" "$( (( UNREAD_PUB || UNREAD_PRIV )) && echo '*')"
+        menu_item 1 "Boards" "" "$( (( UNREAD_PUB || UNREAD_PRIV || UNREAD_FIDO )) && echo '*')"
         feat_item wall 2 "Wall"
         feat_item news 3 "News"
         feat_item fame 4 "Fame & Glory"
@@ -3831,16 +3849,20 @@ ad_run() {
 # The last login is kept in ~/.bashbbs-seen as login=<epoch>. Only counts are
 # shown, never subjects or names. News has its own menu and is not counted.
 
-# Public board posts newer than <since>, deleted ones not counted. The file name starts
-# with the publish epoch.
-new_board_posts() { # new_board_posts <since>
-    local since=$1 b f pre n=0
+# Board posts newer than <since>, deleted ones not counted. The file name starts
+# with the publish epoch. With "fido" only the fsxNet boards count, otherwise they don't.
+new_board_posts() { # new_board_posts <since> [fido]
+    local since=$1 want=${2:-} b f pre n=0
     for b in "$BBS_ROOT"/boards/*/; do
         b=${b%/}
         [[ $(basename "$b") == news ]] && continue
         # Same visibility rule as board_menu: private boards stay hidden.
         [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
-        is_fido "$(basename "$b")" && ! feature_on fido && continue
+        if is_fido "$(basename "$b")"; then
+            [[ $want == fido ]] && feature_on fido || continue
+        else
+            [[ -z $want ]] || continue
+        fi
         for f in "$b"/*.msg; do
             [[ -f $f && ! -L $f ]] || continue
             pre=$(basename "$f"); pre=${pre%%-*}
@@ -4273,6 +4295,7 @@ welcome_screen() {
             echo
             echo "  $(count_text "$(mail_unread)" "unread private message" "unread private messages")"
             echo "  $(count_text "$(new_board_posts "$prev")" "new post" "new posts") on Public boards"
+            ! feature_on fido || echo "  $(count_text "$(new_board_posts "$prev" fido)" "new post" "new posts") on fsxNet"
             ! feature_on wall || echo "  $(count_text "$(new_wall_greetings "$prev")" "new greeting" "new greetings") on the Wall"
         else
             echo "First visit. Welcome to BashBBS."

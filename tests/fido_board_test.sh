@@ -70,10 +70,12 @@ check "Fido-Msgid not shown as body" bash -c '! grep -q "Fido-Msgid" <<<"$1"' _ 
 check "author header read" eq "$(t post_hdr "$root/boards/fsx_gen/1700000000-11111111-2222-3333-4444-555555555555.msg" Author)" "Some Name@fsx"
 
 # fido switch (real features file)
-ord() { source "$here/lib/features.sh"; features_load; board_order public res; echo "${res[*]}"; }
-order() { t ord; }
+ord() { source "$here/lib/features.sh"; features_load; board_order "$1" res; echo "${res[*]}"; }
+order() { t ord "$1"; }
 printf 'fido=off\n' > "$root/features"
-check "fido=off hides the board" bash -c '[[ $1 != *fsx_gen* ]]' _ "$(order)"
+check "fido=off: not in Public" bash -c '[[ $1 != *fsx_gen* ]]' _ "$(order public)"
+check "fido=off: no fsxNet list" eq "" "$(order fido)"
 printf 'fido=on\n' > "$root/features"
-check "fido=on lists the board" bash -c '[[ $1 == *fsx_gen* ]]' _ "$(order)"
+check "fido=on: still not in Public" bash -c '[[ $1 != *fsx_gen* ]]' _ "$(order public)"
+check "fido=on: fsxNet list" eq "fsx_gen" "$(order fido)"
 echo "pass=$pass fail=$fail"; rm -rf "$root"; (( fail == 0 ))
