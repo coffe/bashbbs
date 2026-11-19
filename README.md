@@ -148,6 +148,10 @@ effect at once.
 - `scp -O` uploads go to the default area. In the menu, `U` uses the area you are in, and `M`
   in an open file moves it (uploader and sysops).
 - With one area, or no list at all, the area menu is skipped.
+- **The `ads` area** is filled by `bbs-fido toss`. An echomail message with ANSI codes is stored
+  in the board as the text it draws, and the original is kept here as a CP437 `.ans`, once per
+  identical ad. The message gets an `Ansi: <id>` header. Only the newest 100 are kept; older
+  ones move to `state/expired`. Without an `ads` line nothing is kept.
 
 ## Hardcoded values to change before reuse
 

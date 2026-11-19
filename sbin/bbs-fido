@@ -30,6 +30,7 @@ import struct
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
 import zipfile
 
@@ -49,6 +50,8 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 MEMBER = re.compile(r"[0-9A-Za-z_-]{1,64}\.pkt", re.I)
 BOARD = re.compile(r"^[a-z0-9_-]{1,32}$")
 CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+PUB_ID = re.compile(r"^[0-9]+-[0-9a-f]{8}$")  # the id form of published/ (see bbs-upload)
+ADS_AREA, ADS_KEEP = "ads", 100
 
 ROOT = os.environ.get("BBS_ROOT", "/srv/bashbbs")
 STATE = os.path.join(ROOT, "state", "fido")
@@ -210,6 +213,58 @@ def board_ok(board):
     return d
 
 
+def slug(s, n):
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:n].strip("-") or "x"
+
+
+def save_ansi(text, frm, subj):
+    """Keeps the original of an ANSI message as a CP437 .ans in the file area ads
+    (published/<id> + <id>.meta, like bbs-upload). Returns its id, the id of an earlier
+    identical copy, or None when etc/file-areas has no ads line (then it is off)."""
+    try:
+        with open(os.path.join(ROOT, "etc", "file-areas"), encoding="utf-8") as f:
+            if not any(l.split("|", 1)[0].strip() == ADS_AREA for l in f):
+                return None
+    except OSError:
+        return None
+    lines = text.split("\n")
+    while lines and (not lines[-1].strip() or lines[-1].startswith((" * Origin:", "---"))):
+        lines.pop()  # tear line and origin belong to the echo, not the art
+    data = ("\r\n".join(lines) + "\r\n").encode("cp437", "replace")
+    sha = hashlib.sha256(data).hexdigest()
+    pub = os.path.join(ROOT, "published")
+    os.makedirs(pub, exist_ok=True)
+    ads = []
+    for p in os.listdir(pub):
+        if not (p.endswith(".meta") and PUB_ID.match(p[:-5])):
+            continue
+        with open(os.path.join(pub, p), encoding="utf-8", errors="replace") as f:
+            meta = f.read().split("\n")
+        if "sha256=" + sha in meta:
+            return p[:-5]  # the same ad is posted again every week
+        if "area=" + ADS_AREA in meta:
+            ads.append(p[:-5])
+    pid = "%d-%s" % (time.time(), uuid.uuid4().hex[:8])
+    name = "%s-%s-%s.ans" % (time.strftime("%Y%m%d"), slug(frm, 16), slug(subj, 30))
+    meta = "user=fido\nname=%s\nsize=%d\nsha256=%s\ndate=%s\nip=\narea=%s\ndesc=%s\n" % (
+        name, len(data), sha, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), ADS_AREA,
+        ("%s, from %s" % (subj, frm))[:200])
+    for path, body in ((os.path.join(pub, pid), data), (os.path.join(pub, pid + ".meta"), meta.encode())):
+        with open(path + ".tmp", "wb") as f:  # data first: published/<id> without .meta is ignored
+            f.write(body)
+        os.chmod(path + ".tmp", 0o644)
+        os.replace(path + ".tmp", path)
+    exp = os.path.join(ROOT, "state", "expired")
+    for old in sorted(ads, key=lambda i: (int(i.split("-")[0]), i))[:max(0, len(ads) + 1 - ADS_KEEP)]:
+        os.makedirs(exp, exist_ok=True)  # never deleted: kept in state/expired like bbs-upload does
+        for suf in (".meta", ""):
+            if not os.path.exists(os.path.join(exp, old + suf)):
+                os.replace(os.path.join(pub, old + suf), os.path.join(exp, old + suf))
+    log("ansi: %s saved as %s" % (name, pid))
+    return pid
+
+
 def toss_msg(conf, date, frm, subj, text, porig):
     text = text.replace(b"\n", b"").replace(b"\x8d", b"")
     lines = text.split(b"\r")
@@ -250,7 +305,8 @@ def toss_msg(conf, date, frm, subj, text, porig):
     dec = lambda b: decode_text(b, chrs)  # noqa: E731
     frm_s, subj_s = clean(dec(frm)), clean(dec(subj))
     body_s = "\n".join(l.replace("\t", " ") for l in (dec(b) for b in body))
-    if "\x1b" in body_s:  # ANSI art (ads): keep what it draws, not the codes
+    ansi = body_s if "\x1b" in body_s else None
+    if ansi:  # ANSI art (ads): keep what it draws, not the codes
         body_s = ansirender.render(body_s)
     body_s = CTRL.sub(lambda m: "\n" if m.group() == "\n" else "", body_s).strip("\n")
     if msgid:
@@ -260,6 +316,12 @@ def toss_msg(conf, date, frm, subj, text, porig):
         uid = uuid.uuid5(NS, "%s|nomsgid|%s" % (area, h))
     if find_local(d, str(uid)):
         return log("dup: %s %s" % (area, uid))
+    ansi_id = None
+    if ansi:
+        try:
+            ansi_id = save_ansi(ansi, frm_s, subj_s)
+        except OSError as e:  # the message still goes in, only the .ans is missing
+            log("ansi: not kept: %s" % e)
     parent = None
     if reply:
         parent = str(uuid.uuid5(NS, "%s|%s" % (area, reply)))
@@ -287,6 +349,8 @@ def toss_msg(conf, date, frm, subj, text, porig):
         out += "Parent: %s\n" % parent
     if msgid:
         out += "Fido-Msgid: %s\n" % msgid
+    if ansi_id:
+        out += "Ansi: %s\n" % ansi_id
     out += "\n" + body_b + "\n"
     final = os.path.join(d, "%d-%s.msg" % (time.time(), uid))
     tmp = os.path.join(d, ".tmp.%s" % uid)

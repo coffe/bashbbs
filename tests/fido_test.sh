@@ -224,6 +224,32 @@ adf=$(grep -l '^Subject: Färgad annons' "$top"/A/boards/fsx_gen/*.msg)
 check "ansi ad tossed" test -n "$adf"
 check "ansi ad: drawn text, line put back together" grep -qx '═══ PiEWPiEW' "$adf"
 check "ansi ad: no colour code left" bash -c "! grep -q '\[1;3' '$adf'"
+check "ansi ad: no ads area, no file kept" bash -c "! grep -q '^Ansi:' '$adf' && ! test -d '$top/A/published'"
+
+# --- with an ads file area the original is kept there as cp437 bytes, once per identical ad
+mkdir -p "$top/A/etc"; printf 'general|General|x\nads|Ads|ANSI ads\n' > "$top/A/etc/file-areas"
+adbody=$'\e[1;36m═══ PiEW\e[0m\n--- Mystic\n * Origin: Somewhere (21:1/100)'
+toss_ad() { # toss_ad <msgid number> <subject> <body>
+    mk pkt "$top/ad$1.pkt" 21:1/100 secret "FSX_GEN|Ad Man|$2|21:1/100 $1||$3|CP437 2"
+    cp "$top/ad$1.pkt" "$top/A/in/ad$1.pkt"; old "$top/A/in/ad$1.pkt"; run A toss
+}
+toss_ad 8 "Färgad igen" "$adbody"
+adf=$(grep -l '^Subject: Färgad igen' "$top"/A/boards/fsx_gen/*.msg)
+aid=$(sed -n 's/^Ansi: //p' "$adf")
+check "ads: message points at the kept file" test -f "$top/A/published/$aid"
+check "ads: meta in area ads" grep -qx 'area=ads' "$top/A/published/$aid.meta"
+check "ads: named date-sender-subject" grep -qx "name=$(date +%Y%m%d)-ad-man-fargad-igen.ans" "$top/A/published/$aid.meta"
+check "ads: original cp437 bytes with ESC, no origin" bash -c "printf '\e[1;36m\xcd\xcd\xcd PiEW\e[0m\r\n' | cmp -s - '$top/A/published/$aid'"
+toss_ad 9 "Samma igen" "$adbody"
+check "ads: same ad again keeps one file" test "$(sed -n 's/^Ansi: //p' $(grep -l '^Subject: Samma igen' "$top"/A/boards/fsx_gen/*.msg))" = "$aid"
+check "ads: still one file" test "$(ls "$top/A/published" | wc -l)" -eq 2
+# at the cap the oldest ad moves to state/expired, never deleted
+for i in $(seq 1 99); do
+    printf 'x' > "$top/A/published/$i-0000000a"; printf 'size=1\narea=ads\nsha256=%s\n' "$i" > "$top/A/published/$i-0000000a.meta"
+done
+toss_ad 10 "Ny annons" $'\e[1mNY'
+check "ads: kept at 100" test "$(ls "$top"/A/published/*.meta | wc -l)" -eq 100
+check "ads: oldest moved to expired" test -f "$top/A/state/expired/1-0000000a.meta" -a -f "$top/A/state/expired/1-0000000a"
 
 echo "pass=$pass fail=$fail"
 rm -rf "$top"
