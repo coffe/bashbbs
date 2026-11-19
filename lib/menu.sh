@@ -1731,9 +1731,13 @@ ${hint#*$'\n'}"; fi
 # The original of an ANSI ad. Drawn for 80 columns; the post text is the readable version.
 view_ansi() { # view_ansi <id>
     local f=$BBS_ROOT/published/$1
-    # Cursor-draw art (ESC[1;1H, ESC[A) is placed on the screen, not after the post.
     redraw
-    if [[ -f $f ]]; then art_cat "$f" ans; echo; else echo "The ANSI file is gone (the ad has expired)."; fi
+    if [[ -f $f ]]; then
+        # Played on a virtual screen first: colour stays, cursor moves become plain lines.
+        python3 -I "$NEWS_LIB/ansirender.py" --ansi "$f" | ansi_out
+        (( COLOR )) && printf '\033[0m'
+        echo
+    else echo "The ANSI file is gone (the ad has expired)."; fi
     pause
 }
 
