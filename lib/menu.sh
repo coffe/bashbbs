@@ -2647,14 +2647,9 @@ E: describe   T: tags   M: move to another area   R: remove (uploader and sysops
 
 # ---- Sysop --------------------------------------------------------------------
 # Read-only status screens for the names in the sysops file. Nothing here writes.
-# The menu item is hidden when $BBS_ROOT/sysop-menu says "off" (root writes that file).
-# A missing file means on. Shell access for scripts is a separate path (bin/bbs-ctl).
-# The old sysop-menu file counts only while the features file has no sysop line.
-sysop_menu_on() {
-    is_sysop || return 1
-    [[ -v FEAT[sysop] ]] && { feature_on sysop; return; }
-    [[ $(sed -n 1p "$BBS_ROOT/sysop-menu" 2>/dev/null) != off ]]
-}
+# The menu item needs sysop=on in $BBS_ROOT/features (root writes that file).
+# Shell access for scripts is a separate path (bin/bbs-ctl).
+sysop_menu_on() { is_sysop && feature_on sysop; }
 
 sysop_menu() {
     sysop_menu_on || return 0

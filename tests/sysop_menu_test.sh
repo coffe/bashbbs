@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sysop menu: shown only to sysops, hidden by sysop=off in features (or the old sysop-menu=off), read-only screens with
+# Sysop menu: shown only to sysops, hidden unless sysop=on in features, read-only screens with
 # plain-English status, red only when colour is on. Everything runs in a temporary BBS_ROOT
 # with a stubbed systemctl. Usage: tests/sysop_menu_test.sh [logfile]
 set -u
@@ -61,11 +61,10 @@ echo 'sysop=off' > "$root/features"
 check "sysop=off: Sysop item hidden" not has "$(printf 'q' | lib main_menu)" "Sysop"
 check "sysop=off: sysop_menu prints nothing" bash -c '[[ -z $("$@") ]]' _ lib sysop_menu
 echo on > "$root/sysop-menu"
-check "sysop=off wins over the old sysop-menu file" not has "$(printf 'q' | lib main_menu)" "Sysop"
-echo 'wall=on' > "$root/features"; echo off > "$root/sysop-menu"
-check "no sysop line: old sysop-menu=off still hides" not has "$(printf 'q' | lib main_menu)" "Sysop"
+check "the old sysop-menu file is ignored" not has "$(printf 'q' | lib main_menu)" "Sysop"
+echo 'wall=on' > "$root/features"
+check "no sysop line: Sysop item hidden" not has "$(printf 'q' | lib main_menu)" "Sysop"
 rm -f "$root/sysop-menu"
-check "no sysop line, no old file: Sysop item shown" has "$(printf 'q' | lib main_menu)" "Sysop"
 rm -f "$root/features"
 
 # 2. The sysop screen has six read-only items and goes back on Q.
