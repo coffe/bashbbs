@@ -35,6 +35,7 @@ in a separate private repository. This repository has only the Pi side.
 | `lib/menu.sh` | The menu UI (English strings). |
 | `lib/news.sh` | News section helpers. |
 | `lib/wrap.py` | Text wrapping for the terminal (Python 3). |
+| `lib/ansirender.py` | Renders ANSI art to plain text, for ANSI ads arriving from the echoes. |
 | `lib/news-categories.conf` | News categories. |
 | `lib/goodbye-art.txt` | Logout banner. Not used by the current code. |
 | `web/index.html`, `web/apply.cgi` | Public web page and application form (served by lighttpd). |
@@ -117,6 +118,7 @@ bash tests/maildir_test.sh               # Maildir folders, owners, message surv
 bash tests/install_helpers_test.sh       # dependency list, kept config files
 bash tests/fail2ban_config_test.sh       # jail: loopback only, nftables bans, no iptables
 python3 tests/test_wrap.py               # wrapping
+python3 tests/test_ansirender.py         # ANSI art to plain text
 ```
 
 Shell tests write their scratch files under `$SCRATCH` (default: a directory in the

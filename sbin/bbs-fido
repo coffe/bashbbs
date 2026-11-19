@@ -37,6 +37,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path[:0] = [os.path.join(HERE, "..", "lib"), "/usr/local/lib/bashbbs"]  # repo checkout, then installed
 import cp437  # noqa: E402,F401  (registers the "bbs_cp437" error handler)
 import wrap  # noqa: E402
+import ansirender  # noqa: E402
 
 NS = uuid.UUID("6f1d3a52-8c47-4b0e-9a1e-5d2b7c4e9f10")  # fixed: ids must be stable across hosts
 MAX_BODY = 11000
@@ -249,6 +250,8 @@ def toss_msg(conf, date, frm, subj, text, porig):
     dec = lambda b: decode_text(b, chrs)  # noqa: E731
     frm_s, subj_s = clean(dec(frm)), clean(dec(subj))
     body_s = "\n".join(l.replace("\t", " ") for l in (dec(b) for b in body))
+    if "\x1b" in body_s:  # ANSI art (ads): keep what it draws, not the codes
+        body_s = ansirender.render(body_s)
     body_s = CTRL.sub(lambda m: "\n" if m.group() == "\n" else "", body_s).strip("\n")
     if msgid:
         uid = uuid.uuid5(NS, "%s|%s" % (area, msgid))

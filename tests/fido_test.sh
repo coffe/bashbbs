@@ -216,6 +216,15 @@ sed -i '/^hubhost/d' "$top/E/fido.conf"; echo 'hubhost bad host;rm' >> "$top/E/f
 rc=0; BBS_ROOT=$top/E BBS_FIDO_HOST=hoste BBS_FIDO_BINKD=$top/fakebinkd python3 -I "$fido" poll 2>/dev/null || rc=$?
 check "poll: bad hubhost refused" test "$rc" -ne 0
 
+# --- an ANSI ad (cp437, colours, a line continued with ESC[A ESC[nC) arrives as the text it draws
+mk pkt "$top/ad.pkt" 21:1/100 secret "FSX_GEN|Ads|Färgad annons|21:1/100 7||"$'\e[2J\e[H\e[1;36m═══ \e[1;35mPiEW\e[0m\n\e[A\e[8CPiEW\nslut'"|CP437 2"
+cp "$top/ad.pkt" "$top/A/in/ad.pkt"; old "$top/A/in/ad.pkt"
+run A toss
+adf=$(grep -l '^Subject: Färgad annons' "$top"/A/boards/fsx_gen/*.msg)
+check "ansi ad tossed" test -n "$adf"
+check "ansi ad: drawn text, line put back together" grep -qx '═══ PiEWPiEW' "$adf"
+check "ansi ad: no colour code left" bash -c "! grep -q '\[1;3' '$adf'"
+
 echo "pass=$pass fail=$fail"
 rm -rf "$top"
 [[ $fail -eq 0 ]]

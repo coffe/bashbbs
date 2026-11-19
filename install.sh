@@ -38,6 +38,7 @@ install -m 0644 "$src/lib/xfer.sh" /usr/local/lib/bashbbs/xfer.sh
 install -m 0644 "$src/lib/features.sh" /usr/local/lib/bashbbs/features.sh
 install -m 0644 "$src/lib/diz.py" /usr/local/lib/bashbbs/diz.py
 install -m 0644 "$src/lib/cp437.py" /usr/local/lib/bashbbs/cp437.py
+install -m 0644 "$src/lib/ansirender.py" /usr/local/lib/bashbbs/ansirender.py
 install -m 0755 "$src/bin/bbs-shell" /usr/local/sbin/bbs-shell
 install -m 0755 "$src/sbin/bbs-provision" /usr/local/sbin/bbs-provision
 install -m 0755 "$src/sbin/bbs-publish" /usr/local/sbin/bbs-publish
