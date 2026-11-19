@@ -127,13 +127,16 @@ prefs_ask() {
     return 0
 }
 
-# Art filter. Everything after ESC that is not a well-formed CSI sequence is removed, and
-# OSC (ESC ] ... BEL or ESC \) always. With COLOR=0 (or ansi_strip) CSI goes too.
+# Art filter. Only colour and cursor-move CSI pass (final byte m A B C D H f J K s u); every
+# other escape is removed whole, so ESC[6n (its reply lands in the key buffer) and ESC[?..h/l
+# never reach the terminal. OSC (ESC ] ... BEL or ESC \) goes always. COLOR=0 (or ansi_strip)
+# removes all CSI.
 _ansi_filter() { # _ansi_filter <keep-csi 0|1>
     if [[ $1 == 1 ]]; then
         LC_ALL=C sed -e 's/\x01//g' \
             -e 's/\x1b\][^\x07\x1b]*\(\x07\|\x1b\\\)\{0,1\}//g' \
-            -e 's/\x1b\(\[[0-9;?]*[ -/]*[@-~]\)/\x01\1/g' \
+            -e 's/\x1b\(\[[0-9;]*[mABCDHfJKsu]\)/\x01\1/g' \
+            -e 's/\x1b\[[0-9;?]*[ -/]*[@-~]//g' \
             -e 's/\x1b[ -/]*[0-~]\{0,1\}//g' \
             -e 's/\x01/\x1b/g'
     else
@@ -184,17 +187,17 @@ _ans_wrap() { # _ans_wrap <width>
       print out }'
 }
 
-art_raw() { # art_raw <file>
-    if [[ $1 == *.ans ]]; then
+art_raw() { # art_raw <file> [ans]: "ans" treats a file without the .ans name as CP437 art
+    if [[ $1 == *.ans || ${2-} == ans ]]; then
         LC_ALL=C sed -n '/\x1a/{s/\x1a.*//;p;q};p' "$1" | _ans_wrap "$(_ans_width "$1")" | iconv -f CP437 -t UTF-8 2>/dev/null | tr -d '\r'
     else
         tr -d '\r' < "$1"
     fi
 }
 
-art_cat() { # art_cat <file>: show an art file (filtered, colour reset after a .ans)
-    art_raw "$1" | ansi_out
-    [[ $1 == *.ans ]] && (( COLOR )) && printf '\033[0m'
+art_cat() { # art_cat <file> [ans]: show an art file (filtered, colour reset after a .ans)
+    art_raw "$1" "${2-}" | ansi_out
+    [[ $1 == *.ans || ${2-} == ans ]] && (( COLOR )) && printf '\033[0m'
     return 0
 }
 
@@ -1689,6 +1692,12 @@ post_actions() { # post_actions <board> <file>
         # A stub is only listed while replies live below it; sysop and owner can take those too.
         cmds="D) Delete thread"; keys+=Dd; hint+="D: delete the replies below"
     fi
+    # fsxNet ANSI ad: bbs-fido toss keeps the original under published/<id> (Ansi: header).
+    local ansi=""
+    if [[ -z ${HDR[Deleted]-} && ${HDR[Ansi]-} =~ ^[0-9]+-[0-9a-f]{8}$ ]]; then
+        ansi=${HDR[Ansi]}; cmds+="${cmds:+  }A) ANSI"; keys+=Aa
+        [[ $hint == *$'\n' ]] && hint+="A: view the ANSI art" || hint+="  A: view the ANSI art"
+    fi
     # Two lines: the full line does not fit in 40 columns.
     # Both lines are built first and written at once (a test harness reacts to "Prev").
     local l1="[Space] Next  P) Prev" l2="${cmds:+$cmds  }Q) Back"
@@ -1712,8 +1721,17 @@ ${hint#*$'\n'}"; fi
         [Rr]) reply_to "$board" "$f" ;;
         [Ee]) edit_post "$board" "$f" ;;
         [Dd]) delete_post "$board" "$f" ;;
+        [Aa]) view_ansi "$ansi"; return 2 ;;
     esac
     return 0
+}
+
+# The original of an ANSI ad. Drawn for 80 columns; the post text is the readable version.
+view_ansi() { # view_ansi <id>
+    local f=$BBS_ROOT/published/$1
+    echo
+    if [[ -f $f ]]; then art_cat "$f" ans; echo; else echo "The ANSI file is gone (the ad has expired)."; fi
+    pause
 }
 
 # Ask for a new subject and, optionally, a new text. Enter keeps the old subject.

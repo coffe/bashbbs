@@ -19,6 +19,8 @@ Reading and writing:
 - You can edit and delete your own posts. Sysops and the owner of a private
   board can also delete a post with every reply below it (type THREAD).
 - # jumps to a post by its number inside a thread.
+- A shows the colour original of an ANSI ad from fsxNet. It is drawn for
+  80 columns; the post text is the readable version on a narrow screen.
 
 Some boards are read-only (for example automatic news). You can read them
 but only the system posts there. Talk about the news on a normal board.

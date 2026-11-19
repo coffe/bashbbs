@@ -57,6 +57,9 @@ check "(d) CR dropped" bash -c '! grep -q $'"'"'\r'"'"' "$1"' x "$root/d1.out"
 printf 'a\033]0;evil title\007b\033]8;;http://x\033\\c\033(Bd\033[31mred\033[0m\n' > "$root/osc.txt"
 check "(f) colour: OSC and charset switch removed, SGR kept" eq "$(fn 1 art_cat "$root/osc.txt")" "abcd${ESC}[31mred${ESC}[0m"
 check "(f) plain: everything removed" eq "$(fn 0 art_cat "$root/osc.txt")" "abcdred"
+# (f) CSI whitelist: DSR (6n) and private modes (?25h) go whole, moves and colour stay
+printf 'a\033[6nb\033[?25hc\033[2J\033[1;1H\033[3Ad\033[5Ce\033[31mf\033[0 qg\n' > "$root/csi.txt"
+check "(f) colour: only whitelisted CSI pass" eq "$(fn 1 art_cat "$root/csi.txt")" "abc${ESC}[2J${ESC}[1;1H${ESC}[3Ad${ESC}[5Ce${ESC}[31mfg"
 
 # (e) a coloured 80-column picture is 80 wide, not wider, and the narrow file is not used
 line80=$(printf '%80s' '' | tr ' ' 'x')

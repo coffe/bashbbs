@@ -69,6 +69,23 @@ check "imported body shown" grep -q 'Imported body line' <<<"$out"
 check "Fido-Msgid not shown as body" bash -c '! grep -q "Fido-Msgid" <<<"$1"' _ "$out"
 check "author header read" eq "$(t post_hdr "$root/boards/fsx_gen/1700000000-11111111-2222-3333-4444-555555555555.msg" Author)" "Some Name@fsx"
 
+# ANSI ad: A) ANSI shows the original from published/<id> (CP437, colour), gone -> message
+mkdir -p "$root/published"
+pa() { menu_key() { return 1; }; n=1; me=bbs-alice; post_actions fsx_gen "$1"; }
+va() { pause() { :; }; view_ansi "$1"; }
+printf '\033[2J\033[H\033[1;31m\xdb\033[0m ad\r\n' > "$root/published/1700000000-deadbeef"
+P=$root/boards/fsx_gen/1700000001-ad.msg
+printf 'Msgid: m-ad\nAuthor: X@fsx\nDate: 2026-11-18T10:00:00Z\nSubject: Ad\nAnsi: 1700000000-deadbeef\n\nad text\n' > "$P"
+keys_out=$(BASHBBS_COLOR=0 t pa "$P" 2>&1)
+check "A) ANSI offered" grep -q 'A) ANSI' <<<"$keys_out"
+v=$(BASHBBS_COLOR=1 t va 1700000000-deadbeef 2>&1)
+check "view_ansi: CP437 block and colour" bash -c '[[ $1 == *$'"'"'\e[1;31m█\e[0m ad'"'"'* ]]' _ "$v"
+v=$(t va 1700000000-00000000 2>&1)
+check "view_ansi: expired file gives a message" grep -q 'gone' <<<"$v"
+sed -i 's/^Ansi: .*/Ansi: ..\/etc/' "$P"
+keys_out=$(BASHBBS_COLOR=0 t pa "$P" 2>&1)
+check "bad Ansi id: no key" bash -c '! grep -q "A) ANSI" <<<"$1"' _ "$keys_out"
+
 # fido switch (real features file)
 ord() { source "$here/lib/features.sh"; features_load; board_order "$1" res; echo "${res[*]}"; }
 order() { t ord "$1"; }

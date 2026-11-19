@@ -152,6 +152,8 @@ effect at once.
   in the board as the text it draws, and the original is kept here as a CP437 `.ans`, once per
   identical ad. The message gets an `Ansi: <id>` header. Only the newest 100 are kept; older
   ones move to `state/expired`. Without an `ads` line nothing is kept.
+  In the board reader, `A) ANSI` under such a post shows the original in colour. Art passes
+  a whitelist of colour and cursor codes (`m A B C D H f J K s u`); every other escape is removed.
 
 ## Hardcoded values to change before reuse
 
