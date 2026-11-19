@@ -19,11 +19,13 @@ $BBS_ROOT/fido.conf (see etc/fido.example). Needs "fido=on" in $BBS_ROOT/feature
 Nothing is deleted: handled packets go to state/fido/done/, rejected ones to state/fido/bad/.
 Everything that comes from a packet is data; no value from a packet is ever used in a path.
 """
+import email.utils
 import fcntl
 import hashlib
 import hmac
 import io
 import os
+import pwd
 import re
 import shutil
 import struct
@@ -42,6 +44,8 @@ import ansirender  # noqa: E402
 
 NS = uuid.UUID("6f1d3a52-8c47-4b0e-9a1e-5d2b7c4e9f10")  # fixed: ids must be stable across hosts
 MAX_BODY = 11000
+MAX_NETMAIL = 8192  # characters, the PM limit
+USER = re.compile(r"^[a-z][a-z0-9]{2,8}$")  # valid_user in lib/menu.sh
 MAX_BUNDLE, MAX_MEMBER, MAX_MEMBERS, MAX_TOTAL = 10 << 20, 4 << 20, 200, 20 << 20
 MIN_AGE = 10
 MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -76,6 +80,10 @@ def parse_addr(s):
         raise ValueError("bad address %r" % s)
     z, n, f, p = m.groups()
     return int(z), int(n), int(f), int(p or 0)
+
+
+def fmt_addr(a):
+    return "%d:%d/%d" % a[:3] + (".%d" % a[3] if a[3] else "")
 
 
 def load_conf():
@@ -152,13 +160,14 @@ def parse_packet(data, conf):
             break
         if data[pos:pos + 2] != b"\x02\x00" or pos + 14 > len(data):
             raise Bad("bad message header")
+        mon, mdn, monet, mdnet = struct.unpack_from("<4H", data, pos + 2)
         pos += 14
         date, pos = read_z(data, pos)
-        _to, pos = read_z(data, pos)
+        to, pos = read_z(data, pos)
         frm, pos = read_z(data, pos)
         subj, pos = read_z(data, pos)
         text, pos = read_z(data, pos)
-        msgs.append((date, frm, subj, text, "%d:%d/%d" % (zone, onet, onode)))
+        msgs.append((date, frm, subj, text, "%d:%d/%d" % (zone, onet, onode), to, (zone, monet, mon, mdnet, mdn)))
     return msgs
 
 
@@ -265,7 +274,110 @@ def save_ansi(text, frm, subj):
     return pid
 
 
-def toss_msg(conf, date, frm, subj, text, porig):
+def user_name(s):
+    s = s.lower().replace(" ", "")
+    return s[4:] if s.startswith("bbs-") else s
+
+
+def maildir_account(conf, name):
+    """The account a netmail To name goes to: a BBS user, else the first sysop."""
+    n, sysop = user_name(name), user_name(conf.get("sysop", ""))
+    is_user = lambda u: USER.match(u) and os.path.isfile(os.path.join(ROOT, "users", u, "profile"))  # noqa: E731
+    if n not in ("sysop", sysop) and is_user(n):
+        return n
+    try:
+        with open(os.path.join(ROOT, "sysops")) as f:
+            for line in f:
+                u = user_name(line.strip())
+                if is_user(u):
+                    return u
+    except OSError:
+        pass
+    return None
+
+
+def deliver_maildir(account, data):
+    """Write one message into the account's Maildir/new as root: tmp first, then rename.
+    The home belongs to the user, so every step goes through a directory fd opened
+    with O_NOFOLLOW: a symlink in the user's Maildir can never send root's write elsewhere."""
+    if os.environ.get("BASHBBS_TEST") and ROOT != "/srv/bashbbs":
+        home, ids = os.path.join(os.environ["BBS_TEST_HOMES"], account), None
+    else:
+        pw = pwd.getpwnam("bbs-" + account)
+        home, ids = pw.pw_dir, (pw.pw_uid, pw.pw_gid)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fds = [os.open(home, flags)]
+    try:
+        fds.append(os.open("Maildir", flags, dir_fd=fds[0]))
+        fds.append(os.open("tmp", flags, dir_fd=fds[1]))
+        fds.append(os.open("new", flags, dir_fd=fds[1]))
+        name = "%d.%s.%s" % (time.time(), uuid.uuid4(), os.uname().nodename)
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fds[2])
+        try:
+            if ids:
+                os.fchown(fd, *ids)
+            os.fchmod(fd, 0o600)
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        os.rename(name, name, src_dir_fd=fds[2], dst_dir_fd=fds[3])
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def toss_netmail(conf, date, frm_s, to_s, subj_s, body_s, msgid, tz, fk, mhdr):
+    """Netmail for this node goes straight into the recipient's PM inbox (no postfix:
+    a fido address in a header is rewritten or refused there). We are a leaf: others are skipped."""
+    zone, onet, onode, dnet, dnode = mhdr
+    pt = lambda k: int(fk[k]) if re.fullmatch(r"[0-9]{1,5}", fk.get(k, "")) else 0  # noqa: E731
+    try:
+        intl = fk.get("INTL", "").split()
+        if len(intl) == 2:
+            dest, orig = parse_addr(intl[0])[:3], parse_addr(intl[1])[:3]
+        else:
+            dest, orig = (zone, dnet, dnode), (zone, onet, onode)
+    except ValueError:
+        return log("skip: netmail with a bad INTL")
+    dest, orig = dest + (pt("TOPT"),), orig + (pt("FMPT"),)
+    if dest != conf["addr"]:
+        return log("skip: netmail for %s, not us" % fmt_addr(dest))
+    sender = "%s@%s" % (frm_s.strip()[:36] or "unknown", fmt_addr(orig))
+    if msgid:
+        key = "%s|%s" % (msgid, fmt_addr(orig))
+    else:
+        key = hashlib.sha256(("%s|%s|%s|%s" % (frm_s, date.decode("latin-1"), subj_s, body_s)).encode()).hexdigest()
+    ledger = os.path.join(STATE, "netmail-seen")
+    try:
+        with open(ledger) as f:
+            if key + "\n" in f:
+                return log("dup: netmail %s" % key)
+    except OSError:
+        pass
+    to_s = to_s.strip()[:36]
+    account = maildir_account(conf, to_s)
+    if not account:
+        return log("skip: netmail for %s, no user and no sysop account" % to_s)
+    body_s = CTRL.sub(lambda m: "\n" if m.group() == "\n" else "", body_s).strip("\n")
+    if account != user_name(to_s):
+        body_s = "(Originally to: %s)\n%s" % (to_s, body_s)
+    epoch = calendar_timegm(time.strptime(parse_date(date.decode("latin-1"), tz), "%Y-%m-%dT%H:%M:%SZ"))
+    h = [("Message-ID", "<%s@fido>" % uuid.uuid5(NS, "netmail|" + key)),
+         ("Date", email.utils.formatdate(epoch)), ("From", sender), ("To", account),
+         ("Subject", subj_s.strip()[:72] or "(no subject)")]
+    if msgid:
+        h.append(("X-Fido-Msgid", msgid))
+    out = "".join("%s: %s\n" % (k, clean(v)) for k, v in h) + "\n" + body_s[:MAX_NETMAIL] + "\n"
+    try:
+        deliver_maildir(account, out.encode("utf-8"))
+    except (OSError, KeyError) as e:
+        return log("skip: netmail for %s not delivered: %s" % (account, e))
+    with open(ledger, "a") as f:
+        f.write(key + "\n")
+    log("netmail %s -> %s" % (sender, account))
+
+
+def toss_msg(conf, date, frm, subj, text, porig, to, mhdr):
     text = text.replace(b"\n", b"").replace(b"\x8d", b"")
     lines = text.split(b"\r")
     area, chrs, msgid, reply, tz = None, "", None, None, 0
@@ -279,16 +391,12 @@ def toss_msg(conf, date, frm, subj, text, porig):
             pass
         else:
             body.append(ln)
-    if area is None:
-        return log("skip: message without AREA")
-    board = conf["area"].get(area)
-    if not board:
-        return log("skip: unknown area %s" % area)
-    d = board_ok(board)
-    if not d:
-        return log("skip: board %s of %s is missing, not fido or private" % (board, area))
+    fk = {}
     for k in kl:
         k = k.decode("latin-1")
+        word, _, rest = k.partition(" ")  # INTL, FMPT and TOPT have no colon
+        if word.upper() in ("INTL", "FMPT", "TOPT"):
+            fk.setdefault(word.upper(), rest.strip())
         tag, _, v = k.partition(":")
         v = v.strip()
         tag = tag.upper()
@@ -305,6 +413,14 @@ def toss_msg(conf, date, frm, subj, text, porig):
     dec = lambda b: decode_text(b, chrs)  # noqa: E731
     frm_s, subj_s = clean(dec(frm)), clean(dec(subj))
     body_s = "\n".join(l.replace("\t", " ") for l in (dec(b) for b in body))
+    if area is None:
+        return toss_netmail(conf, date, frm_s, clean(dec(to)), subj_s, body_s, msgid, tz, fk, mhdr)
+    board = conf["area"].get(area)
+    if not board:
+        return log("skip: unknown area %s" % area)
+    d = board_ok(board)
+    if not d:
+        return log("skip: board %s of %s is missing, not fido or private" % (board, area))
     ansi = body_s if "\x1b" in body_s else None
     if ansi:  # ANSI art (ads): keep what it draws, not the codes
         body_s = ansirender.render(body_s)
@@ -335,6 +451,10 @@ def toss_msg(conf, date, frm, subj, text, porig):
         except ValueError:
             pass
     node = porig
+    try:  # without an Origin line the MSGID address beats the packet's, which is the hub
+        node = fmt_addr(parse_addr(msgid.split(" ")[0]))
+    except (AttributeError, ValueError):
+        pass
     for ln in reversed(body):
         m = re.match(rb"^ \* Origin: .*\((\d+:\d+/\d+(?:\.\d+)?)(?:@[^)]*)?\)\s*$", ln)
         if m:

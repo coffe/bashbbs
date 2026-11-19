@@ -1284,7 +1284,8 @@ show_post() {
         val=$(printf '%s' "${line#*: }" | safe)
         case $key in
             Subject) subject=$val ;;
-            Author|From) author=${val#bbs-}; [[ $author == *@fsx ]] || author=${author%%@*} ;;  # @fsx marks a fsxNet author
+            # @fsx marks a fsxNet author, @<zone>:<net>/<node> a netmail sender
+            Author|From) author=${val#bbs-}; [[ $author == *@fsx || $author =~ @[0-9]+:[0-9]+/[0-9]+ ]] || author=${author%%@*} ;;
             Date) date=$val ;;
             Edited) edited=$val ;;
             Deleted) deleted=$val ;;
@@ -2091,7 +2092,17 @@ mail_reply() { # mail_reply <file>
     [[ $subject == Re:* ]] || subject="Re: $subject"
     local LC_ALL=C.UTF-8
     subject=${subject:0:60}
+    if [[ $from =~ @[0-9]+:[0-9]+/[0-9]+ ]]; then
+        mail_reply_netmail "$from" "$subject" "$(post_hdr "$1" X-Fido-Msgid)"
+        return
+    fi
     mail_write "${from%%@*}" "$subject" "$(post_hdr "$1" Message-ID)"
+}
+
+# Reply to a netmail sender: the full Name@zone:net/node is the recipient, X-Fido-Msgid the REPLY.
+mail_reply_netmail() { # mail_reply_netmail <from> <subject> <fido-msgid>
+    echo "Sending netmail is not available yet."
+    pause
 }
 
 # A folder list. Unread messages in new are marked with *.

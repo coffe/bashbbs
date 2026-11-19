@@ -69,6 +69,15 @@ check "imported body shown" grep -q 'Imported body line' <<<"$out"
 check "Fido-Msgid not shown as body" bash -c '! grep -q "Fido-Msgid" <<<"$1"' _ "$out"
 check "author header read" eq "$(t post_hdr "$root/boards/fsx_gen/1700000000-11111111-2222-3333-4444-555555555555.msg" Author)" "Some Name@fsx"
 
+# netmail in the inbox: the fido address stays in From, a local sender is cut at @
+printf 'Message-ID: <a@fido>\nDate: Wed, 18 Nov 2026 08:05:09 -0000\nFrom: Zip@21:1/202\nTo: alice\nSubject: Hej\nX-Fido-Msgid: 21:1/202 abc\n\nnetmail body\n' > "$root/t/nm"
+sed 's/^From: .*/From: kitty@bbs.example/' "$root/t/nm" > "$root/t/pm"
+check "show_post: netmail sender keeps address" grep -q 'by Zip@21:1/202' <<<"$(t show_post "$root/t/nm" 60)"
+check "show_post: local sender cut at @" bash -c 'grep -q "by kitty," <<<"$1" && ! grep -q "bbs.example" <<<"$1"' _ "$(t show_post "$root/t/pm" 60)"
+mr() { pause() { :; }; mail_write() { echo "WRITE $*"; }; mail_reply "$1"; }
+check "mail_reply: netmail not sent yet" bash -c 'grep -q "not available yet" <<<"$1" && ! grep -q WRITE <<<"$1"' _ "$(t mr "$root/t/nm" 2>&1)"
+check "mail_reply: local reply unchanged" grep -q '^WRITE kitty Re: Hej <a@fido>' <<<"$(t mr "$root/t/pm" 2>&1)"
+
 # ANSI ad: A) ANSI shows the original from published/<id> (CP437, colour), gone -> message
 mkdir -p "$root/published"
 pa() { menu_key() { return 1; }; n=1; me=bbs-alice; post_actions fsx_gen "$1"; }
