@@ -170,12 +170,14 @@ _ans_wrap() { # _ans_wrap <width>
             while (j <= n && substr($0, j, 1) ~ /[ -\/]/) j++
             if (j <= n && substr($0, j, 1) ~ /[@-~]/) {
                 seq = substr($0, i, j - i + 1)
-                if (substr($0, j, 1) == "C") {
-                    p = substr($0, i + 2, j - i - 2); k = (p ~ /^[0-9]+$/) ? p + 0 : 1
-                    if (k == 0) k = 1
+                f = substr($0, j, 1); p = substr($0, i + 2, j - i - 2)
+                k = (p ~ /^[0-9]+$/) ? p + 0 : 1
+                if (k == 0) k = 1
+                if (f == "C") {
                     if (col + k > W) { out = out "\n"; col = 0 }
                     col += k
-                }
+                } else if (f == "D") { col = (col > k) ? col - k : 0 }
+                else if (f == "H" || f == "f") { col = (sub(/^[0-9]*;/, "", p) && p > 0) ? p - 1 : 0 }
                 out = out seq; i = j + 1; continue
             }
             out = out c; i++; continue
@@ -1729,7 +1731,8 @@ ${hint#*$'\n'}"; fi
 # The original of an ANSI ad. Drawn for 80 columns; the post text is the readable version.
 view_ansi() { # view_ansi <id>
     local f=$BBS_ROOT/published/$1
-    echo
+    # Cursor-draw art (ESC[1;1H, ESC[A) is placed on the screen, not after the post.
+    redraw
     if [[ -f $f ]]; then art_cat "$f" ans; echo; else echo "The ANSI file is gone (the ad has expired)."; fi
     pause
 }

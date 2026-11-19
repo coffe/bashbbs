@@ -128,6 +128,9 @@ check "(i) intro_width <= 80" bash -c '(( $1 <= 80 ))' x "$(fn 1 intro_width "$r
 check "(j) ESC[5C counts 5 columns" eq "$(fn 0 art_raw "$root/cuf.ans" | LC_ALL=C sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | awk '{printf "%d,", length($0)}')" "77,2,"
 { printf 'x%.0s' $(seq 1 70); printf '\033[1;31m'; printf 'y%.0s' $(seq 1 15); } > "$root/sgr.ans"
 check "(j) SGR counts 0 columns" eq "$(fn 1 art_raw "$root/sgr.ans" | LC_ALL=C sed 's/\x1b\[[0-9;]*m//g' | awk '{printf "%d,", length($0)}')" "80,5,"
+# (j) cursor-draw art (fsxNet ads): ESC[nD and ESC[r;cH move the column back, no break
+{ printf 'x%.0s' $(seq 1 78); printf '\033[70Dyy\033[1;5Hzzzzzzzzzz'; } > "$root/cub.ans"
+check "(j) ESC[D / ESC[H give columns back" eq "$(fn 0 art_raw "$root/cub.ans" | wc -l)" "1"
 
 # (k) mail menu: Inbox in gold only with unread mail and colour; the 1) key stays mint
 mkdir -p "$home/Maildir"/{new,cur,tmp}
