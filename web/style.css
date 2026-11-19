@@ -42,6 +42,7 @@ h2::after  { content: " ]=-"; color: var(--muted); font-weight: 400; }
 section:nth-of-type(even) h2 { margin-left: 1.5ch; }   /* a little zine wobble */
 h3 { font-size: 1rem; margin: 1.75rem 0 .5rem; }
 p { margin: 0 0 1rem; }
+img { max-width: 100%; height: auto; }
 a { color: var(--mint); text-underline-offset: .2em; }
 a:hover { color: var(--text); }
 :focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
