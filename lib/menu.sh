@@ -1701,6 +1701,13 @@ post_actions() { # post_actions <board> <file>
         ansi=${HDR[Ansi]}; cmds+="${cmds:+  }A) ANSI"; keys+=Aa
         [[ $hint == *$'\n' ]] && hint+="A: view the ANSI art" || hint+="  A: view the ANSI art"
     fi
+    # An fsxNet post with a node address can be answered privately or saved to the address book.
+    local fmail="" fsubj="" fmsg="" fline=""
+    if [[ -z ${HDR[Deleted]-} && $author == *@fsx && ${HDR[Node]-} =~ ^[0-9]+:[0-9]+/[0-9]+(\.[0-9]+)?$ ]]; then
+        fmail=${author%@*}@${HDR[Node]} fsubj=${HDR[Subject]-} fmsg=${HDR[Fido-Msgid]-}
+        fline="M) Mail privately  B) Add to book"; keys+=MmBb
+        [[ $hint == *$'\n' ]] && hint+="M: mail the author  B: add to book" || hint+="  M: mail the author  B: add to book"
+    fi
     # Two lines: the full line does not fit in 40 columns.
     # Both lines are built first and written at once (a test harness reacts to "Prev").
     local l1="[Space] Next  P) Prev" l2="${cmds:+$cmds  }Q) Back"
@@ -1708,8 +1715,9 @@ post_actions() { # post_actions <board> <file>
 ${hint#*$'\n'}"; fi
     if (( COLOR )); then
         l1=$(keyline "$l1" | sed -E "s/\[Space\]/${C_KEY}[Space]${C_RST}/"); l2=$(keyline "$l2")
+        [[ -n $fline ]] && fline=$(keyline "$fline")
     fi
-    printf '%s\n%s\n' "$l1" "$l2"
+    printf '%s\n' "$l1" "$l2" ${fline:+"$fline"}
     # Inside an open post the jump keys are off.
     [[ $hint == *$'\n' ]] && hint+="Q: back" || hint+="  Q: back"
     menu_key "> " "$keys" "$hint" local || return 1
@@ -1725,6 +1733,10 @@ ${hint#*$'\n'}"; fi
         [Ee]) edit_post "$board" "$f" ;;
         [Dd]) delete_post "$board" "$f" ;;
         [Aa]) view_ansi "$ansi"; return 2 ;;
+        [Mm]) local LC_ALL=C.UTF-8
+              [[ $fsubj == Re:* ]] || fsubj="Re: $fsubj"
+              mail_write "$fmail" "${fsubj:0:60}" "$fmsg"; return 2 ;;
+        [Bb]) book_save "${fmail%@*}" "${fmail##*@}"; return 2 ;;
     esac
     return 0
 }
@@ -1936,11 +1948,12 @@ mail_menu() {
         menu_item 2 "Write Message"
         menu_item 3 "Sent Messages"
         menu_item 4 "Trash"
+        menu_item 5 "Address book"
         echo
         keyline "L) Look 4 new mail   Q) Back"
         [[ -n $note ]] && { echo; echo "$note"; }
         note=""
-        menu_key "> " "1234QqLl" "1-4: Inbox, Write, Sent, Trash
+        menu_key "> " "12345QqLl" "1-5: Inbox, Write, Sent, Trash, Address book
 L: look 4 new mail
 Q: back   B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -1949,6 +1962,7 @@ Q: back   B M P W: jump   G: log out" || return
             2) mail_write ;;
             3) mail_view Sent ;;
             4) mail_view Trash ;;
+            5) book_menu ;;
             [Ll]) n=$(mail_unread)
                 if (( n > 0 )); then note="$(count_text "$n" "new message" "new messages")"
                 else note="No new mail."; fi ;;
@@ -2107,7 +2121,12 @@ mail_send_netmail() { # mail_send_netmail <Name@z:n/f> <subject> [fido msgid]
 # A Name@zone:net/node recipient is netmail; in-reply-to is then the fido MSGID.
 mail_write() { # mail_write [name subject in-reply-to]
     local to=${1:-} subject=${2:-} reply=${3:-} line
-    if [[ -z $to ]]; then rline to "To, e.g. kitty or Zip@21:1/202 (/cancel stops): " || return; fi
+    while [[ -z $to ]]; do
+        rline to "To (kitty, Zip@21:1/202, B = book): " || return
+        # b is never a user name (three characters at least), so the key cannot clash.
+        [[ $to == [Bb] ]] || break
+        book_pick to || to=""
+    done
     [[ $to == /cancel ]] && return
     is_netmail "$to" || resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
     # The default in brackets is shown cut to the line; Enter still keeps the full subject.
@@ -2136,6 +2155,148 @@ mail_reply() { # mail_reply <file>
         return
     fi
     mail_write "${from%%@*}" "$subject" "$(post_hdr "$1" Message-ID)"
+}
+
+# ---- Address book -----------------------------------------------------------
+# ~/.addressbook: name<TAB>address<TAB>comment<TAB>date. Name + address is the key.
+BOOK_MAX=100
+
+# All fields lose tabs and control characters; the comment is cut to 60 characters.
+book_clean() { printf '%s' "$1" | safe; }
+book_file() { printf '%s' "$HOME/.addressbook"; }
+book_list() { local f; f=$(book_file); [[ -f $f && ! -L $f ]] && cat "$f"; return 0; }
+# The new book comes on stdin; temp file in $HOME and mv, so a failure keeps the old one.
+book_write() {
+    local tmp; tmp=$(umask 077; mktemp "$HOME/.addressbook.XXXXXX") || return 1
+    cat > "$tmp" && mv -f "$tmp" "$(book_file)" || { rm -f "$tmp"; return 1; }
+}
+# book_get <name> <addr>: prints the comment; fails when the contact is not there.
+book_get() {
+    local n a c
+    n=$(book_clean "$1") a=$(book_clean "$2")
+    book_list | N=$n A=$a awk -F'\t' '$1==ENVIRON["N"] && $2==ENVIRON["A"] {print $3; f=1; exit} END {exit !f}'
+}
+# Returns 1 when the contact exists, 2 when the book is full.
+book_add() { # book_add <name> <addr> <comment>
+    local n a c LC_ALL=C.UTF-8
+    n=$(book_clean "$1") a=$(book_clean "$2") c=$(book_clean "$3")
+    book_get "$n" "$a" >/dev/null && return 1
+    (( $(book_list | wc -l) >= BOOK_MAX )) && return 2
+    { book_list; printf '%s\t%s\t%s\t%s\n' "$n" "$a" "${c:0:60}" "$(date +%F)"; } | book_write
+}
+book_del() { # book_del <name> <addr>
+    book_list | N=$(book_clean "$1") A=$(book_clean "$2") awk -F'\t' '!($1==ENVIRON["N"] && $2==ENVIRON["A"])' | book_write
+}
+book_set_comment() { # book_set_comment <name> <addr> <comment>
+    local c LC_ALL=C.UTF-8; c=$(book_clean "$3")
+    book_list | N=$(book_clean "$1") A=$(book_clean "$2") C=${c:0:60} awk -F'\t' -v OFS='\t' \
+        '$1==ENVIRON["N"] && $2==ENVIRON["A"] {$3=ENVIRON["C"]} 1' | book_write
+}
+
+# B on an fsx post or a netmail: save the sender.
+book_save() { # book_save <name> <addr>
+    local name=$1 addr=$2 old cm
+    echo
+    echo "Add $name@$addr to your address book."
+    if old=$(book_get "$name" "$addr"); then
+        echo "Already saved.${old:+ Comment: $old}"
+        rline cm "Comment ([Enter] keeps it): " || return
+        [[ -n $cm ]] && book_set_comment "$name" "$addr" "$cm"
+    else
+        rline cm "Comment (optional, [Enter] skips): " || return
+        book_add "$name" "$addr" "$cm"
+        case $? in
+            0) echo "Saved. Find it under Mail > 5) Address book." ;;
+            1) echo "Could not save the address book."; pause; return ;;
+            *) echo "The address book is full ($BOOK_MAX contacts). Delete one under Mail > 5) Address book."; pause; return ;;
+        esac
+    fi
+    pause
+}
+
+# Reads the book into BK_NAME, BK_ADDR, BK_CM and prints the numbered list.
+# Fails with an explanation when the book is empty.
+book_render() {
+    local l n a c i=0 w nw=14 aw=8 room
+    BK_NAME=() BK_ADDR=() BK_CM=()
+    # Split by hand: read with a tab IFS would swallow an empty comment.
+    while IFS= read -r l; do
+        n=${l%%$'\t'*} l=${l#*$'\t'} a=${l%%$'\t'*} l=${l#*$'\t'} c=${l%%$'\t'*}
+        BK_NAME+=("$n") BK_ADDR+=("$a") BK_CM+=("$c")
+        (( ${#a} > aw )) && aw=${#a}
+    done < <(book_list)
+    if (( ${#BK_NAME[@]} == 0 )); then
+        echo "Your address book is empty."
+        echo "Press B on an fsxNet post to save its author here."
+        return 1
+    fi
+    (( aw > 16 )) && aw=16
+    w=$(list_width); room=$(( w - 3 - 2 - nw - 2 - aw - 2 ))
+    printf '%3s  %-*s  %-*s' "#" "$nw" "Name" "$aw" "Address"; (( room >= 8 )) && printf '  Comment'; echo
+    for (( i = 0; i < ${#BK_NAME[@]}; i++ )); do
+        printf '%s  %-*s  %-*s' "$(paint KEY "$(printf '%3d' $((i + 1)))")" \
+            "$nw" "$(list_fit "$nw" "${BK_NAME[i]}")" "$aw" "$(list_fit "$aw" "${BK_ADDR[i]}")"
+        (( room >= 8 )) && printf '  %s' "$(list_fit "$room" "${BK_CM[i]}")"
+        echo
+    done
+}
+
+# The picker in the Write prompt: a number fills <var> with Name@address.
+book_pick() { # book_pick <var>
+    local -n _pick=$1
+    redraw
+    local_header "Address book" "[Q] Back"
+    book_render || { pause; return 1; }
+    echo
+    keyline "Number: pick   Q) Back"
+    menu_key "> " "Qq$(digit_keys "${#BK_NAME[@]}")" "Number: pick a contact
+Q: back" local || return 1
+    [[ $MKEY == [1-9] ]] && read_num "${#BK_NAME[@]}" || return 1
+    _pick=${BK_NAME[NUM - 1]}@${BK_ADDR[NUM - 1]}
+}
+
+# Mail > 5: the list, and a card per contact.
+book_menu() {
+    local name addr cm
+    while true; do
+        redraw
+        local_header "Address book" "[Q] Back"
+        if ! book_render; then echo; keyline "Q) Back"; menu_key "> " "Qq" "Q: back" local; return 0; fi
+        echo
+        keyline "Number: open   Q) Back"
+        menu_key "> " "Qq$(digit_keys "${#BK_NAME[@]}")" "Number: open a contact
+Q: back" local || return 0
+        case $MKEY in
+            [1-9]) read_num "${#BK_NAME[@]}" || continue ;;
+            [Qq]) return 0 ;;
+            *) continue ;;
+        esac
+        name=${BK_NAME[NUM - 1]} addr=${BK_ADDR[NUM - 1]} cm=${BK_CM[NUM - 1]}
+        book_card "$name" "$addr" "$cm" || return 0
+    done
+}
+
+book_card() { # book_card <name> <addr> <comment>; fails at end of input
+    local name=$1 addr=$2 cm=$3 new
+    while true; do
+        redraw
+        local_header "Contact" "[Q] Back"
+        echo "Name:    $name"; echo "Address: $addr"; echo "Comment: $cm"
+        echo
+        keyline "W) Write  C) Comment  D) Delete  Q) Back"
+        menu_key "> " "WwCcDdQq" "W: write to the contact
+C: change the comment
+D: delete the contact
+Q: back" local || return 1
+        case $MKEY in
+            [Ww]) mail_write "$name@$addr" ;;
+            [Cc]) echo; rline new "Comment ([Enter] keeps it): " || return 1
+                  [[ -n $new ]] && { book_set_comment "$name" "$addr" "$new"; cm=$new; } ;;
+            [Dd]) echo
+                  if read_confirm "Delete $name from the address book? [y/N] "; then book_del "$name" "$addr"; return 0; fi ;;
+            [Qq]) return 0 ;;
+        esac
+    done
 }
 
 # A folder list. Unread messages in new are marked with *.
@@ -2219,11 +2380,16 @@ mail_actions() { # mail_actions <folder> <file>
         Inbox) cmds="R) Reply   D) Delete   "; keys+=RrDd; hint="R: reply  D: delete  Q: back" ;;
         Sent) cmds="D) Delete   "; keys+=Dd; hint="D: delete  Q: back" ;;
     esac
+    local from; from=$(post_hdr "$f" From)
+    if [[ $folder == Inbox ]] && is_netmail "$from"; then
+        cmds="${cmds/D) /B) Book   D) }"; keys+=Bb; hint="B: add to book  $hint"
+    fi
     echo "${cmds}Q) Back"
     # Inside an open message the jump keys are off.
     menu_key "> " "$keys" "$hint" local || return 1
     case $MKEY in
         '?') return 2 ;;
+        [Bb]) book_save "${from%@*}" "${from##*@}"; return 2 ;;
         [Rr]) mail_reply "$f" ;;
         [Dd]) mail_delete "$f" ;;
     esac
