@@ -189,6 +189,29 @@ check "poll: domain zone 21 on the outbound" has "$(cat "$cfg")" "domain fsxnet 
 check "poll: quote in sysop cannot break the config" has "$(cat "$cfg")" "sysop \"Kris 'K'\""
 check "poll: scanned before binkd" test -n "$(find "$top/E/out" -name '*.flo')"
 check "poll: fresh packet tossed at once" test ! -e "$top/E/in/got.pkt" -a "$(msgs E fsx_gen)" = 2
+# --- hub limit: every connect counted (timer and manual share it), 65 min backoff after M_BSY
+st=$top/E/state/fido
+poll() { rm -f "$top/E/args"; BBS_ROOT=$top/E BBS_FIDO_HOST=hoste BBS_FIDO_BINKD=$top/fakebinkd python3 -I "$fido" poll >/dev/null; }
+called() { test -e "$top/E/args"; }
+now=$(date +%s)
+check "limit: the poll's connect was recorded" test "$(grep -c . "$st/poll-calls")" = 1
+printf '#!/bin/sh\necho "$@" > %s/E/args\necho "? 18 Nov 22:15:44 [1] got M_BSY: Polling too frequently" >> %s/binkd.log\n' "$top" "$st" > "$top/fakebinkd"
+poll
+check "limit: M_BSY sets a 65 min backoff" bash -c "b=\$(cat '$st/poll-backoff'); (( b >= $now + 3900 && b <= $now + 3960 ))"
+check "limit: M_BSY logs the next allowed time" grep -q 'M_BSY.*next allowed 20' "$st/fido.log"
+printf '#!/bin/sh\necho "$@" > %s/E/args\n' "$top" > "$top/fakebinkd"
+poll
+check "limit: no retry during backoff" not called
+check "limit: skip logs the next allowed time" grep -q 'hub limit, no call now; next allowed 20' "$st/fido.log"
+check "limit: skip records no connect" test "$(grep -c . "$st/poll-calls")" = 2
+echo $((now - 10)) > "$st/poll-backoff"
+printf '%s\n' $((now - 4000)) $((now - 900)) $((now - 600)) $((now - 300)) > "$st/poll-calls"
+poll
+check "limit: backoff over, old connect aged out -> call" called
+poll
+check "limit: 4 connects in 65 min -> no 5th call" not called
+check "limit: next allowed = 4th newest + 65 min" grep -q "next allowed $(date -u -d @$((now - 900 + 3900)) +%Y-%m-%dT%H:%M)" "$st/fido.log"
+check "limit: aged-out connects pruned from the file" test "$(grep -c . "$st/poll-calls")" = 4
 sed -i '/^hubhost/d' "$top/E/fido.conf"; echo 'hubhost bad host;rm' >> "$top/E/fido.conf"
 rc=0; BBS_ROOT=$top/E BBS_FIDO_HOST=hoste BBS_FIDO_BINKD=$top/fakebinkd python3 -I "$fido" poll 2>/dev/null || rc=$?
 check "poll: bad hubhost refused" test "$rc" -ne 0

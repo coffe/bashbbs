@@ -7,6 +7,13 @@
   bbs-fido poll   scan, one binkd session with the hub ("hubhost" in fido.conf), toss
                   (what bbs-fido.timer runs every 15 minutes; binkd.cfg is written from fido.conf)
 
+Hub limits (Clearing Houz, Deon, 2026-03-24): at most 5 connects per 60 minutes per IP address,
+at most 2 at once. Every connect counts, refused ones too, and on 2026-11-18 the hub already said
+"M_BSY: Polling too frequently" to the 5th. So poll calls the hub at most 4 times in any 65 minutes
+(timer and "bbs-admin fido poll" share the count, state/fido/poll-calls), and after that M_BSY it
+makes no call for 65 minutes (state/fido/poll-backoff). Both files survive a reboot; a skipped
+poll logs the next allowed time. The lock below keeps polls from running in parallel.
+
 Runs as root. BBS_ROOT from the environment (default /srv/bashbbs). Config:
 $BBS_ROOT/fido.conf (see etc/fido.example). Needs "fido=on" in $BBS_ROOT/features.
 Nothing is deleted: handled packets go to state/fido/done/, rejected ones to state/fido/bad/.
@@ -475,6 +482,44 @@ HOSTPORT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$")
 CFGWORD = re.compile(r"^[^\s\"]+$")
 
 
+HUB_WINDOW = 65 * 60  # 60 minutes plus margin for timer jitter and clock skew
+HUB_MAX = 4           # the hub refused the 5th connect within the hour
+HUB_BACKOFF = 65 * 60
+
+
+def stamp(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def read_times(name):
+    try:
+        with open(os.path.join(STATE, name)) as f:
+            return [int(x) for x in f.read().split() if x.isdigit()]
+    except OSError:
+        return []
+
+
+def write_times(name, times):
+    path = os.path.join(STATE, name)
+    with open(path + ".new", "w") as f:
+        f.write("".join("%d\n" % t for t in times))
+    os.replace(path + ".new", path)
+
+
+def poll_next(now):
+    """Earliest time the hub may be called again (<= now: call now)."""
+    calls = sorted(t for t in read_times("poll-calls") if now - t < HUB_WINDOW)
+    nxt = max(read_times("poll-backoff") or [0])
+    if len(calls) >= HUB_MAX:
+        nxt = max(nxt, calls[-HUB_MAX] + HUB_WINDOW)
+    return nxt
+
+
+def say(msg):
+    log(msg)
+    print(msg)  # to the journal, which "bbs-admin fido poll" shows
+
+
 def cmd_poll(conf):
     """Scan, one binkd session with the hub, toss. binkd.cfg is generated so fido.conf stays the one config."""
     host = conf.get("hubhost", "")
@@ -505,6 +550,15 @@ def cmd_poll(conf):
         f.write(cfg)
     os.replace(path + ".new", path)
     cmd_scan(conf)
+    now = int(time.time())
+    nxt = poll_next(now)
+    if nxt > now:
+        say("poll: hub limit, no call now; next allowed %s" % stamp(nxt))
+        cmd_toss(conf, 0)
+        return
+    write_times("poll-calls", [t for t in read_times("poll-calls") if now - t < HUB_WINDOW] + [now])
+    blog = os.path.join(STATE, "binkd.log")
+    start = os.path.getsize(blog) if os.path.exists(blog) else 0
     binkd = os.environ.get("BBS_FIDO_BINKD", "binkd")
     try:
         r = subprocess.run([binkd, "-p", "-P", conf["hub"] + "@fsxnet", path], timeout=900,
@@ -512,6 +566,15 @@ def cmd_poll(conf):
         log("poll: binkd exit %d" % r.returncode)
     except (OSError, subprocess.TimeoutExpired) as x:
         log("poll: binkd failed: %s" % x)
+    try:
+        with open(blog, "rb") as f:
+            f.seek(start if os.path.getsize(blog) >= start else 0)  # binkd exits 0 even after M_BSY
+            busy = b"Polling too frequently" in f.read()
+    except OSError:
+        busy = False
+    if busy:
+        write_times("poll-backoff", [now + HUB_BACKOFF])
+        say("poll: hub said M_BSY (polling too frequently); next allowed %s" % stamp(now + HUB_BACKOFF))
     cmd_toss(conf, 0)  # binkd has exited and writes through temp-inbound: nothing in inbound is half-written
 
 
