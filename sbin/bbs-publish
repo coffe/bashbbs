@@ -3,6 +3,7 @@
 #   *.post  a message for a board
 #   *.req   a board request: create-board, invite, remove
 #   *.call  a login event (counter + state/callers.log), owner only
+#   *.net   a netmail for fsxNet, checked and handed to bbs-fido (state/fido/netmail/out)
 # The author comes from the file owner, never from the file text.
 # No errexit: a rejected file is logged and skipped, and the loop goes on.
 #
@@ -38,6 +39,7 @@ META=$BBS_ROOT/meta
 SYSOPS=$BBS_ROOT/sysops
 MAX_BYTES=16384
 MAX_OWNED=2
+MAX_NETMAIL_DAY=10   # netmails per account per UTC day, sysops unlimited
 MAX_BODY=11000
 STALE_SECS=86400
 LOCK_WAIT=${BBS_LOCK_WAIT:-20}
@@ -57,6 +59,8 @@ WALL_KEEP=100
 WALL_MAX_BYTES=1024
 WALL_MAX_CHARS=140
 WALL_LOCK=$STATE/wall.lock
+NETMAIL_OUT=$STATE/fido/netmail/out    # read by bbs-fido scan, root only
+NETMAIL_LOG=$STATE/fido/netmail/day.log  # "YYYY-MM-DD account" per accepted netmail, for the day limit
 
 CALLERS_LOG=$STATE/callers.log      # "YYYY-MM-DDTHH:MMZ name", world readable
 CALLERS_TOTAL=$STATE/callers.total  # running number of logins
@@ -830,6 +834,41 @@ handle_call() { # handle_call <file> <owner account>
     return 0
 }
 
+# Check one netmail again (the user can write the queue file by hand) and hand it to
+# bbs-fido. Author is the file owner. Returns 0 done, 1 rejected, 2 temporary.
+handle_netmail() { # handle_netmail <file> <owner account>
+    local f=$1 name=${2#bbs-} to_name to_addr subject reply day n id tmp
+    to_name=$(hdr_get "$f" To-Name)
+    to_addr=$(hdr_get "$f" To-Addr)
+    subject=$(hdr_get "$f" Subject)
+    reply=$(hdr_get "$f" Reply)
+    [[ $to_name =~ ^[^@[:cntrl:]]{1,35}$ ]] || return 1
+    [[ $to_addr =~ ^[0-9]{1,5}:[0-9]{1,5}/[0-9]{1,5}(\.[0-9]{1,5})?$ ]] || return 1
+    [[ $subject =~ ^[^[:cntrl:]]{1,60}$ ]] || return 1
+    [[ -z $reply || $reply =~ ^[^[:cntrl:]]{1,100}$ ]] || return 1
+    (( $(awk 'found { print } /^$/ && !found { found = 1 }' "$f" | wc -c) <= 8192 )) || return 1
+    day=$(date -u +%F)
+    n=$(grep -cxF -- "$day $name" "$NETMAIL_LOG" 2>/dev/null)
+    if ! is_sysop "$name" && (( ${n:-0} >= MAX_NETMAIL_DAY )); then
+        echo "netmail limit reached for $name" >&2
+        return 1
+    fi
+    mkdir -p -m 0700 "$STATE/fido/netmail" "$NETMAIL_OUT" || return 2
+    id=$(cat /proc/sys/kernel/random/uuid)
+    tmp=$NETMAIL_OUT/.tmp.$id
+    {
+        printf 'Author: %s\nDate: %s\n' "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'To-Name: %s\nTo-Addr: %s\nSubject: %s\n' "$to_name" "$to_addr" "$subject"
+        [[ -n $reply ]] && printf 'Reply: %s\n' "$reply"
+        printf '\n'
+        awk 'found { print } /^$/ && !found { found = 1 }' "$f" | LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'
+    } > "$tmp" && chmod 0600 "$tmp" && mv -f -- "$tmp" "$NETMAIL_OUT/$(date +%s)-$id.msg" \
+        || { rm -f -- "$tmp"; return 2; }
+    printf '%s %s\n' "$day" "$name" >> "$NETMAIL_LOG"
+    echo "netmail $name -> $to_name@$to_addr" >&2
+    return 0
+}
+
 process() { # process <file>; returns 0 done, 1 rejected, 2 temporary
     local f=$1 owner board rc mtime id
     [[ -f $f && ! -L $f ]] || return 0
@@ -846,6 +885,16 @@ process() { # process <file>; returns 0 done, 1 rejected, 2 temporary
             0) rm -f "$f" ;;
             1) quarantine "$f" ;;
             *) echo "call kept for retry: $f" >&2 ;;
+        esac
+        return $rc
+    fi
+
+    if [[ $f == *.net ]]; then
+        (( $(stat -c %s "$f") <= MAX_BYTES )) && handle_netmail "$f" "$owner"; rc=$?
+        case $rc in
+            0) rm -f "$f" ;;
+            2) echo "netmail kept for retry: $f" >&2 ;;
+            *) echo "rejected netmail: $f" >&2; quarantine "$f"; rc=1 ;;
         esac
         return $rc
     fi
@@ -925,7 +974,7 @@ reconcile_sysops
 mkdir -p "$STATE/tmp" 2>/dev/null
 activity_backfill
 news_sections_on && repair_index
-for f in "$INCOMING"/*.post "$INCOMING"/*.req "$INCOMING"/*.wall "$INCOMING"/*.call; do
+for f in "$INCOMING"/*.post "$INCOMING"/*.req "$INCOMING"/*.wall "$INCOMING"/*.call "$INCOMING"/*.net; do
     process "$f"
 done
 if [[ -e $DIRTY ]] && news_sections_on; then

@@ -562,8 +562,19 @@ def build_msg(conf, area, h, body, reply, uid):
         epoch = calendar.timegm(t)
     except ValueError:
         epoch = time.time()
-    lines = [("AREA:" + area).encode(),
-             b"\x01MSGID: " + ("%s %s" % (conf["address"], uid[:8])).encode()]
+    msgid = b"\x01MSGID: " + ("%s %s" % (conf["address"], uid[:8])).encode()
+    if area is None:  # netmail: Private, header and INTL name the final destination
+        dest = parse_addr(h.get("To-Addr", ""))
+        lines = [("\x01INTL %d:%d/%d %d:%d/%d" % (dest[:3] + our[:3])).encode()]
+        if dest[3]:
+            lines.append(b"\x01TOPT %d" % dest[3])
+        if our[3]:
+            lines.append(b"\x01FMPT %d" % our[3])
+        lines.append(msgid)
+        to, attr, dnet, dnode = enc(CTRL.sub("", h.get("To-Name", "")), 35), 1, dest[1], dest[2]
+    else:
+        lines = [("AREA:" + area).encode(), msgid]
+        to, attr, dnet, dnode = b"All", 0, hub[1], hub[2]
     if reply:
         lines.append(b"\x01REPLY: " + reply.encode("latin-1", "replace"))
     lines += [b"\x01CHRS: CP437 2", b"\x01TZUTC: 0000", b"\x01PID: BashBBS"]
@@ -575,13 +586,17 @@ def build_msg(conf, area, h, body, reply, uid):
     pre = " * Origin: "
     suf = " (%s)" % conf["address"]
     name = "".join(c for c in conf["bbsname"] if " " <= c <= "~")
-    lines += [b"--- BashBBS", (pre + name[:79 - len(pre) - len(suf)] + suf).encode("ascii"),
-              ("SEEN-BY: " + seen_by(our, hub)).encode(), ("\x01PATH: %d/%d" % (our[1], our[2])).encode()]
+    if area is None:
+        lines += [b"--- BashBBS", ("\x01Via %s @%s.UTC BashBBS" % (
+            conf["address"], time.strftime("%Y%m%d.%H%M%S", time.gmtime()))).encode()]
+    else:
+        lines += [b"--- BashBBS", (pre + name[:79 - len(pre) - len(suf)] + suf).encode("ascii"),
+                  ("SEEN-BY: " + seen_by(our, hub)).encode(), ("\x01PATH: %d/%d" % (our[1], our[2])).encode()]
     text = b"\r".join(lines) + b"\r\0"
     who = enc(CTRL.sub("", h.get("Author", "")), 35)
     subj = enc(CTRL.sub("", h.get("Subject", "")), 71)
-    hdr = struct.pack("<7H", 2, our[2], hub[2], our[1], hub[1], 0, 0)
-    return hdr + fdate(epoch).encode() + b"\0" + b"All\0" + who + b"\0" + subj + b"\0" + text
+    hdr = struct.pack("<7H", 2, our[2], dnode, our[1], dnet, attr, 0)
+    return hdr + fdate(epoch).encode() + b"\0" + to + b"\0" + who + b"\0" + subj + b"\0" + text
 
 
 def packet_header(conf):
@@ -638,6 +653,21 @@ def cmd_scan(conf):
                 for q in find_local(d, par):
                     reply = headers_of(q).get("Fido-Msgid")
             todo.append((p, area, h, body, reply, uid))
+    # Netmail checked by bbs-publish goes in the same hub packet (area None).
+    nmout = os.path.join(STATE, "netmail", "out")
+    for fn in sorted(os.listdir(nmout)) if os.path.isdir(nmout) else []:
+        p = os.path.join(nmout, fn)
+        if not fn.endswith(".msg") or fn.startswith(".") or os.path.islink(p):
+            continue
+        h = headers_of(p)
+        if not ADDR.match(h.get("To-Addr", "")) or "@" in h.get("To-Addr", ""):
+            park(p, "bad", "netmail address")
+            continue
+        with open(p, "rb") as f:
+            raw = f.read()
+        i = raw.find(b"\n\n")
+        body = raw[i + 2:].decode("utf-8", "replace") if i >= 0 else ""
+        todo.append((p, None, h, body, h.get("Reply") or None, uuid.uuid4().hex))
     if not todo:
         return
     hub = conf["hubaddr"]
@@ -661,7 +691,12 @@ def cmd_scan(conf):
     finally:
         os.unlink(flo + ".bsy")
     for p, a, h, b, r, u in todo:
-        rewrite_marked(p, "%s %s" % (conf["address"], u[:8]))
+        if a is None:
+            os.makedirs(os.path.join(STATE, "netmail", "sent"), 0o700, exist_ok=True)
+            os.replace(p, os.path.join(STATE, "netmail", "sent", os.path.basename(p)))
+            log("netmail %s -> %s@%s" % (h.get("Author", ""), h.get("To-Name", ""), h.get("To-Addr", "")))
+        else:
+            rewrite_marked(p, "%s %s" % (conf["address"], u[:8]))
     log("scan: %d messages -> %s" % (len(todo), os.path.basename(out)))
 
 

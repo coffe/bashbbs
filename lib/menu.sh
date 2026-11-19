@@ -2066,12 +2066,50 @@ mail_send() { # mail_send <name> <subject> [in-reply-to]
     pause
 }
 
+# Netmail as typed: Name@zone:net/node[.point]. The name has no @ and no control characters.
+NETMAIL_RE='^[^@[:cntrl:]]{1,35}@[0-9]{1,5}:[0-9]{1,5}/[0-9]{1,5}(\.[0-9]{1,5})?$'
+is_netmail() { local LC_ALL=C.UTF-8; [[ $1 =~ $NETMAIL_RE ]]; }
+
+# Netmail goes through the queue like a post, never through postfix (it rewrites fido
+# addresses). bbs-publish checks it again and bbs-fido packs it for the hub. The body is read from stdin.
+mail_send_netmail() { # mail_send_netmail <Name@z:n/f> <subject> [fido msgid]
+    local to=$1 subject=$2 reply=${3:-} name addr tmp sent host=$BBS_MAIL_DOMAIN
+    valid_user "$me" || return 1
+    name=${to%@*} addr=${to##*@}
+    tmp=$(mktemp "$BBS_ROOT/queue/incoming/.tmp.XXXXXX") || return 1
+    {
+        printf 'To-Name: %s\nTo-Addr: %s\nSubject: %s\n' "$name" "$addr" "$subject"
+        [[ -n $reply ]] && printf 'Reply: %s\n' "$reply"
+        printf '\n'
+    } > "$tmp"
+    if ! mail_body >> "$tmp"; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
+    read_key "Netmail to $name at $addr (fsxNet). It travels via the hub and can take hours. Send? Y/n " || MKEY=n
+    echo
+    if [[ $MKEY != [Yy] && ( -n $MKEY || -n $MESC ) ]]; then rm -f "$tmp"; echo "Not sent."; pause; return 1; fi
+    sent=$(mktemp) || { rm -f "$tmp"; return 1; }
+    {
+        printf 'Message-ID: <%s@%s>\n' "$(cat /proc/sys/kernel/random/uuid)" "$host"
+        printf 'Date: %s\nFrom: %s@%s\nTo: %s\nSubject: %s\n\n' "$(date -R)" "$me" "$host" "$to" "$subject"
+        sed '1,/^$/d' "$tmp"
+    } > "$sent"
+    if mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).net"; then
+        mail_store Sent cur "$sent"
+        echo "Queued for the hub."
+    else
+        rm -f "$tmp"
+        echo "Could not queue the message."
+    fi
+    rm -f "$sent"
+    pause
+}
+
 # Write a new message, or a reply when called from mail_reply. /cancel stops at any prompt.
+# A Name@zone:net/node recipient is netmail; in-reply-to is then the fido MSGID.
 mail_write() { # mail_write [name subject in-reply-to]
     local to=${1:-} subject=${2:-} reply=${3:-} line
-    if [[ -z $to ]]; then rline to "To, e.g. kitty (/cancel stops): " || return; fi
+    if [[ -z $to ]]; then rline to "To, e.g. kitty or Zip@21:1/202 (/cancel stops): " || return; fi
     [[ $to == /cancel ]] && return
-    resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
+    is_netmail "$to" || resolve_local "$to" >/dev/null || { echo "Unknown user."; pause; return; }
     # The default in brackets is shown cut to the line; Enter still keeps the full subject.
     local shown=""
     [[ -n $subject ]] && shown=" [$(list_fit $(( $(list_width) - 28 )) "$subject")]"
@@ -2081,7 +2119,7 @@ mail_write() { # mail_write [name subject in-reply-to]
     subject=$(mail_subject "$subject") || { pause; return; }
     [[ -n $subject ]] || subject="(no subject)"
     echo "Write text. End with a single dot (.)."
-    mail_send "$to" "$subject" "$reply"
+    if is_netmail "$to"; then mail_send_netmail "$to" "$subject" "$reply"; else mail_send "$to" "$subject" "$reply"; fi
 }
 
 # Reply: To is the sender, Subject gets Re: once (cut to 60 characters), In-Reply-To is the Message-ID.
@@ -2092,17 +2130,12 @@ mail_reply() { # mail_reply <file>
     [[ $subject == Re:* ]] || subject="Re: $subject"
     local LC_ALL=C.UTF-8
     subject=${subject:0:60}
-    if [[ $from =~ @[0-9]+:[0-9]+/[0-9]+ ]]; then
-        mail_reply_netmail "$from" "$subject" "$(post_hdr "$1" X-Fido-Msgid)"
+    # A netmail sender keeps the full Name@zone:net/node, and X-Fido-Msgid becomes the REPLY.
+    if is_netmail "$from"; then
+        mail_write "$from" "$subject" "$(post_hdr "$1" X-Fido-Msgid)"
         return
     fi
     mail_write "${from%%@*}" "$subject" "$(post_hdr "$1" Message-ID)"
-}
-
-# Reply to a netmail sender: the full Name@zone:net/node is the recipient, X-Fido-Msgid the REPLY.
-mail_reply_netmail() { # mail_reply_netmail <from> <subject> <fido-msgid>
-    echo "Sending netmail is not available yet."
-    pause
 }
 
 # A folder list. Unread messages in new are marked with *.

@@ -51,6 +51,14 @@ elif sys.argv[1] == "zip":  # zip OUT NAME=FILE ...
     with zipfile.ZipFile(sys.argv[2], "w") as z:
         for a in sys.argv[3:]:
             n, f = a.split("=", 1); z.writestr(n, open(f, "rb").read())
+elif sys.argv[1] == "dump":  # dump PKT: "MSG attr= orig= dest= to= from= subj=" per message, then its text (^A = kludge)
+    d = open(sys.argv[2], "rb").read(); pos = 58
+    while d[pos:pos + 2] == b"\2\0":
+        _, on, dn, onet, dnet, attr, _ = struct.unpack_from("<7H", d, pos); pos += 14; f = []
+        for _ in range(5):
+            e = d.index(b"\0", pos); f.append(d[pos:e].decode("cp437")); pos = e + 1
+        print("MSG attr=%d orig=%d/%d dest=%d/%d to=%s from=%s subj=%s" % (attr, onet, on, dnet, dn, f[1], f[2], f[3]))
+        print(f[4].replace("\1", "^A").replace("\r", "\n"))
 elif sys.argv[1] == "date":  # first message date field of a packet
     d = open(sys.argv[2], "rb").read(); print(d[72:91].decode())
 PY
@@ -294,6 +302,27 @@ ef=$(grep -l 'e1$' "$top"/homes/kitty/Maildir/new/*)
 check "netmail: CR in From removed" bash -c "grep -qx 'From: EvX-Evil: 1@21:1/202' '$ef' && ! grep -q '^X-Evil' '$ef'"
 net eo "All|Ed|No origin|21:1/100|21:9/999|AREA:FSX_GEN\n^AMSGID: 21:4/7 77\nbody without origin"
 check "echomail without Origin: Node from MSGID" grep -qx 'Node: 21:4/7' "$(grep -l '^Subject: No origin' "$top"/A/boards/fsx_gen/*.msg)"
+
+# --- outbound netmail: bbs-publish output in netmail/out, scan on A packs it, toss on B (21:1/100) delivers
+nmo=$top/A/state/fido/netmail/out; mkdir -p "$nmo"
+printf 'Author: alice\nDate: 2026-11-19T10:00:00Z\nTo-Name: Bob\nTo-Addr: 21:1/100\nSubject: Hej Bob\nReply: 21:1/100 abc\n\nNetmail åäö\n---\n' > "$nmo/1700000001-n1.msg"
+printf 'Author: alice\nDate: 2026-11-19T10:00:00Z\nTo-Name: Pt\nTo-Addr: 21:1/100.5\nSubject: To a point\n\nhi point\n' > "$nmo/1700000002-n2.msg"
+run A scan
+npk=$(ls -t "$top"/A/state/fido/out/*.pkt | head -1)
+d=$(mk dump "$npk")
+check "netmail out: header to the final node, Private, from the handle" has "$d" "MSG attr=1 orig=9/999 dest=1/100 to=Bob from=alice subj=Hej Bob"
+check "netmail out: INTL, MSGID, REPLY, Via, tearline" bash -c 'for k in "^AINTL 21:1/100 21:9/999" "^AMSGID: 21:9/999 " "^AREPLY: 21:1/100 abc" "^ACHRS: CP437 2" "^AVia 21:9/999 @" "--- BashBBS" " ---"; do grep -qF -- "$k" <<<"$1" || exit 1; done' _ "$d"
+check "netmail out: no AREA, SEEN-BY, PATH or Origin" bash -c '! grep -qE "AREA:|SEEN-BY|PATH:|Origin" <<<"$1"' _ "$d"
+check "netmail out: point gets TOPT" bash -c 'grep -q "to=Pt " <<<"$1" && grep -qxF "^ATOPT 5" <<<"$1"' _ "$d"
+check "netmail out: in the flo" grep -qx "\\^$npk" "$top/A/out/00010064.flo"
+check "netmail out: moved to sent" bash -c "test -z \"\$(ls '$nmo')\" && test \"\$(ls '$top/A/state/fido/netmail/sent' | wc -l)\" = 2"
+mkdir -p "$top/B/users/bob" "$top/homes/bob/Maildir"/{tmp,new,cur}; touch "$top/B/users/bob/profile"
+cp "$npk" "$top/B/in/rt.pkt"; old "$top/B/in/rt.pkt"
+BASHBBS_TEST=1 BBS_TEST_HOMES=$top/homes run B toss
+bf=$(ls "$top"/homes/bob/Maildir/new/* 2>/dev/null | head -1)
+check "netmail round trip: delivered to bob" test "$(inbox bob)" = 1
+check "netmail round trip: From, Subject, body, X-Fido-Msgid" bash -c "grep -qx 'From: alice@21:9/999' '$bf' && grep -qx 'Subject: Hej Bob' '$bf' && grep -qx 'Netmail åäö' '$bf' && grep -qE '^X-Fido-Msgid: 21:9/999 [0-9a-f]{8}$' '$bf'"
+check "netmail round trip: point mail not for B" grep -q 'netmail for 21:1/100.5, not us' "$top/B/state/fido/fido.log"
 
 echo "pass=$pass fail=$fail"
 rm -rf "$top"

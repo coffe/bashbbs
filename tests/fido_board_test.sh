@@ -75,7 +75,28 @@ sed 's/^From: .*/From: kitty@bbs.example/' "$root/t/nm" > "$root/t/pm"
 check "show_post: netmail sender keeps address" grep -q 'by Zip@21:1/202' <<<"$(t show_post "$root/t/nm" 60)"
 check "show_post: local sender cut at @" bash -c 'grep -q "by kitty," <<<"$1" && ! grep -q "bbs.example" <<<"$1"' _ "$(t show_post "$root/t/pm" 60)"
 mr() { pause() { :; }; mail_write() { echo "WRITE $*"; }; mail_reply "$1"; }
-check "mail_reply: netmail not sent yet" bash -c 'grep -q "not available yet" <<<"$1" && ! grep -q WRITE <<<"$1"' _ "$(t mr "$root/t/nm" 2>&1)"
+check "mail_reply: netmail prefills the address and REPLY" grep -q '^WRITE Zip@21:1/202 Re: Hej 21:1/202 abc$' <<<"$(t mr "$root/t/nm" 2>&1)"
+
+# netmail out (bbs-publish): owner is the author, checks again, 10 a day, sysop unlimited
+nmo=$root/state/fido/netmail/out
+mknet() { printf 'Author: carol\nTo-Name: %s\nTo-Addr: %s\nSubject: Hej\n\nbody\n' "$2" "$3" > "$root/t/$1"; }
+mknet n0.net Zip 21:1/202
+lib handle_netmail "$root/t/n0.net" bbs-alice; rc=$?
+N=$(ls "$nmo"/*.msg 2>/dev/null | head -1)
+check "netmail accepted (rc)" eq "$rc" 0
+check "netmail forged Author -> owner" bash -c '[[ $(sed -n "s/^Author: //p" "$1") == alice ]] && [[ $(grep -c "^Author:" "$1") == 1 ]]' _ "$N"
+check "netmail out file root-only" eq "$(stat -c %a "$N")" 600
+mknet bad.net Zip 21:1
+lib handle_netmail "$root/t/bad.net" bbs-alice; rc=$?
+check "netmail bad address rejected" eq "$rc" 1
+for i in 1 2 3 4 5 6 7 8 9; do mknet n$i.net Zip 21:1/202; lib handle_netmail "$root/t/n$i.net" bbs-alice; done
+check "netmail 10 a day accepted" eq "$(ls "$nmo" | wc -l)" 10
+mknet n10.net Zip 21:1/202
+lib handle_netmail "$root/t/n10.net" bbs-alice; rc=$?
+check "netmail 11th the same day rejected" eq "$rc" 1
+for i in 1 2 3 4 5 6 7 8 9 10 11; do printf '%s carol\n' "$(date -u +%F)"; done >> "$root/state/fido/netmail/day.log"
+lib handle_netmail "$root/t/n10.net" bbs-carol; rc=$?
+check "netmail sysop not limited" eq "$rc" 0
 check "mail_reply: local reply unchanged" grep -q '^WRITE kitty Re: Hej <a@fido>' <<<"$(t mr "$root/t/pm" 2>&1)"
 
 # ANSI ad: A) ANSI shows the original from published/<id> (CP437, colour), gone -> message
