@@ -342,7 +342,7 @@ def toss_msg(conf, date, frm, subj, text, porig):
             break
     author = (frm_s.strip()[:36] or "unknown") + "@fsx"
     subject = subj_s.strip()[:72] or "(no subject)"
-    body_b = body_s.encode("utf-8")[:MAX_BODY].decode("utf-8", "ignore")
+    body_b = body_s[:MAX_BODY]  # characters, not bytes: cp437 block art is 3 UTF-8 bytes a cell
     out = "Msgid: %s\nAuthor: %s\nNode: %s\nDate: %s\nSubject: %s\n" % (
         uid, author, node, parse_date(date.decode("latin-1"), tz), subject)
     if parent:

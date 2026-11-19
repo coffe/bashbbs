@@ -251,6 +251,10 @@ toss_ad 10 "Ny annons" $'\e[1mNY'
 check "ads: kept at 100" test "$(ls "$top"/A/published/*.meta | wc -l)" -eq 100
 check "ads: oldest moved to expired" test -f "$top/A/state/expired/1-0000000a.meta" -a -f "$top/A/state/expired/1-0000000a"
 
+# block art is 3 UTF-8 bytes a cell: the cap counts characters, so a 4800-cell ad stays whole
+toss_ad 11 "Block art" "$(for i in $(seq 60); do printf '%.0s█' $(seq 80); echo; done)"$'\nEND OF AD'
+check "long block ad not cut" grep -qx 'END OF AD' "$(grep -l '^Subject: Block art' "$top"/A/boards/fsx_gen/*.msg)"
+
 echo "pass=$pass fail=$fail"
 rm -rf "$top"
 [[ $fail -eq 0 ]]
