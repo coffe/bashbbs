@@ -228,6 +228,15 @@ poll
 check "limit: 4 connects in 65 min -> no 5th call" not called
 check "limit: next allowed = 4th newest + 65 min" grep -q "next allowed $(date -u -d @$((now - 900 + 3900)) +%Y-%m-%dT%H:%M)" "$st/fido.log"
 check "limit: aged-out connects pruned from the file" test "$(grep -c . "$st/poll-calls")" = 4
+# a busy or failed call says so in fido.log (binkd still exits 0)
+rm -f "$st/poll-calls" "$st/poll-backoff"
+printf '#!/bin/sh\necho "$@" > %s/E/args\necho "? 20 Nov 18:16:06 [1] got M_BSY: RETRY 0600: Down for maintenance, back soon..." >> %s/binkd.log\necho "+ 20 Nov 18:16:06 [1] done (to 21:3/100@fsxnet, failed, S/R: 0/0 (0/0 bytes))" >> %s/binkd.log\n' "$top" "$st" "$st" > "$top/fakebinkd"
+poll
+check "poll: maintenance M_BSY logged as hub busy" grep -q 'poll: hub busy (RETRY 0600: Down for maintenance, back soon...), nothing sent; binkd exit 0' "$st/fido.log"
+check "poll: maintenance M_BSY sets no backoff" test ! -e "$st/poll-backoff"
+printf '#!/bin/sh\necho "+ 20 Nov 18:30:00 [2] done (to 21:3/100@fsxnet, failed, S/R: 0/0 (0/0 bytes))" >> %s/binkd.log\n' "$st" > "$top/fakebinkd"
+poll
+check "poll: failed call logged" test "$(tail -n 1 "$st/fido.log" | grep -c 'poll: call failed, nothing sent; binkd exit 0')" = 1
 sed -i '/^hubhost/d' "$top/E/fido.conf"; echo 'hubhost bad host;rm' >> "$top/E/fido.conf"
 rc=0; BBS_ROOT=$top/E BBS_FIDO_HOST=hoste BBS_FIDO_BINKD=$top/fakebinkd python3 -I "$fido" poll 2>/dev/null || rc=$?
 check "poll: bad hubhost refused" test "$rc" -ne 0

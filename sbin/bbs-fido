@@ -785,15 +785,23 @@ def cmd_poll(conf):
     try:
         r = subprocess.run([binkd, "-p", "-P", conf["hub"] + "@fsxnet", path], timeout=900,
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        log("poll: binkd exit %d" % r.returncode)
+        rc = "binkd exit %d" % r.returncode
     except (OSError, subprocess.TimeoutExpired) as x:
-        log("poll: binkd failed: %s" % x)
+        rc = "binkd failed: %s" % x
     try:
         with open(blog, "rb") as f:
             f.seek(start if os.path.getsize(blog) >= start else 0)  # binkd exits 0 even after M_BSY
-            busy = b"Polling too frequently" in f.read()
+            out = f.read().decode("utf-8", "replace")
     except OSError:
-        busy = False
+        out = ""
+    busy = "Polling too frequently" in out
+    m = re.search(r"M_BSY: ?(.*)", out)
+    if m and not busy:
+        log("poll: hub busy (%s), nothing sent; %s" % (m.group(1).strip()[:80], rc))
+    elif ", failed, " in out:
+        log("poll: call failed, nothing sent; %s" % rc)
+    else:
+        log("poll: %s" % rc)
     if busy:
         write_times("poll-backoff", [now + HUB_BACKOFF])
         say("poll: hub said M_BSY (polling too frequently); next allowed %s" % stamp(now + HUB_BACKOFF))
