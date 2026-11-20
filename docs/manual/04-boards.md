@@ -25,7 +25,8 @@ Reading and writing:
 Echo areas: press E in Public boards. They come from fsxNet and are
 shared with other BBSes there, so what you write travels to every one
 of them under this node's name. Anyone can post and reply, up to 10
-posts a day. Posts there cannot be edited once sent. To write privately
+posts a day; the echo shows how many you have left. Posts there cannot
+be edited once sent. To write privately
 to someone there, use M on their post (see Mail).
 
 Some boards are read-only (for example automatic news). You can read them

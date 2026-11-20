@@ -1549,6 +1549,8 @@ board_view() {
             keyline "N) New post   Q) Back"
             keys+=Nn hint="N: new post   Q: back"
         fi
+        local left
+        is_fido "$board" && left=$(echo_left) && echo "$left of $ECHO_DAY_MAX echo posts left today."
         # A read-only board has no N. Its owner can still reach S.
         is_readonly "$board" && manages "$board" && keys+=Ss
         menu_key "> " "$keys$(digit_keys "${#roots[@]}")" \
@@ -1842,7 +1844,12 @@ empty_post() { echo "Empty - no text! Nothing sent, the void thanks you for your
 # into boards/. Users cannot write into boards/ themselves.
 # A reply passes a default subject and the post to quote; Enter keeps the subject.
 compose() { # compose <board> <parent> [default subject] [post to quote]
-    local board=$1 parent=$2 defsub=${3:-} quote=${4:-} subject tmp ql="" body
+    local board=$1 parent=$2 defsub=${3:-} quote=${4:-} subject tmp ql="" body left=""
+    if is_fido "$board" && left=$(echo_left) && (( left == 0 )); then
+        echo "You have used today's $ECHO_DAY_MAX echo posts."
+        echo "New ones at 00:00 UTC."
+        pause; return
+    fi
     if [[ -n $defsub ]]; then
         rline subject "Subject [Enter keeps \"$(list_fit "$(( $(list_width) - 32 ))" "$defsub")\"]: " || return
     else
@@ -1870,6 +1877,7 @@ compose() { # compose <board> <parent> [default subject] [post to quote]
     } > "$tmp"
     mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).post"
     echo "Sent. Appears within a minute."
+    [[ -n $left ]] && echo "$((left - 1)) of $ECHO_DAY_MAX echo posts left today."
     pause
 }
 
@@ -1887,6 +1895,26 @@ manages() {
 is_readonly() { [[ -f $BBS_ROOT/meta/$1.readonly ]]; }
 # A fido board (fsxNet echomail) has a .fido marker: everyone posts (a day limit), nobody edits.
 is_fido() { [[ -f $BBS_ROOT/meta/$1.fido ]]; }
+ECHO_DAY_MAX=10   # the same as MAX_ECHO_DAY in sbin/bbs-publish, which enforces it
+# Echo posts left today (UTC) for this user, counted from their own posts on fido boards
+# (a deleted post keeps its Author, as in bbs-publish's log). Fails for sysops: no limit.
+# shortcut: a post still in the queue (up to a minute) is not counted yet.
+echo_left() {
+    is_sysop && return 1
+    local midnight m b f files=() n
+    midnight=$(date -u -d "$(date -u +%F) 00:00" +%s)
+    for m in "$BBS_ROOT"/meta/*.fido; do
+        b=$(basename "$m" .fido)
+        for f in "$BBS_ROOT/boards/$b"/[0-9]*.msg; do
+            [[ -f $f ]] || continue
+            f=${f##*/}; (( ${f%%-*} >= midnight )) && files+=("$BBS_ROOT/boards/$b/$f")
+        done
+    done
+    n=0
+    (( ${#files[@]} )) && n=$(awk -v a="Author: $me" '$0 == a { c++; nextfile } /^$/ { nextfile } END { print c + 0 }' "${files[@]}")
+    n=$(( ECHO_DAY_MAX - n ))
+    echo $(( n < 0 ? 0 : n ))
+}
 
 # Requests go through the queue. The publisher runs as root and does the work.
 queue_request() {

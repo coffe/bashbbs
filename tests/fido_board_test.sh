@@ -74,6 +74,18 @@ check "imported body shown" grep -q 'Imported body line' <<<"$out"
 check "Fido-Msgid not shown as body" bash -c '! grep -q "Fido-Msgid" <<<"$1"' _ "$out"
 check "author header read" eq "$(t post_hdr "$root/boards/fsx_gen/1700000000-11111111-2222-3333-4444-555555555555.msg" Author)" "Some Name@fsx"
 
+# echo posts left today: counted from the user's own posts on fido boards
+check "echo_left: ten posts today leaves 0" eq "$(t echo_left)" 0
+out=$(t eval 'pause() { :; }; compose fsx_gen "" </dev/null' 2>&1)
+check "compose at the limit says so" grep -q "used today's 10 echo posts" <<<"$out"
+check "compose at the limit queues nothing" eq "$(ls "$root/queue/incoming" | wc -l)" 0
+old=$(grep -l '^Author: alice$' "$root"/boards/fsx_gen/*.msg | head -1)
+mv "$old" "$root/boards/fsx_gen/$(( $(date -u -d "$(date -u +%F) 00:00" +%s) - 10 ))-${old##*/[0-9]*-}"
+check "echo_left: a post from yesterday does not count" eq "$(t echo_left)" 1
+check "echo_left: sysop has no limit" bash -c '! ( export BBS_ROOT="$1" HOME="$1/home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol; source "$2/lib/menu.sh"; set +e +u; echo_left )' _ "$root" "$here"
+out=$(t board_view fsx_gen </dev/null 2>&1)
+check "board view shows the counter" grep -q "1 of 10 echo posts left today" <<<"$out"
+
 # netmail in the inbox: the fido address stays in From, a local sender is cut at @
 printf 'Message-ID: <a@fido>\nDate: Wed, 18 Nov 2026 08:05:09 -0000\nFrom: Zip@21:1/202\nTo: alice\nSubject: Hej\nX-Fido-Msgid: 21:1/202 abc\n\nnetmail body\n' > "$root/t/nm"
 sed 's/^From: .*/From: kitty@bbs.example/' "$root/t/nm" > "$root/t/pm"
