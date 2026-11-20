@@ -170,7 +170,8 @@ static int read_key(void)
 int ae_input_pending(void)
 {
     if (pushed_back != NO_BYTE || carrier_lost) return 1;
-    if (!input_ready(40)) return 0;
+    /* No grace: the relay polls this before every frame, so any wait here is chat lag. */
+    if (!input_ready(0)) return 0;
     pushed_back = read_key();
     return 1;
 }
