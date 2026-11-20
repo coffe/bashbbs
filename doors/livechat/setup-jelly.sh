@@ -32,7 +32,7 @@ fi
 
 # The door's first sysop run registers the board and writes its key into this file.
 cfg=$home/PARTYLINE.cfg
-[[ -s $cfg ]] || printf 'Host=doors.uprough.net\nTls=1\nTimeout=10\n' |
+[[ -s $cfg ]] || printf 'Host=doors.uprough.net\nPort=6400\nTls=1\nTimeout=10\n' |
     install -m 600 -o livechat -g livechat /dev/stdin "$cfg"
 
 echo "LIVECHAT_BBS_HOST=$bbs" > /etc/livechat-tunnel.env

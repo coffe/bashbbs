@@ -38,6 +38,8 @@ its holder start the door.
 ## Settings
 
 The door keeps its settings in `/var/lib/livechat/PARTYLINE.cfg` on the door host.
+Chat goes to the hub on `Port=6400` with `Tls=1`. Port 443 only serves HTTPS, which
+includes the registration, so a 1.0.0 build needs the port set explicitly.
 The sysop's first run (the BBS always starts it at level 255) registers the board
 with the hub and writes the board's key into that file, so it must never be shared
 or committed.
