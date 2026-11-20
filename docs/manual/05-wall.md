@@ -11,3 +11,14 @@ callers. Each message is at most 140 characters, so make them count.
 
 It is the quickest way to say you were here. For longer talk use Boards,
 for something private use Mail.
+
+## Chat
+
+Chat (0 on the main menu, when this board has it) is one live room. The
+last lines of the past day show when you come in, and everyone sees
+"* name joined" and "* name left".
+
+- Type a line and press Enter. At most 200 characters, one line a second.
+- /who lists who is in the room. /quit or Esc leaves.
+- Lines are gone after a day. You show up only while you are in the room.
+- It needs a terminal with ANSI cursor moves (not TERM=dumb).

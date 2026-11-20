@@ -368,15 +368,17 @@ rline() {
 }
 
 # One key, no draining, so keys typed on purpose a moment ago are not lost.
+# read_key_raw [timeout]: returns read's status, 1 at end of input, >128 after the timeout.
 read_key_raw() {
     local c o
     MKEY= MESC=
-    IFS= read -rsn1 c || return 1
+    IFS= read -rsn1 ${1:+-t "$1"} c || return
     if [[ $c == $'\e' ]]; then
-        MESC=1  # MKEY is empty for this and for Enter
+        MESC=1  # MKEY is empty for this and for Enter; MESC=2 for a whole sequence
         # Arrow keys are ESC [ A or ESC O A, longer ones ESC [ 1 ; 5 C. Read to the
         # final byte (64..126). 0.2 s so the rest survives a slow link.
         if IFS= read -rsn1 -t 0.2 c && [[ $c == '[' || $c == O ]]; then
+            MESC=2
             while IFS= read -rsn1 -t 0.2 c; do
                 printf -v o '%d' "'$c" 2>/dev/null || break
                 (( o >= 64 && o <= 126 )) && break
@@ -2567,13 +2569,17 @@ main_menu() {
         feat_item games 7 "Games"
         feat_item files 8 "Files" "" "$(feature_on files && files_any_new && echo '*')"
         sysop_menu_on && menu_item 9 "Sysop" "Status, applications, posts, users"
+        local keys=156Qq f chat=""
+        if chat_on; then
+            chat_here; (( CHAT_HERE )) && chat="($CHAT_HERE here)"
+            menu_item 0 "Chat" "" "$chat"; keys+=0
+        fi
         echo
         keyline "Q) Log out"
-        local keys=156Qq f
         for f in 2:wall 3:news 4:fame 7:games 8:files; do feature_on "${f#*:}" && keys+=${f%%:*}; done
         sysop_menu_on && keys+=9
         menu_key "> " "$keys" "1-8: pick a section (Manual: 6, then 4)
-9: Sysop (sysops only)
+9: Sysop (sysops only)   0: Chat
 Q or G: log out
 B M P W: jump" || { nav_req=quit; return; }
         case $MKEY in
@@ -2590,6 +2596,7 @@ B M P W: jump" || { nav_req=quit; return; }
             7) games_menu; [[ -n $nav_req ]] && return ;;
             8) file_areas; [[ -n $nav_req ]] && return ;;
             9) sysop_menu; [[ -n $nav_req ]] && return ;;
+            0) chat_room ;;
         esac
     done
 }
@@ -4160,6 +4167,161 @@ B M P W: jump   G: log out" || { nav_req=quit; return; }
         esac
         [[ -n $nav_req ]] && return
     done
+}
+
+# ---- Chat: one live room ------------------------------------------------------
+# state/chat (mode 1777, sticky) has one file per session, s.<pid>.<epoch>.<random>, with
+# lines "epoch<TAB>text" ("epoch<TAB><TAB>joined|left" for the * lines), and a presence
+# file h.<same id>, touched every 60 s and removed on exit. The sender is the file owner,
+# never the text, and the random name made with noclobber cannot be taken by someone else
+# first. Text is cleaned when written and again when read. Others' old files stay until a
+# root job removes them (not in v1).
+CHAT_DIR=$BBS_ROOT/state/chat
+CHAT_MAX=200
+CHAT_MARK=-99
+
+# chat=on shows Chat to sysops only (test); chat.all=on opens it for everyone.
+chat_on() { feature_on chat && { feature_on chat.all || is_sysop; }; }
+
+chat_owner() { # chat_owner <file>: the sender's name
+    local u; u=$(stat -c %U -- "$1" 2>/dev/null) || u="?"
+    printf '%s' "${u#bbs-}"
+}
+
+# CHAT_HERE: live presence files, newer than a marker dated 150 s back. The marker is re-dated
+# (one touch) at most every 30 s, so a menu redraw forks nothing and the marker is 150-180 s
+# old: a heartbeat is at most 60 s old, a ghost (dead session) over 3 minutes.
+chat_here() {
+    local f
+    CHAT_HERE=0
+    [[ -d $CHAT_DIR ]] || return 0
+    if (( SECONDS - CHAT_MARK >= 30 )); then
+        touch -d "@$(( EPOCHSECONDS - 150 ))" "$HOME/.bashbbs-chat" 2>/dev/null; CHAT_MARK=$SECONDS
+    fi
+    for f in "$CHAT_DIR"/h.*; do [[ $f -nt $HOME/.bashbbs-chat ]] && CHAT_HERE=$((CHAT_HERE + 1)); done
+    return 0
+}
+
+# The functions below use chat_room's locals (FD BUF OWN hist hist_from mine pres inp ROWS COLS sent).
+chat_print() { printf '\e7\e[%d;1H\n\e[2K%s\e8' $(( ROWS - 2 )) "$1"; }
+chat_input() { local s="> $inp"; (( ${#s} < COLS )) || s=${s: -(COLS - 1)}; printf '\e[%d;1H\e[2K%s' "$ROWS" "$s"; }
+
+chat_draw() { # the frame: messages in a scroll region, a divider, the input row
+    # Inside the WINCH trap IFS is read's empty IFS; LINES is stale (no command runs while idle).
+    IFS=" " read -r ROWS COLS < <(stty size 2>/dev/null)
+    [[ $ROWS =~ ^[0-9]+$ && $COLS =~ ^[0-9]+$ ]] && (( ROWS > 4 )) || ROWS=24 COLS=80
+    local div t="-- Chat -- /who: who is here -- /quit or Esc: leave "
+    printf -v div '%*s' "$COLS" ''; div=$t${div// /-}
+    printf '\e[1;%dr\e[%d;1H%s' $(( ROWS - 2 )) $(( ROWS - 1 )) "${div:0:COLS}"
+    chat_input
+}
+
+chat_scan() { # open each new session file; one owner lookup per file
+    local f fd
+    for f in "$CHAT_DIR"/s.*; do
+        [[ -f $f && ! -L $f && -z ${FD[$f]-} ]] || continue
+        { exec {fd}<"$f"; } 2>/dev/null || { FD[$f]=-; continue; }
+        FD[$f]=$fd; BUF[$f]=""; OWN[$f]=$(chat_owner "$f")
+    done
+}
+
+chat_line() { # chat_line <file> <line>: show it (into hist while hist_from is set); 1 after "left"
+    local e=${2%%$'\t'*} t=${2#*$'\t'} s
+    [[ $2 == *$'\t'* && $e =~ ^[0-9]+$ ]] || return 0
+    safe_to s "$t"; s=${s:0:CHAT_MAX}
+    if [[ $t == $'\t'* ]]; then s="* ${OWN[$1]} $s"; else s="${OWN[$1]}: $s"; fi
+    if [[ -n $hist_from ]]; then (( e >= hist_from )) && hist+=("$e"$'\t'"$s")
+    else chat_print "$s"
+    fi
+    [[ $t != $'\t'left ]]
+}
+
+chat_pump() { # new lines from every open file; a half line waits in BUF for its newline
+    local f fd line
+    for f in "${!FD[@]}"; do
+        fd=${FD[$f]}; [[ $fd == - ]] && continue
+        while IFS= read -r -u "$fd" line; do
+            line=${BUF[$f]}$line; BUF[$f]=""
+            chat_line "$f" "$line" || { exec {fd}<&-; FD[$f]=-; line=""; break; }
+        done
+        BUF[$f]+=$line
+    done
+}
+
+chat_send() { # chat_send <text>: one line into the own file, within the limits
+    local t now=${EPOCHREALTIME/./} size
+    safe_to t "$1"; t=${t:0:CHAT_MAX}
+    [[ -n ${t//[[:space:]]/} ]] || return 0
+    (( now - sent >= 1000000 )) || { chat_print "* One line a second, please."; return 1; }
+    size=$(stat -c %s -- "$mine" 2>/dev/null) || size=0
+    (( size < 65536 )) || { chat_print "* This session is full. /quit and come back."; return 1; }
+    printf '%s\t%s\n' "$EPOCHSECONDS" "$t" >> "$mine" && sent=$now
+}
+
+chat_who() {
+    local f names=""
+    chat_here
+    for f in "$CHAT_DIR"/h.*; do [[ $f -nt $HOME/.bashbbs-chat ]] && names+=" $(chat_owner "$f")"; done
+    chat_print "* Here:$names"
+}
+
+chat_leave() { # "left", fds closed, presence gone, the menu's terminal and traps back
+    local f fd
+    printf '%s\t\tleft\n' "$EPOCHSECONDS" >> "$mine"
+    for f in "${!FD[@]}"; do fd=${FD[$f]}; [[ $fd == - ]] || exec {fd}<&-; done
+    rm -f -- "$pres"
+    printf '\e[r\e[%d;1H\n' "$ROWS"
+    trap - EXIT; trap 'TERM_SIZE=' WINCH; TERM_SIZE=
+}
+
+chat_room() {
+    local LC_ALL=C.UTF-8  # read -n1 takes a whole character, so the cap and Backspace count characters
+    if [[ ${TERM:-dumb} == dumb ]]; then
+        echo "Chat needs a terminal with ANSI cursor moves, and yours says TERM=dumb."; pause; return
+    fi
+    [[ -d $CHAT_DIR ]] || { echo "Chat is not set up on this board."; pause; return; }
+    local -A FD=() BUF=() OWN=()
+    local -a hist=()
+    local id mine pres line rc n=0 inp="" ROWS=24 COLS=80 sent=0 hist_from= tick=$SECONDS beat=$SECONDS
+    # Own leftovers: session files quiet for a day, presence files of dead sessions.
+    find "$CHAT_DIR" -maxdepth 1 -uid "$UID" \( -name 's.*' -mmin +1440 -o -name 'h.*' -mmin +3 \) -delete 2>/dev/null
+    while id=$$.$EPOCHSECONDS.$RANDOM; mine=$CHAT_DIR/s.$id; ! (umask 022; set -C; : > "$mine") 2>/dev/null; do
+        (( ++n < 5 )) || { echo "Chat could not start."; pause; return; }
+    done
+    pres=$CHAT_DIR/h.$id
+    : > "$pres"
+    trap chat_leave EXIT
+    trap chat_draw WINCH
+    printf '\e[H\e[2J'; chat_draw
+    hist_from=$(( EPOCHSECONDS - 86400 )); chat_scan; chat_pump; hist_from=
+    if (( ${#hist[@]} )); then
+        while IFS=$'\t' read -r _ line; do chat_print "$line"; done < <(printf '%s\n' "${hist[@]}" | sort -s -n -k1,1 | tail -n 20)
+    fi
+    printf '%s\t\tjoined\n' "$EPOCHSECONDS" >> "$mine"
+    while :; do
+        read_key_raw 0.3; rc=$?
+        if (( rc == 0 )); then
+            if [[ $MESC == 1 ]]; then break
+            elif [[ -n $MESC ]]; then :
+            elif [[ -z $MKEY || $MKEY == $'\r' ]]; then
+                case $inp in
+                    /quit) break ;;
+                    /who) chat_who; inp="" ;;
+                    *) chat_send "$inp" && inp="" ;;
+                esac
+                chat_input
+            elif [[ $MKEY == $'\177' || $MKEY == $'\b' ]]; then inp=${inp%?}; chat_input
+            elif [[ $MKEY != [[:cntrl:]] ]] && (( ${#inp} < CHAT_MAX )); then
+                inp+=$MKEY
+                if (( ${#inp} + 2 < COLS )); then printf '%s' "$MKEY"; else chat_input; fi
+            fi
+        elif (( rc <= 128 )); then break  # end of input
+        fi
+        chat_pump
+        (( SECONDS != tick )) && { tick=$SECONDS; chat_scan; }
+        (( SECONDS - beat >= 60 )) && { beat=$SECONDS; : > "$pres"; }
+    done
+    chat_leave
 }
 
 

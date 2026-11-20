@@ -114,6 +114,8 @@ install -d -m 0755 /srv/bashbbs/state /srv/bashbbs/state/tmp /srv/bashbbs/lib
 # The sysop may edit this file, so it is copied only when missing. A re-run keeps the edits.
 [[ -e /srv/bashbbs/lib/news-categories.conf ]] || install -m 0644 "$src/lib/news-categories.conf" /srv/bashbbs/lib/news-categories.conf
 install -d -m 1733 /srv/bashbbs/queue/incoming
+# Live chat: every caller makes own session files here (sticky, so nobody removes another's).
+install -d -m 1777 /srv/bashbbs/state/chat
 # Feature switches: written by root, read by the menu at every login.
 features_merge "$src/etc/features.example" /srv/bashbbs/features
 

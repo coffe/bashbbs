@@ -33,6 +33,10 @@ manual=off
 sysop=off
 # sysop.livechat: Sysop -> L) Partyline (test)
 sysop.livechat=off
+# chat: main menu 0) Chat, one live room; sysops only until chat.all is on
+chat=off
+# chat.all: Chat for every caller (needs chat)
+chat.all=off
 # web: the web front page and its CGIs (lighttpd)
 web=off
 # apply: the account application form on the web page (needs web)
