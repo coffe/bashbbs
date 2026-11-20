@@ -46,6 +46,7 @@ chmod 000 "$root/boards/secret"
 helpers=$root/helpers.sh
 cat > "$helpers" <<'EOF'
 board_is_private() { [[ $(basename "$1") == priv* ]]; }
+board_groups() { local -n _bg=$1; _bg=(); }  # no batch stat: use the fake above
 scan() {
     UNREAD_STALE=1; unread_refresh
     echo "pub=$UNREAD_PUB priv=$UNREAD_PRIV boards=$(printf '%s\n' "${!UNREAD[@]}" | sort | tr '\n' ' ')"

@@ -1056,6 +1056,16 @@ board_label() {
 
 # A private board is group-owned by bbsb-<name>. The official boards are not.
 board_is_private() { [[ $(stat -c %G "$1" 2>/dev/null) == bbsb-* ]]; }
+# Owner groups of all boards from one stat, into the associative array <name>:
+# board name -> group. A board missing from it falls back to board_is_private.
+board_groups() { # board_groups <array>
+    local -n _bg=$1
+    local line
+    _bg=()
+    while IFS= read -r line; do
+        _bg[${line##*/}]=${line%%/*}
+    done < <(stat -c '%G/%n' -- "$BBS_ROOT"/boards/* 2>/dev/null)
+}
 
 # One menu row: key, label in an 18-wide column, " - description", optional suffix in
 # the accent colour. Below 50 columns only the label and suffix are shown; a description
@@ -1092,10 +1102,13 @@ board_desc() { # board_desc <name>
 # the boards the user is a member of. Fido: the fsxNet echo boards (meta/<b>.fido),
 # alphabetically, none when fido is off; they are not in Public. Fills the array named by $2.
 board_order() { # board_order public|private|fido <array>
-    local kind=$1 b name d
+    local kind=$1 b name d priv
     local -n _out=$2
     local -a rest=()
+    local -A grp
     _out=()
+    # One stat for all boards, not one per board: each fork costs on a Pi Zero.
+    [[ $kind != fido ]] && board_groups grp
     if [[ $kind == public ]]; then
         for name in general sharednews whatsup; do
             d=$BBS_ROOT/boards/$name
@@ -1112,7 +1125,12 @@ board_order() { # board_order public|private|fido <array>
         fi
         [[ $kind == fido ]] && continue
         [[ $kind == public && $name =~ ^(general|sharednews|whatsup|news)$ ]] && continue
-        if board_is_private "$b"; then
+        if [[ -n ${grp[$name]+x} ]]; then
+            [[ ${grp[$name]} == bbsb-* ]] && priv=1 || priv=""
+        else
+            board_is_private "$b" && priv=1 || priv=""
+        fi
+        if [[ -n $priv ]]; then
             [[ $kind == private ]] && rest+=("$name")
         else
             [[ $kind == public ]] && rest+=("$name")
@@ -2660,12 +2678,14 @@ files_any_new() {
 }
 
 # Bytes as a short text: 512 B, 34 KB, 1.2 MB, 2.0 GB.
-files_size() {
-    local n=$1
-    if (( n < 1024 )); then printf '%d B' "$n"
-    elif (( n < 1048576 )); then printf '%d KB' $(( n / 1024 ))
-    elif (( n < 1073741824 )); then printf '%d.%d MB' $(( n / 1048576 )) $(( n * 10 / 1048576 % 10 ))
-    else printf '%d.%d GB' $(( n / 1073741824 )) $(( n * 10 / 1073741824 % 10 )); fi
+files_size() { local fs_s; files_size_to fs_s "$1"; printf '%s' "$fs_s"; }
+# The same into <var>, without a subshell per list row.
+files_size_to() { # files_size_to <var> <bytes>
+    local n=$2
+    if (( n < 1024 )); then printf -v "$1" '%d B' "$n"
+    elif (( n < 1048576 )); then printf -v "$1" '%d KB' $(( n / 1024 ))
+    elif (( n < 1073741824 )); then printf -v "$1" '%d.%d MB' $(( n / 1048576 )) $(( n * 10 / 1048576 % 10 ))
+    else printf -v "$1" '%d.%d GB' $(( n / 1073741824 )) $(( n * 10 / 1073741824 % 10 )); fi
 }
 
 # A screen header with art above it: the top bar, etc/<name>.txt, then "== <title> ==".
@@ -2813,12 +2833,13 @@ files_menu() { # files_menu [area] [newest | search <text>]
                 printf '%s%s' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")" "$mark"
             fi
             if (( w >= 12 )); then
-                local lf1 lf2; list_fit_to lf1 "$w" "$name"; list_fit_to lf2 10 "${user#bbs-}"
-                printf '%-*s %8s %-10s %s %3s' "$w" "$lf1" "$(files_size "$size")" \
+                local lf1 lf2 sz; list_fit_to lf1 "$w" "$name"; list_fit_to lf2 10 "${user#bbs-}"; files_size_to sz "$size"
+                printf '%-*s %8s %-10s %s %3s' "$w" "$lf1" "$sz" \
                     "$lf2" "${date:0:10}" "$dls"
             else
                 local lf1; list_fit_to lf1 $(( width - 15 )) "$name"
-                printf '%-*s %8s' "$(( width - 15 ))" "$lf1" "$(files_size "$size")"
+                local sz; files_size_to sz "$size"
+                printf '%-*s %8s' "$(( width - 15 ))" "$lf1" "$sz"
             fi
             if (( isnew )); then
                 if [[ $mode == newest ]]; then printf ' *'; else printf ' %s' "$(paint ACC '*')"; fi
@@ -3583,9 +3604,9 @@ sysop_transfers() {
     w=$(( width - 54 ))
     while IFS=$'\t' read -r date user dir id name size ip; do
         if (( w >= 10 )); then
-            local lf1 lf2 lf3; list_fit_to lf1 10 "${user#bbs-}"; list_fit_to lf2 15 "$ip"; list_fit_to lf3 "$w" "$name"
+            local lf1 lf2 lf3; list_fit_to lf1 10 "${user#bbs-}"; list_fit_to lf2 15 "$ip"; list_fit_to lf3 "$w" "$name"; local sz; files_size_to sz "${size:-0}"
             printf '%-16s %-4s %-10s %-15s %8s %s\n' "${date:0:10} ${date:11:5}" "$dir" \
-                "$lf1" "$lf2" "$(files_size "${size:-0}")" "$lf3"
+                "$lf1" "$lf2" "$sz" "$lf3"
         else
             local lf1 lf2; list_fit_to lf1 10 "${user#bbs-}"; list_fit_to lf2 $(( width - 16 )) "$name"
             printf '%-4s %-10s %s\n' "$dir" "$lf1" "$lf2"
@@ -3604,7 +3625,8 @@ sysop_quota() {
     printf '%-16s %8s %5s\n' "User" "Used" "Files"
     while read -r bytes files user; do
         local lf1; list_fit_to lf1 16 "${user#bbs-}"
-        printf '%-16s %8s %5s\n' "$lf1" "$(files_size "$bytes")" "$files"
+        local sz; files_size_to sz "$bytes"
+        printf '%-16s %8s %5s\n' "$lf1" "$sz" "$files"
     done < <(files_rows | awk -F'\t' '{ b[$2] += $3; c[$2]++ } END { for (u in b) print b[u], c[u], u }' | sort -k1,1nr -k3,3)
     echo
     printf '%-22s %s\n' "Limit per user:" "$(files_size "$UPLOAD_USER_QUOTA")"

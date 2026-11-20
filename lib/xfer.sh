@@ -369,7 +369,8 @@ xfer_download() { # xfer_download <id>...
         xfer_facts "$id" || continue
         ids+=("$id")
         total=$(( total + XF_SIZE ))
-        printf '%-*s %8s\n' "$w" "$(list_fit "$w" "$XF_NAME")" "$(files_size "$XF_SIZE")"
+        local lf1 sz; list_fit_to lf1 "$w" "$XF_NAME"; files_size_to sz "$XF_SIZE"
+        printf '%-*s %8s\n' "$w" "$lf1" "$sz"
     done
     if (( ${#ids[@]} == 0 )); then
         echo "That file is no longer here."

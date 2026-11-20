@@ -30,6 +30,7 @@ export BASHBBS_TEST=1
 source "%s/lib/menu.sh"
 # The fixture marks private boards with meta/<b>.meta (no bbsb-* groups without root).
 board_is_private() { [[ -f $BBS_ROOT/meta/$(basename "$1").meta ]]; }
+board_groups() { local -n _bg=$1; _bg=(); }  # no batch stat: use the fake above
 eval "$(sed -n '/^if \\[\\[ -z \\${BASHBBS_TEST/,$p' "%s/lib/menu.sh" | sed '1d;$d')"
 ''' % (HERE, HERE))
 
