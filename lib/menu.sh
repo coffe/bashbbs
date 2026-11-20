@@ -493,21 +493,30 @@ valid_user() {
 }
 
 list_users() {
-    local f name uuid width
+    local f name uuid width all line hid
     redraw
     local_header "Users"
     # Name (padded to 16), a space, then as much of the UUID as the terminal has room for.
-    width=$(( $(list_width) - 17 ))
+    all=$(list_width)
+    width=$(( all - 17 ))
     for f in "$BBS_ROOT"/users/*/profile; do
         [[ -f $f && ! -L $f ]] || continue
-        # hidden=yes keeps test and staff accounts off the public list.
-        grep -qx 'hidden=yes' "$f" && continue
-        name=$(sed -n 's/^name=//p' "$f" | safe)
-        uuid=$(sed -n 's/^uuid=//p' "$f" | safe)
+        # Read in bash: a grep and two sed per user added up on a Pi Zero. First name/uuid wins.
+        name="" uuid="" hid=""
+        while IFS= read -r line || [[ -n $line ]]; do
+            case $line in
+                hidden=yes) hid=1 ;; # keeps test and staff accounts off the public list
+                name=*) [[ -n $name ]] || safe_to name "${line#name=}" ;;
+                uuid=*) [[ -n $uuid ]] || safe_to uuid "${line#uuid=}" ;;
+            esac
+        done < "$f"
+        [[ -n $hid ]] && continue
         if (( width >= 8 )); then
-            printf '%-16s %s\n' "$(list_fit 16 "$name")" "$(list_fit "$width" "$uuid")"
+            list_fit_to name 16 "$name"; list_fit_to uuid "$width" "$uuid"
+            printf '%-16s %s\n' "$name" "$uuid"
         else
-            printf '%s\n' "$(list_fit "$(( $(list_width) ))" "$name")"
+            list_fit_to name "$all" "$name"
+            printf '%s\n' "$name"
         fi
     done
 }
@@ -1298,26 +1307,34 @@ list_width() {
 # so å is one column and wide characters are two). Too wide: cut, end with "...".
 # Display only: the stored text is never changed.
 list_fit() { # list_fit <width> <text>
-    (( $1 < 1 )) && return
+    local lf_s
+    list_fit_to lf_s "$1" "$2"
+    printf '%s' "$lf_s"
+}
+# The same into <var>, without the $(...) subshell a list row would pay for each column.
+list_fit_to() { # list_fit_to <var> <width> <text>
+    local lf_o=""
     # Python takes a quarter of a second to start on a Pi, and a file list asks for this
     # thirty times a page. Printable ASCII and U+00C0-U+00FF (bytes C3 80-BF: the Latin
     # letters, å ä ö) are one column each, so they need no table. The check is on bytes,
     # so broken UTF-8 can't pass. All else, or a missing locale, goes the long way.
-    local out
-    if text_is_simple "$2"; then
+    if (( $2 < 1 )); then
+        :
+    elif text_is_simple "$3"; then
         local LC_ALL=C.UTF-8
-        if (( ${#2} <= $1 )); then
-            printf '%s' "$2"
-        elif (( $1 < 4 )); then
-            out=${2:0:$1}
-            printf '%s' "${out%"${out##*[! ]}"}"
+        if (( ${#3} <= $2 )); then
+            lf_o=$3
+        elif (( $2 < 4 )); then
+            lf_o=${3:0:$2}
+            lf_o=${lf_o%"${lf_o##*[! ]}"}
         else
-            out=${2:0:$1-3}
-            printf '%s...' "${out%"${out##*[! ]}"}"
+            lf_o=${3:0:$2-3}
+            lf_o=${lf_o%"${lf_o##*[! ]}"}...
         fi
-        return 0
+    else
+        lf_o=$(list_fit_py "$2" "$3")
     fi
-    list_fit_py "$1" "$2"
+    printf -v "$1" '%s' "$lf_o"
 }
 list_fit_py() {
     printf '%s' "$2" | PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=UTF-8 \
@@ -1671,7 +1688,7 @@ _thread_view() {
     # The first new, active post; the file name starts with the publish epoch.
     if [[ -n $TV_TH ]]; then
         for (( i = 0; i < n; i++ )); do
-            ep=$(basename "${files[i]}"); ep=${ep%%-*}
+            ep=${files[i]##*/}; ep=${ep%%-*}
             hdr_read "${files[i]}"
             [[ -z ${HDR[Deleted]-} && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )) && { k=$i; break; }
         done
@@ -1689,7 +1706,7 @@ _thread_view() {
             [[ -n $at ]] && head+="  · reply to #$at"
         fi
         (( ${#head} > width )) && head=$(printf '%s' "$head" | fold -s -w "$width")
-        ep=$(basename "$f"); ep=${ep%%-*}
+        ep=${f##*/}; ep=${ep%%-*}
         if [[ $ep =~ ^[0-9]+$ ]] && { [[ -z $TV_MAX ]] || (( 10#$ep > TV_MAX )); }; then TV_MAX=$((10#$ep)); fi
         if [[ -n $TV_TH && $ep =~ ^[0-9]+$ ]] && (( 10#$ep > TV_TH )); then
             printf '%s' "$head"; (( COLOR && ${#head} + 5 <= width )) && printf '  %s' "$(paint ACC new)"; echo
@@ -1978,7 +1995,7 @@ echo_left() {
     local midnight m b f files=() n
     midnight=$(date -u -d "$(date -u +%F) 00:00" +%s)
     for m in "$BBS_ROOT"/meta/*.fido; do
-        b=$(basename "$m" .fido)
+        b=${m##*/}; b=${b%.fido}
         for f in "$BBS_ROOT/boards/$b"/[0-9]*.msg; do
             [[ -f $f ]] || continue
             f=${f##*/}; (( ${f%%-*} >= midnight )) && files+=("$BBS_ROOT/boards/$b/$f")
@@ -2336,9 +2353,11 @@ book_render() {
     w=$(list_width); room=$(( w - 3 - 2 - nw - 2 - aw - 2 ))
     printf '%3s  %-*s  %-*s' "#" "$nw" "Name" "$aw" "Address"; (( room >= 8 )) && printf '  Comment'; echo
     for (( i = 0; i < ${#BK_NAME[@]}; i++ )); do
+        local lf1 lf2; list_fit_to lf1 "$nw" "${BK_NAME[i]}"; list_fit_to lf2 "$aw" "${BK_ADDR[i]}"
         printf '%s  %-*s  %-*s' "$(paint KEY "$(printf '%3d' $((i + 1)))")" \
-            "$nw" "$(list_fit "$nw" "${BK_NAME[i]}")" "$aw" "$(list_fit "$aw" "${BK_ADDR[i]}")"
-        (( room >= 8 )) && printf '  %s' "$(list_fit "$room" "${BK_CM[i]}")"
+            "$nw" "$lf1" "$aw" "$lf2"
+        local lf1; list_fit_to lf1 "$room" "${BK_CM[i]}"
+        (( room >= 8 )) && printf '  %s' "$lf1"
         echo
     done
 }
@@ -2429,7 +2448,8 @@ Q: back" local || return
             mark=" "
             [[ $f == "$dir"/new/* ]] && mark="*"
             hdr_read "$f"; safe_to subj "${HDR[Subject]-}"
-            printf -v row '%3d) %s %s' "$i" "$mark" "$(list_fit "$width" "$subj")"
+            local lf1; list_fit_to lf1 "$width" "$subj"
+            printf -v row '%3d) %s %s' "$i" "$mark" "$lf1"
             if (( COLOR )) && [[ $row =~ ^(\ *)([0-9]+\))\ (.)(.*)$ ]]; then
                 [[ ${BASH_REMATCH[3]} == '*' ]] && mark=$(paint ACC '*') || mark=${BASH_REMATCH[3]}
                 row="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}") ${mark}${BASH_REMATCH[4]}"
@@ -2459,7 +2479,7 @@ mail_open() { # mail_open <folder> <file>
     local folder=$1 f=$2 dir name rc
     dir=$(mail_dir "$folder")
     if [[ $f == "$dir"/new/* ]]; then
-        name=$(mail_cur_name "$(basename "$f")")
+        name=$(mail_cur_name "${f##*/}")
         mkdir -p "$dir/cur"
         mv -n "$f" "$dir/cur/$name" && f=$dir/cur/$name
     fi
@@ -2505,7 +2525,7 @@ mail_delete() { # mail_delete <file>
     echo
     if ! read_confirm "Move to Trash? [y/N] "; then echo "Not moved."; pause; return; fi
     trash=$(mail_dir Trash)
-    name=$(mail_cur_name "$(basename "$1")")
+    name=$(mail_cur_name "${1##*/}")
     mkdir -p "$trash"/{tmp,new,cur}
     mv -n "$1" "$trash/cur/$name" && echo "Moved to Trash."
     pause
@@ -2692,7 +2712,8 @@ file_areas() {
             area=${FA_SLUGS[i]}
             suffix=$(count_text "${count[$area]:-0}" file files)
             [[ -n ${fresh[$area]:-} ]] && suffix+=' *'
-            menu_item "$(( i + 1 ))" "$(list_fit 18 "${FA_TITLES[i]}")" "${FA_TEXTS[i]}" "$suffix"
+            local lf1; list_fit_to lf1 18 "${FA_TITLES[i]}"
+            menu_item "$(( i + 1 ))" "$lf1" "${FA_TEXTS[i]}" "$suffix"
         done
         next=$i
         echo
@@ -2792,17 +2813,20 @@ files_menu() { # files_menu [area] [newest | search <text>]
                 printf '%s%s' "$(paint KEY "$(printf '%2d)' $(( i + 1 )))")" "$mark"
             fi
             if (( w >= 12 )); then
-                printf '%-*s %8s %-10s %s %3s' "$w" "$(list_fit "$w" "$name")" "$(files_size "$size")" \
-                    "$(list_fit 10 "${user#bbs-}")" "${date:0:10}" "$dls"
+                local lf1 lf2; list_fit_to lf1 "$w" "$name"; list_fit_to lf2 10 "${user#bbs-}"
+                printf '%-*s %8s %-10s %s %3s' "$w" "$lf1" "$(files_size "$size")" \
+                    "$lf2" "${date:0:10}" "$dls"
             else
-                printf '%-*s %8s' "$(( width - 15 ))" "$(list_fit $(( width - 15 )) "$name")" "$(files_size "$size")"
+                local lf1; list_fit_to lf1 $(( width - 15 )) "$name"
+                printf '%-*s %8s' "$(( width - 15 ))" "$lf1" "$(files_size "$size")"
             fi
             if (( isnew )); then
                 if [[ $mode == newest ]]; then printf ' *'; else printf ' %s' "$(paint ACC '*')"; fi
             fi
             echo
             for line in "${descs[@]}"; do
-                printf '     %s\n' "$(list_fit $(( width - 5 )) "$line")"
+                local lf1; list_fit_to lf1 $(( width - 5 )) "$line"
+                printf '     %s\n' "$lf1"
             done
         done
         next=$i
@@ -3178,9 +3202,11 @@ sysop_applications() {
             codes[n]=; [[ $code =~ ^[0-9a-f]{8}$ ]] && codes[n]=$code
             names[n]=$name whens[n]=$when notes[n]=$note contacts[n]=$contact
             if (( w >= 10 )) && [[ -n $note ]]; then
-                printf '%2d) %-16s %s  %s\n' "$n" "$(list_fit 16 "$name")" "$when" "$(list_fit "$w" "$note")"
+                local lf1 lf2; list_fit_to lf1 16 "$name"; list_fit_to lf2 "$w" "$note"
+                printf '%2d) %-16s %s  %s\n' "$n" "$lf1" "$when" "$lf2"
             else
-                printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$when"
+                local lf1; list_fit_to lf1 16 "$name"
+                printf '%2d) %-16s %s\n' "$n" "$lf1" "$when"
             fi
         done < <(head -n 200 "$BBS_ROOT/state/apps-waiting/$me" 2>/dev/null)
         if (( n == 0 )); then
@@ -3239,7 +3265,8 @@ sysop_posts() {
         board=${b%/}; board=${board##*/}
         author=${HDR[Author]-}; author=${author#bbs-}; [[ $author == *@fsx ]] || author=${author%%@*}
         subject=${HDR[Subject]-}
-        printf '%-12s %-16s %s\n' "$(list_fit 12 "$board")" "$(list_fit 16 "$author")" "$(list_fit "$w" "$subject")"
+        local lf1 lf2 lf3; list_fit_to lf1 12 "$board"; list_fit_to lf2 16 "$author"; list_fit_to lf3 "$w" "$subject"
+        printf '%-12s %-16s %s\n' "$lf1" "$lf2" "$lf3"
         shown=$((shown + 1))
     done < <(find "$BBS_ROOT/boards" -mindepth 2 -maxdepth 2 -type f -name '*.msg' -printf '%f\t%h\n' 2>/dev/null \
         | sort -t$'\t' -k1,1nr)
@@ -3415,7 +3442,7 @@ sysop_mail_all() {
     valid_user "$me" || return 1
     for f in "$BBS_ROOT"/users/*/profile; do
         [[ -f $f && ! -L $f ]] || continue
-        dir=$(basename "$(dirname "$f")")
+        dir=${f%/*}; dir=${dir##*/}
         [[ $dir == news || $dir == newsstatus ]] && continue
         shell=$(getent passwd "bbs-$dir" 2>/dev/null | cut -d: -f7)
         [[ -n $shell && $shell != */nologin ]] || continue
@@ -3451,25 +3478,35 @@ sysop_mail_all() {
 }
 
 sysop_users() {
-    local f dir name tag n pick sel w
+    local f dir name tag n pick sel w line hid c
     local -a accts
+    local -A sys
     while true; do
         accts=() n=0
         redraw
         local_header "Users"
         w=$(( $(list_width) - 34 ))
+        sys=()
+        [[ -r $BBS_ROOT/sysops ]] && while IFS= read -r line; do [[ -n $line ]] && sys[$line]=1; done < "$BBS_ROOT/sysops"
         for f in "$BBS_ROOT"/users/*/profile; do
             [[ -f $f && ! -L $f ]] || continue
-            dir=$(basename "$(dirname "$f")")
-            name=$(sed -n 's/^name=//p' "$f" | safe)
-            tag=
-            grep -qx 'hidden=yes' "$f" && tag=hidden
-            grep -qx -- "$dir" "$BBS_ROOT/sysops" 2>/dev/null && tag="${tag:+$tag, }sysop"
+            dir=${f%/*}; dir=${dir##*/}
+            name="" hid=""
+            while IFS= read -r line || [[ -n $line ]]; do
+                case $line in
+                    hidden=yes) hid=1 ;;
+                    name=*) [[ -n $name ]] || safe_to name "${line#name=}" ;;
+                esac
+            done < "$f"
+            tag=${hid:+hidden}
+            [[ -n ${sys[$dir]-} ]] && tag="${tag:+$tag, }sysop"
             n=$((n + 1)); accts[n]=$dir
+            list_fit_to name 16 "$name"
             if (( w >= 10 )) && app_info "$dir" && [[ -n $APP_CONTACT ]]; then
-                printf '%2d) %-16s %-13s %s\n' "$n" "$(list_fit 16 "$name")" "$tag" "$(list_fit "$w" "$APP_CONTACT")"
+                list_fit_to c "$w" "$APP_CONTACT"
+                printf '%2d) %-16s %-13s %s\n' "$n" "$name" "$tag" "$c"
             else
-                printf '%2d) %-16s %s\n' "$n" "$(list_fit 16 "$name")" "$tag"
+                printf '%2d) %-16s %s\n' "$n" "$name" "$tag"
             fi
         done
         echo
@@ -3546,10 +3583,12 @@ sysop_transfers() {
     w=$(( width - 54 ))
     while IFS=$'\t' read -r date user dir id name size ip; do
         if (( w >= 10 )); then
+            local lf1 lf2 lf3; list_fit_to lf1 10 "${user#bbs-}"; list_fit_to lf2 15 "$ip"; list_fit_to lf3 "$w" "$name"
             printf '%-16s %-4s %-10s %-15s %8s %s\n' "${date:0:10} ${date:11:5}" "$dir" \
-                "$(list_fit 10 "${user#bbs-}")" "$(list_fit 15 "$ip")" "$(files_size "${size:-0}")" "$(list_fit "$w" "$name")"
+                "$lf1" "$lf2" "$(files_size "${size:-0}")" "$lf3"
         else
-            printf '%-4s %-10s %s\n' "$dir" "$(list_fit 10 "${user#bbs-}")" "$(list_fit $(( width - 16 )) "$name")"
+            local lf1 lf2; list_fit_to lf1 10 "${user#bbs-}"; list_fit_to lf2 $(( width - 16 )) "$name"
+            printf '%-4s %-10s %s\n' "$dir" "$lf1" "$lf2"
         fi
         shown=$(( shown + 1 ))
     done < <(tail -n 15 -- "$BBS_ROOT/state/transfers.log" 2>/dev/null | tac | safe_rows)
@@ -3564,7 +3603,8 @@ sysop_quota() {
     local_header "Quota"
     printf '%-16s %8s %5s\n' "User" "Used" "Files"
     while read -r bytes files user; do
-        printf '%-16s %8s %5s\n' "$(list_fit 16 "${user#bbs-}")" "$(files_size "$bytes")" "$files"
+        local lf1; list_fit_to lf1 16 "${user#bbs-}"
+        printf '%-16s %8s %5s\n' "$lf1" "$(files_size "$bytes")" "$files"
     done < <(files_rows | awk -F'\t' '{ b[$2] += $3; c[$2]++ } END { for (u in b) print b[u], c[u], u }' | sort -k1,1nr -k3,3)
     echo
     printf '%-22s %s\n' "Limit per user:" "$(files_size "$UPLOAD_USER_QUOTA")"
@@ -3686,7 +3726,8 @@ most_active_view() {
         [[ $n =~ ^[a-z0-9_-]+$ ]] || continue
         grep -qsx 'hidden=yes' "$BBS_ROOT/users/$n/profile" && continue
         grep -qsx -- "$n" "$BBS_ROOT/sysops" && continue
-        printf '%5d  %s\n' "$c" "$(list_fit $(( width - 7 )) "$n")"
+        local lf1; list_fit_to lf1 $(( width - 7 )) "$n"
+        printf '%5d  %s\n' "$c" "$lf1"
         shown=$(( shown + 1 ))
         (( shown >= FAME_SHOW )) && break
     done < <(awk '$2 == "post" || $2 == "wall" { c[$3]++ } END { for (n in c) print c[n], n }' \
@@ -3709,7 +3750,8 @@ top_uploaders_view() {
         [[ $n =~ ^[A-Za-z0-9_-]+$ ]] || continue
         grep -qsx 'hidden=yes' "$BBS_ROOT/users/$n/profile" && continue
         grep -qsx -- "$n" "$BBS_ROOT/sysops" && continue
-        printf '%5d  %s\n' "$c" "$(list_fit $(( width - 7 )) "$n")"
+        local lf1; list_fit_to lf1 $(( width - 7 )) "$n"
+        printf '%5d  %s\n' "$c" "$lf1"
         shown=$(( shown + 1 ))
         (( shown >= FAME_SHOW )) && break
     done < <(files_rows | awk -F'\t' '{ c[$2]++ } END { for (n in c) print c[n], n }' | sort -k1,1nr -k2,2)
@@ -3726,7 +3768,8 @@ top_downloads_view() {
     width=$(list_width)
     while IFS=$'\t' read -r id user size date dls name _; do
         (( dls > 0 )) || continue
-        printf '%5d  %s\n' "$dls" "$(list_fit $(( width - 7 )) "$name")"
+        local lf1; list_fit_to lf1 $(( width - 7 )) "$name"
+        printf '%5d  %s\n' "$dls" "$lf1"
         shown=$(( shown + 1 ))
         (( shown >= FAME_SHOW )) && break
     done < <(files_rows | sort -t$'\t' -k5,5nr -k1,1)
@@ -3797,13 +3840,27 @@ callers_view() {
     local_header "Last callers"
     width=$(list_width)
     if [[ -r $BBS_ROOT/state/callers.log ]]; then
+        local -a ts=() ns=() lt=() ok=()
+        local i
         while read -r t n; do
             [[ -z $n || -n ${sys[$n]-} ]] && continue
-            safe_to n "$n"
-            printf '%s  %s\n' "$(local_time "$t")" "$(list_fit $(( width - 18 )) "$n")"
-            shown=$(( shown + 1 ))
-            (( shown >= CALLERS_SHOW )) && break
+            safe_to n "$n"; list_fit_to n $(( width - 18 )) "$n"
+            ts+=("$t"); ns+=("$n")
+            (( ${#ns[@]} >= CALLERS_SHOW )) && break
         done < <(tail -n 500 "$BBS_ROOT/state/callers.log" | tac)
+        # One date for all rows, not one per row. Only the publisher's own format goes
+        # in, so date -f gives exactly one line back for each; anything else shows raw.
+        for i in "${!ts[@]}"; do
+            lt[i]=${ts[i]}
+            [[ ${ts[i]} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z$ ]] && ok+=("$i")
+        done
+        if (( ${#ok[@]} )); then
+            i=0
+            while IFS= read -r t; do lt[${ok[i]}]=$t; i=$(( i + 1 )); done \
+                < <(for i in "${ok[@]}"; do printf '%s\n' "${ts[i]}"; done | date -f - '+%Y-%m-%d %H:%M' 2>/dev/null)
+        fi
+        for i in "${!ns[@]}"; do printf '%s  %s\n' "${lt[i]}" "${ns[i]}"; done
+        shown=${#ns[@]}
     fi
     (( shown )) || echo "Nobody yet."
     echo
@@ -3855,7 +3912,8 @@ online_view() {
         else idle="$(( idle / 60 ))h$(( idle % 60 ))m"; fi
         safe_to n "$n"
         (( cnt > 1 )) && idle="$idle  x$cnt"
-        printf '%s  %5s  %s\n' "$(list_fit 12 "$n")" "${since#* }" "$idle"
+        local lf1; list_fit_to lf1 12 "$n"
+        printf '%s  %5s  %s\n' "$lf1" "${since#* }" "$idle"
         shown=$(( shown + 1 ))
     done
     (( shown )) || echo "Nobody else is here right now."
