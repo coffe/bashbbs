@@ -3899,8 +3899,8 @@ callers_view() {
 # Who's Online: the BBS accounts in utmp, one line each. One `who -u` and one awk,
 # no per-user forks. utmp may cut names short, so a cut name is matched back to the
 # one account in users/ it starts. Several sessions of one account show once, with a
-# count. Time is when the first session came in (local, as who prints it); idle is the
-# shortest idle of its sessions. Accounts with hidden=yes stay off, as in the user list.
+# count. Time is when the oldest session came in, from one ps of who's pids (armhf who
+# prints a garbage date); idle is the shortest idle of its sessions. Accounts with hidden=yes stay off, as in the user list.
 online_view() {
     local names=() d n hid cnt since idle line shown=0
     redraw
@@ -3919,17 +3919,28 @@ online_view() {
                 }
             }
             if (full == "" || full == "?") full = u
-            id = $5; m = 99999
+            # Read from the end: the date and LINE columns are unreliable (armhf who prints a
+            # garbage date, LINE can be empty), but "... IDLE PID (COMMENT)" always ends the row.
+            r = $0; sub(/[ \t]*\([^()]*\)[ \t]*$/, "", r); nf = split(r, f, " ")
+            id = f[nf - 1]; m = 99999
             if (id == ".") m = 0
             else if (id ~ /^[0-9]+:[0-9][0-9]$/) { split(id, p, ":"); m = p[1] * 60 + p[2] }
             c[full]++
-            t = substr($4, 1, 5)
-            if (!(full in s) || $3 " " t < s[full]) s[full] = $3 " " t
+            pids[full] = pids[full] " " f[nf]
             if (!(full in im) || m < im[full]) im[full] = m
         }
-        END { for (f in c) printf "%s\t%d\t%s\t%d\n", f, c[f], s[f], im[f] }' | sort)
+        END { for (u in c) printf "%s\t%d\t%s\t%d\n", u, c[u], substr(pids[u], 2), im[u] }' | sort)
+    # Logged in since: the oldest session process, from one ps for every pid.
+    local -A age=()
+    local pid et
+    while read -r pid et; do age[$pid]=$et; done < <(
+        for line in "${rows[@]}"; do IFS=$'\t' read -r _ _ since _ <<< "$line"; printf '%s\n' $since; done |
+            xargs -r ps -o pid=,etimes= -p 2>/dev/null)
     for line in "${rows[@]}"; do
         IFS=$'\t' read -r n cnt since idle <<< "$line"
+        et=-1
+        for pid in $since; do [[ ${age[$pid]-} =~ ^[0-9]+$ ]] && (( age[$pid] > et )) && et=${age[$pid]}; done
+        if (( et >= 0 )); then printf -v since '%(%H:%M)T' $(( EPOCHSECONDS - et )); else since=?; fi
         hid=
         [[ -f $BBS_ROOT/users/$n/profile ]] && while IFS= read -r d; do
             [[ $d == hidden=yes ]] && { hid=1; break; }
@@ -3942,7 +3953,7 @@ online_view() {
         safe_to n "$n"
         (( cnt > 1 )) && idle="$idle  x$cnt"
         local lf1; list_fit_to lf1 12 "$n"
-        printf '%s  %5s  %s\n' "$lf1" "${since#* }" "$idle"
+        printf '%s  %5s  %s\n' "$lf1" "$since" "$idle"
         shown=$(( shown + 1 ))
     done
     (( shown )) || echo "Nobody else is here right now."
