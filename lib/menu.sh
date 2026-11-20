@@ -3048,14 +3048,14 @@ sysop_menu() {
         menu_item 7 "Mail all" "One message to every active account"
         menu_item 8 "Caller stats" "Calls per user, weekday and hour"
         menu_item 9 "Export callers" "A browser link to callers.log"
-        feat_item sysop.livechat L "LiveChat" "Chat with other boards (test)"
+        feat_item sysop.livechat L "Partyline" "Chat with other boards (test)"
         menu_item F "Features" "Switch parts of the BBS on and off"
         echo
         keyline "Q) Back"
         local keys=123456789QqFf
         feature_on sysop.livechat && keys+=Ll
         menu_key "> " "$keys" "1-9: pick a screen
-L: LiveChat
+L: Partyline
 Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -3129,11 +3129,11 @@ LIVECHAT_DIR=$BBS_ROOT/livechat
 LIVECHAT_SSH=ssh
 [[ -z ${BASHBBS_TEST:-} ]] || LIVECHAT_SSH=$BBS_ROOT/bin/livechat-ssh
 
-# LiveChat68, sysop only while it is being tried out. Level 255 enables its setup screen.
+# Partyline door, sysop only while it is being tried out. Level 255 lets it register the board.
 # The door runs on another machine, which keeps a tunnel open to port 2277 here.
 sysop_livechat() {
     if [[ ! -r $LIVECHAT_DIR/id_ed25519 ]]; then
-        echo "LiveChat is not installed on this BBS."
+        echo "Partyline is not installed on this BBS."
         pause
         return
     fi
@@ -3145,7 +3145,7 @@ sysop_livechat() {
     stty sane 2>/dev/null || true
     drain_input
     if (( rc == 255 )); then
-        echo "LiveChat cannot be reached right now."
+        echo "Partyline cannot be reached right now."
         pause
     fi
 }

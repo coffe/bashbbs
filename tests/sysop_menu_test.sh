@@ -317,15 +317,15 @@ out=$(printf 'q' | lib sysop_menu)
 check "sysop menu: lists Mail all" has "$out" "Mail all"
 
 
-# LiveChat: sysop menu only, polite when missing, and the door is told who is calling.
+# Partyline: sysop menu only, polite when missing, and the door is told who is calling.
 out=$(printf 'q' | lib sysop_menu)
-check "livechat: listed in the sysop menu" has "$out" "L) LiveChat"
+check "livechat: listed in the sysop menu" has "$out" "L) Partyline"
 out=$(printf 'q' | lib main_menu)
-check "livechat: not in the main menu" bash -c '[[ $1 != *LiveChat* ]]' _ "$out"
+check "livechat: not in the main menu" bash -c '[[ $1 != *Partyline* ]]' _ "$out"
 out=$(printf 'q' | lib_as bbs-bob sysop_menu)
-check "livechat: hidden from non-sysops" bash -c '[[ $1 != *LiveChat* ]]' _ "$out"
+check "livechat: hidden from non-sysops" bash -c '[[ $1 != *Partyline* ]]' _ "$out"
 out=$(printf 'lxq' | lib sysop_menu)
-check "livechat: missing door gives a message" has "$out" "LiveChat is not installed"
+check "livechat: missing door gives a message" has "$out" "Partyline is not installed"
 mkdir -p "$root/livechat"
 touch "$root/livechat/id_ed25519"
 cat > "$root/bin/livechat-ssh" <<'STUB'
@@ -337,7 +337,7 @@ out=$(printf 'lq' | lib sysop_menu)
 check "livechat: starts as the sysop at level 255" has "$out" "DOOR host=livechat@127.0.0.1 request=sys0p 255"
 printf '#!/bin/bash\nexit 255\n' > "$root/bin/livechat-ssh"
 out=$(printf 'lxq' | lib sysop_menu)
-check "livechat: a dead tunnel gives a message" has "$out" "LiveChat cannot be reached"
+check "livechat: a dead tunnel gives a message" has "$out" "Partyline cannot be reached"
 mv "$root/bin/livechat-ssh" "$root/livechat-ssh.stub"
 mv "$root/livechat" "$root/livechat.stub"
 

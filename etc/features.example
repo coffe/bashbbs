@@ -31,7 +31,7 @@ account.sshkeys=off
 manual=off
 # sysop: the Sysop menu for sysops (main menu 9)
 sysop=off
-# sysop.livechat: Sysop -> L) Live chat (test)
+# sysop.livechat: Sysop -> L) Partyline (test)
 sysop.livechat=off
 # web: the web front page and its CGIs (lighttpd)
 web=off

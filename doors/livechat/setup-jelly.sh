@@ -1,7 +1,7 @@
 #!/bin/bash
-# Sets up the LiveChat door host. Run once with sudo; safe to run again.
+# Sets up the Partyline door host. Run once with sudo; safe to run again.
 # Usage: sudo setup-jelly.sh <bbs host> <prepared dir> <login user> <ssh alias for the bbs>
-# The prepared dir holds: livechat68 (native build), door.pub (the BBS's door key)
+# The prepared dir holds: partyline (native build), door.pub (the BBS's door key)
 # and bbs-host-key (the BBS's "type key" SSH host key).
 set -euo pipefail
 bbs=$1 dir=$2 owner=$3 alias=$4
@@ -13,7 +13,7 @@ id livechat >/dev/null 2>&1 ||
 usermod -p '*' livechat # no password, but not a locked account: sshd must accept the key
 
 install -d -m 755 "$lib"
-install -m 755 "$dir/livechat68" "$lib/livechat68"
+install -m 755 "$dir/partyline" "$lib/partyline"
 install -m 755 "$here/jelly-door.sh" "$lib/door"
 
 install -d -m 700 -o livechat -g livechat "$home/.ssh"
@@ -30,13 +30,10 @@ if [[ -e $key ]]; then
 fi
 [[ -s $home/.ssh/tunnel ]]
 
-# The settings hold the board's key: copied without ever being shown or logged.
-cfg=$home/LIVECHAT.cfg
-if [[ ! -s $cfg ]]; then
-    install -m 600 -o livechat -g livechat /dev/null "$cfg"
-    sudo -u "$owner" ssh -T "$alias" 'sudo -n cat /srv/bashbbs/livechat/LIVECHAT.cfg' > "$cfg"
-    [[ -s $cfg ]]
-fi
+# The door's first sysop run registers the board and writes its key into this file.
+cfg=$home/PARTYLINE.cfg
+[[ -s $cfg ]] || printf 'Host=doors.uprough.net\nTls=1\nTimeout=10\n' |
+    install -m 600 -o livechat -g livechat /dev/stdin "$cfg"
 
 echo "LIVECHAT_BBS_HOST=$bbs" > /etc/livechat-tunnel.env
 install -m 644 "$here/livechat-tunnel.service" /etc/systemd/system/livechat-tunnel.service

@@ -1,12 +1,14 @@
-# LiveChat door
+# Partyline door
 
-Runs spotUP's [LiveChat68](https://doors.uprough.net) door (MIT) on BashBBS.
+Runs spotUP's [Partyline](https://doors.uprough.net) door (MIT) on BashBBS. It
+replaced the older LiveChat68 door; the account, tunnel and paths kept the
+livechat name.
 The door's own source is not kept here. `ae_transport_bashbbs.c` replaces its
 Amiga transport with one that talks to the caller's terminal.
 
 For now it is only reachable from the sysop menu.
 
-The door polls its hub over HTTPS, which is too heavy for a Pi Zero, so it runs on
+The door keeps a TLS connection to its hub, which is too heavy for a Pi Zero, so it runs on
 another machine. That machine opens a reverse SSH tunnel to the BBS, and the BBS
 logs in through it. The BBS never connects out to the LAN.
 
@@ -14,7 +16,7 @@ logs in through it. The BBS never connects out to the LAN.
 
 Build on the machine that will run the door:
 
-    doors/livechat/build.sh <unpacked LiveChat68/src> <prepared dir>/livechat68
+    doors/livechat/build.sh <unpacked partyline archive>/source/sdk-c <prepared dir>/partyline
 
 ## Door host
 
@@ -35,5 +37,7 @@ its holder start the door.
 
 ## Settings
 
-The door keeps its settings in `/var/lib/livechat/LIVECHAT.cfg` on the door host.
-It holds the board's key, so it must never be shared or committed.
+The door keeps its settings in `/var/lib/livechat/PARTYLINE.cfg` on the door host.
+The sysop's first run (the BBS always starts it at level 255) registers the board
+with the hub and writes the board's key into that file, so it must never be shared
+or committed.
