@@ -4113,17 +4113,18 @@ new_board_posts() { # new_board_posts <since> [fido]
     local since=$1 want=${2:-} b f pre n=0
     for b in "$BBS_ROOT"/boards/*/; do
         b=${b%/}
-        [[ $(basename "$b") == news ]] && continue
+        # No basename forks here: this runs at every login, and each fork costs on a Pi Zero.
+        [[ ${b##*/} == news ]] && continue
         # Same visibility rule as board_menu: private boards stay hidden.
         [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
-        if is_fido "$(basename "$b")"; then
+        if is_fido "${b##*/}"; then
             [[ $want == fido ]] && feature_on fido || continue
         else
             [[ -z $want ]] || continue
         fi
         for f in "$b"/*.msg; do
             [[ -f $f && ! -L $f ]] || continue
-            pre=$(basename "$f"); pre=${pre%%-*}
+            pre=${f##*/}; pre=${pre%%-*}
             [[ $pre =~ ^[0-9]+$ ]] && (( 10#$pre > since )) || continue
             # A deleted post is a stub, not new activity.
             hdr_read "$f"
@@ -4138,7 +4139,7 @@ new_wall_greetings() { # new_wall_greetings <since>
     local since=$1 f pre n=0
     for f in "$BBS_ROOT"/wall/*.msg; do
         [[ -f $f && ! -L $f ]] || continue
-        pre=$(basename "$f"); pre=${pre%%-*}
+        pre=${f##*/}; pre=${pre%%-*}
         [[ $pre =~ ^[0-9]{10,}$ ]] && (( 10#${pre:0:10} > since )) && n=$((n + 1))
     done
     printf '%d' "$n"
