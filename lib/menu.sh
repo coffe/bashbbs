@@ -2259,7 +2259,7 @@ mail_send_netmail() { # mail_send_netmail <Name@z:n/f> <subject> [fido msgid]
 mail_write() { # mail_write [name subject in-reply-to]
     local to=${1:-} subject=${2:-} reply=${3:-} line
     while [[ -z $to ]]; do
-        rline to "To (kitty, Zip@21:1/202, B = book): " || return
+        rline to "To (kitty, Jane@21:9/999, B = book): " || return
         # b is never a user name (three characters at least), so the key cannot clash.
         [[ $to == [Bb] ]] || break
         book_pick to || to=""

@@ -117,7 +117,7 @@ gen() { # gen <root> <seed>
         for ((i = 0; i < n; i++)); do
             case $((RANDOM % 6)) in 0|1) par="" ;; 2) par=x$((RANDOM % (n + 2))) ;; 3) par=x$i ;; *) par=x$((RANDOM % (i + 1))) ;; esac
             del=$((RANDOM % 4 == 0))
-            a=(bbs-alice bbs-bob Zip@fsx alice@host bbs-carol); au=${a[RANDOM % 5]}
+            a=(bbs-alice bbs-bob Jane@fsx alice@host bbs-carol); au=${a[RANDOM % 5]}
             ep=$((T0 + RANDOM % 300))
             {
                 printf 'Msgid: x%s\r\nAuthor: %s\nSubject: s\n' "$i" "$au"

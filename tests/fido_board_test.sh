@@ -87,28 +87,28 @@ out=$(t board_view fsx_gen </dev/null 2>&1)
 check "board view shows the counter" grep -q "1 of 10 echo posts left today" <<<"$out"
 
 # netmail in the inbox: the fido address stays in From, a local sender is cut at @
-printf 'Message-ID: <a@fido>\nDate: Wed, 18 Nov 2026 08:05:09 -0000\nFrom: Zip@21:1/202\nTo: alice\nSubject: Hej\nX-Fido-Msgid: 21:1/202 abc\n\nnetmail body\n' > "$root/t/nm"
+printf 'Message-ID: <a@fido>\nDate: Wed, 18 Nov 2026 08:05:09 -0000\nFrom: Jane@21:99/1\nTo: alice\nSubject: Hej\nX-Fido-Msgid: 21:99/1 abc\n\nnetmail body\n' > "$root/t/nm"
 sed 's/^From: .*/From: kitty@bbs.example/' "$root/t/nm" > "$root/t/pm"
-check "show_post: netmail sender keeps address" grep -q 'by Zip@21:1/202' <<<"$(t show_post "$root/t/nm" 60)"
+check "show_post: netmail sender keeps address" grep -q 'by Jane@21:99/1' <<<"$(t show_post "$root/t/nm" 60)"
 check "show_post: local sender cut at @" bash -c 'grep -q "by kitty," <<<"$1" && ! grep -q "bbs.example" <<<"$1"' _ "$(t show_post "$root/t/pm" 60)"
 mr() { pause() { :; }; mail_write() { echo "WRITE $*"; }; mail_reply "$1"; }
-check "mail_reply: netmail prefills the address and REPLY" grep -q '^WRITE Zip@21:1/202 Re: Hej 21:1/202 abc$' <<<"$(t mr "$root/t/nm" 2>&1)"
+check "mail_reply: netmail prefills the address and REPLY" grep -q '^WRITE Jane@21:99/1 Re: Hej 21:99/1 abc$' <<<"$(t mr "$root/t/nm" 2>&1)"
 
 # netmail out (bbs-publish): owner is the author, checks again, 10 a day, sysop unlimited
 nmo=$root/state/fido/netmail/out
 mknet() { printf 'Author: carol\nTo-Name: %s\nTo-Addr: %s\nSubject: Hej\n\nbody\n' "$2" "$3" > "$root/t/$1"; }
-mknet n0.net Zip 21:1/202
+mknet n0.net Jane 21:99/1
 lib handle_netmail "$root/t/n0.net" bbs-alice; rc=$?
 N=$(ls "$nmo"/*.msg 2>/dev/null | head -1)
 check "netmail accepted (rc)" eq "$rc" 0
 check "netmail forged Author -> owner" bash -c '[[ $(sed -n "s/^Author: //p" "$1") == alice ]] && [[ $(grep -c "^Author:" "$1") == 1 ]]' _ "$N"
 check "netmail out file root-only" eq "$(stat -c %a "$N")" 600
-mknet bad.net Zip 21:1
+mknet bad.net Jane 21:1
 lib handle_netmail "$root/t/bad.net" bbs-alice; rc=$?
 check "netmail bad address rejected" eq "$rc" 1
-for i in 1 2 3 4 5 6 7 8 9; do mknet n$i.net Zip 21:1/202; lib handle_netmail "$root/t/n$i.net" bbs-alice; done
+for i in 1 2 3 4 5 6 7 8 9; do mknet n$i.net Jane 21:99/1; lib handle_netmail "$root/t/n$i.net" bbs-alice; done
 check "netmail 10 a day accepted" eq "$(ls "$nmo" | wc -l)" 10
-mknet n10.net Zip 21:1/202
+mknet n10.net Jane 21:99/1
 lib handle_netmail "$root/t/n10.net" bbs-alice; rc=$?
 check "netmail 11th the same day rejected" eq "$rc" 1
 for i in 1 2 3 4 5 6 7 8 9 10 11; do printf '%s carol\n' "$(date -u +%F)"; done >> "$root/state/fido/netmail/day.log"

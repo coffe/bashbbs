@@ -10,7 +10,7 @@ goes outside (see below).
 - /cancel stops at any prompt.
 
 Netmail: write to someone on fsxNet as Name@zone:net/node, for example
-Zip@21:1/202. It travels via the hub and can take hours. On an fsxNet post,
+Jane@21:9/999. It travels via the hub and can take hours. On an fsxNet post,
 M mails the author privately and B saves the author in your address book.
 In Mail, 5 opens the book: a number opens a contact, and in Write the key
 B at the To prompt picks a contact. B on a netmail saves its sender too.

@@ -75,13 +75,13 @@ check "confirm: y keeps one Sent copy" eq "$(sent)" 1
 # --- 1b. Netmail: a fido address queues a .net for bbs-publish, never sendmail --
 mkdir -p "$root/queue/incoming"
 nets() { ls "$root"/queue/incoming/*.net 2>/dev/null | wc -l; }
-reset; printf 'Zip@21:1/202\nHej\nText\n.\nn\n\n' | run_as alice mail_write >>"$log" 2>&1
+reset; printf 'Jane@21:99/1\nHej\nText\n.\nn\n\n' | run_as alice mail_write >>"$log" 2>&1
 check "netmail: n queues nothing" eq "$(nets)$(sent)" 00
-reset; printf 'Zip@21:1/202\nHej\nText\n.\ny\n\n' | run_as alice mail_write >>"$log" 2>&1
+reset; printf 'Jane@21:99/1\nHej\nText\n.\ny\n\n' | run_as alice mail_write >>"$log" 2>&1
 N=$(ls "$root"/queue/incoming/*.net 2>/dev/null | head -n 1)
 check "netmail: y queues one .net" eq "$(nets)" 1
-check "netmail: .net headers and body" eq "$(cat "$N" 2>/dev/null)" $'To-Name: Zip\nTo-Addr: 21:1/202\nSubject: Hej\n\nText'
-check "netmail: Sent copy to the fido address" grep -qx 'To: Zip@21:1/202' "$root"/home/bbs-alice/Maildir/.Sent/cur/*
+check "netmail: .net headers and body" eq "$(cat "$N" 2>/dev/null)" $'To-Name: Jane\nTo-Addr: 21:99/1\nSubject: Hej\n\nText'
+check "netmail: Sent copy to the fido address" grep -qx 'To: Jane@21:99/1' "$root"/home/bbs-alice/Maildir/.Sent/cur/*
 check "netmail: sendmail not called" eq "$(delivered)" 0
 rm -f "$root"/queue/incoming/*.net
 

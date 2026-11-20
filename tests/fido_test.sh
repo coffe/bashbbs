@@ -279,15 +279,15 @@ net() { # net <name> <message spec>...: one packet from the hub, tossed on A
     BASHBBS_TEST=1 BBS_TEST_HOMES=$top/homes run A toss
 }
 inbox() { ls "$top/homes/$1/Maildir/new" | wc -l; }
-nm1="Kitty|Zip|Hej Kitty|21:1/100|21:9/999|^AINTL 21:9/999 21:1/202\n^AMSGID: 21:1/202 abc123\n^ACHRS: UTF-8 4\nHej där"
+nm1="Kitty|Jane|Hej Kitty|21:1/100|21:9/999|^AINTL 21:9/999 21:99/1\n^AMSGID: 21:99/1 abc123\n^ACHRS: UTF-8 4\nHej där"
 net nm1 "$nm1"
 kf=$(ls "$top"/homes/kitty/Maildir/new/* 2>/dev/null | head -1)
 check "netmail: delivered to kitty" test "$(inbox kitty)" = 1
-check "netmail: From is name@address" grep -qx 'From: Zip@21:1/202' "$kf"
-check "netmail: To, Subject, X-Fido-Msgid" bash -c "grep -qx 'To: kitty' '$kf' && grep -qx 'Subject: Hej Kitty' '$kf' && grep -qx 'X-Fido-Msgid: 21:1/202 abc123' '$kf'"
+check "netmail: From is name@address" grep -qx 'From: Jane@21:99/1' "$kf"
+check "netmail: To, Subject, X-Fido-Msgid" bash -c "grep -qx 'To: kitty' '$kf' && grep -qx 'Subject: Hej Kitty' '$kf' && grep -qx 'X-Fido-Msgid: 21:99/1 abc123' '$kf'"
 check "netmail: Message-ID and Date" bash -c "grep -q '^Message-ID: <.*@fido>$' '$kf' && grep -q '^Date: .*18 Nov 2026 08:05:09' '$kf' && grep -qx 'Hej där' '$kf'"
 check "netmail: mode 0600" test "$(stat -c %a "$kf")" = 600
-check "netmail: logged" grep -q 'netmail Zip@21:1/202 -> kitty' "$top/A/state/fido/fido.log"
+check "netmail: logged" grep -q 'netmail Jane@21:99/1 -> kitty' "$top/A/state/fido/fido.log"
 net nm1b "$nm1"
 check "netmail: same message twice delivered once" test "$(inbox kitty)" = 1
 net nm2 "Nobody Here|Zap|Hi|21:3/7|21:9/999|^AFMPT 2\nplain text"
@@ -295,11 +295,11 @@ cf=$(ls "$top"/homes/coffe/Maildir/new/* 2>/dev/null | head -1)
 check "netmail: unknown name to the sysop" test "$(inbox coffe)" = 1
 check "netmail: no INTL, origin from header + FMPT" grep -qx 'From: Zap@21:3/7.2' "$cf"
 check "netmail: Originally to first" bash -c "sed '1,/^\$/d' '$cf' | head -1 | grep -qx '(Originally to: Nobody Here)'"
-net nm3 "Kitty|Zip|Other|21:1/100|21:9/999|^AINTL 21:5/5 21:1/202\nnot for us"
+net nm3 "Kitty|Jane|Other|21:1/100|21:9/999|^AINTL 21:5/5 21:99/1\nnot for us"
 check "netmail: other node skipped" bash -c "test \"\$(find '$top'/homes/*/Maildir/new -type f | wc -l)\" = 2 && grep -q 'netmail for 21:5/5, not us' '$top/A/state/fido/fido.log'"
-net nm4 "Kitty|Ev"$'\r'"X-Evil: 1|S|21:1/100|21:9/999|^AINTL 21:9/999 21:1/202\n^AMSGID: 21:1/202 e1\nx"
+net nm4 "Kitty|Ev"$'\r'"X-Evil: 1|S|21:1/100|21:9/999|^AINTL 21:9/999 21:99/1\n^AMSGID: 21:99/1 e1\nx"
 ef=$(grep -l 'e1$' "$top"/homes/kitty/Maildir/new/*)
-check "netmail: CR in From removed" bash -c "grep -qx 'From: EvX-Evil: 1@21:1/202' '$ef' && ! grep -q '^X-Evil' '$ef'"
+check "netmail: CR in From removed" bash -c "grep -qx 'From: EvX-Evil: 1@21:99/1' '$ef' && ! grep -q '^X-Evil' '$ef'"
 net eo "All|Ed|No origin|21:1/100|21:9/999|AREA:FSX_GEN\n^AMSGID: 21:4/7 77\nbody without origin"
 check "echomail without Origin: Node from MSGID" grep -qx 'Node: 21:4/7' "$(grep -l '^Subject: No origin' "$top"/A/boards/fsx_gen/*.msg)"
 
