@@ -115,7 +115,7 @@ STEPS = [
     ("(back)", "q", r"== Mail ==.*" + P, False),
     ("(back)", "q", r"== BashBBS ==.*Q\) Log out" + P, False),
     ("files: area list", "8", r"== Files ==.*Q\) Back" + P, True),
-    ("files: file list (15 files)", "1", r"== Files: .*? ==.*Q\) Back" + P, True),
+    ("files: file list (15 files)", "1", r"== Files: .*? ==.*Q\) Back.*" + P, True),
     ("(back)", "q", r"== Files ==.*Q\) Back" + P, False),
     ("(back)", "q", r"== BashBBS ==.*Q\) Log out" + P, False),
     ("Fame & Glory menu", "4", r"== Fame & Glory ==.*Q\) Back" + P, True),

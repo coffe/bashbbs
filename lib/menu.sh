@@ -27,6 +27,9 @@ SEEN_PREV=""
 
 # Strip control characters (ESC, CR, BEL, ...) from text shown to the user.
 safe() { LC_ALL=C.UTF-8 sed 's/[[:cntrl:]]//g'; }
+# The same for one value, without a fork (a sed per header line added up on a Pi Zero):
+# safe_to <var> <text>. Matches safe() byte for byte, C1 controls and broken UTF-8 too.
+safe_to() { local LC_ALL=C.UTF-8; printf -v "$1" '%s' "${2//[[:cntrl:]]/}"; }
 # The same for tab-separated rows: the tab is the only control character kept.
 safe_rows() { LC_ALL=C.UTF-8 sed 's/[^[:print:]\t]//g'; }
 
@@ -232,9 +235,17 @@ drain_input() {
     return 0
 }
 
+# Terminal size as "rows cols", cached: stty ran per list row before, a fork each on a
+# Pi Zero. A resize (SIGWINCH) clears it; redraw reads it again in the main shell, so the
+# $(list_width) subshells find it set. Empty or "-" when unknown: callers fall back.
+TERM_SIZE=""
+trap 'TERM_SIZE=' WINCH
+term_size() { [[ -n $TERM_SIZE ]] || TERM_SIZE=$(stty size 2>/dev/null) || TERM_SIZE=-; }
+
 # Start of a screen: drain, then clear. The screen is drawn after this.
 redraw() {
     drain_input
+    term_size
     # A terminal type without a terminfo entry (SyncTERM sends "syncterm") makes clear fail.
     clear 2>/dev/null || printf '\033[H\033[2J'
 }
@@ -282,7 +293,7 @@ rline_draw() { # uses rline_edit's locals; keeps the cursor inside the visible w
 
 rline_edit() {
     local __o=$1 __p=${2-} buf="" pos=0 off=0 c s plen cols=80 rows avail dirty=
-    read -r rows cols < <(stty size 2>/dev/null) || true
+    term_size; rows=${TERM_SIZE% *} cols=${TERM_SIZE#* }
     [[ $cols =~ ^[0-9]+$ ]] || cols=80
     s=$(printf '%s' "$__p" | ansi_strip); plen=${#s}
     avail=$(( cols - plen - 1 ))
@@ -564,7 +575,7 @@ manual_chapter() { # manual_chapter <number>
     [[ -r $f && ! -L $f ]] || { redraw; echo "Chapter missing."; pause; return; }
     mapfile -t lines < <(tail -n +2 "$f" | safe)
     total=${#lines[@]}
-    rows=$(stty size 2>/dev/null | awk '{print $1}'); [[ $rows =~ ^[0-9]+$ ]] || rows=24
+    term_size; rows=${TERM_SIZE% *}; [[ $rows =~ ^[0-9]+$ ]] || rows=24
     per=$(( rows - 7 )); (( per < 8 )) && per=8
     while true; do
         redraw
@@ -1083,7 +1094,7 @@ board_order() { # board_order public|private|fido <array>
         done
     fi
     for b in "$BBS_ROOT"/boards/*/; do
-        b=${b%/}; name=$(basename "$b")
+        b=${b%/}; name=${b##*/}
         # Private boards stay hidden from users who are not members.
         [[ -d $b && ! -L $b && -r $b && -x $b ]] || continue
         if is_fido "$name"; then
@@ -1204,7 +1215,7 @@ B M P W: jump   G: log out" || return
 # otherwise 76. Kept between 40 and 80 so both phones and wide terminals work.
 term_width() {
     local cols
-    cols=$(stty size 2>/dev/null | awk '{print $2}')
+    term_size; cols=${TERM_SIZE#* }
     [[ $cols =~ ^[0-9]+$ ]] || cols=76
     (( cols < 40 )) && cols=40
     (( cols > 80 )) && cols=80
@@ -1215,7 +1226,7 @@ term_width() {
 # fit the screen it is shown on. 76 when the width is unknown.
 list_width() {
     local cols
-    cols=$(stty size 2>/dev/null | awk '{print $2}')
+    term_size; cols=${TERM_SIZE#* }
     [[ $cols =~ ^[0-9]+$ ]] || cols=76
     echo "$cols"
 }
@@ -1281,7 +1292,7 @@ show_post() {
     local subject="" author="" date="" edited="" deleted=""
     while IFS= read -r line && [[ -n $line ]]; do
         key=${line%%:*}
-        val=$(printf '%s' "${line#*: }" | safe)
+        safe_to val "${line#*: }"
         case $key in
             Subject) subject=$val ;;
             # @fsx marks a fsxNet author, @<zone>:<net>/<node> a netmail sender
@@ -1981,7 +1992,7 @@ mail_menu() {
         keyline "L) Look 4 new mail   Q) Back"
         [[ -n $note ]] && { echo; echo "$note"; }
         note=""
-        menu_key "> " "12345QqLl" "1-5: Inbox, Write, Sent, Trash, Address book
+        menu_key "> " "12345QqLl" "1-5: Inbox, Write, Sent, Trash, Book
 L: look 4 new mail
 Q: back   B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
@@ -2329,7 +2340,7 @@ Q: back" local || return 1
 
 # A folder list. Unread messages in new are marked with *.
 mail_view() { # mail_view <Inbox|Sent|Trash>
-    local folder=$1 dir f mark i width row
+    local folder=$1 dir f mark i width row subj
     local -a files
     while true; do
         redraw
@@ -2354,7 +2365,8 @@ Q: back" local || return
         for f in "${files[@]}"; do
             mark=" "
             [[ $f == "$dir"/new/* ]] && mark="*"
-            row=$(printf '%3d) %s %s' "$i" "$mark" "$(hdr_read "$f"; list_fit "$width" "${HDR[Subject]-}" | safe)")
+            hdr_read "$f"; safe_to subj "${HDR[Subject]-}"
+            printf -v row '%3d) %s %s' "$i" "$mark" "$(list_fit "$width" "$subj")"
             if (( COLOR )) && [[ $row =~ ^(\ *)([0-9]+\))\ (.)(.*)$ ]]; then
                 [[ ${BASH_REMATCH[3]} == '*' ]] && mark=$(paint ACC '*') || mark=${BASH_REMATCH[3]}
                 row="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}") ${mark}${BASH_REMATCH[4]}"
@@ -2688,7 +2700,7 @@ files_menu() { # files_menu [area] [newest | search <text>]
         # Ten files at most; each description line takes a line more, so fewer may fit. The
         # first file on a page is always shown whole. The rest of the screen is 10 lines:
         # top 3, foot 7, and one for the flag count.
-        height=$(stty size 2>/dev/null | awk '{print $1}')
+        term_size; height=${TERM_SIZE% *}
         [[ $height =~ ^[0-9]+$ ]] || height=24
         room=$(( height - 11 ))
         (( room < FILES_PAGE )) && room=$FILES_PAGE
@@ -3161,7 +3173,7 @@ sysop_posts() {
         (( shown >= 15 )) && break
         hdr_read "$b/$f"
         [[ -n ${HDR[Deleted]-} ]] && continue
-        board=$(basename "$b")
+        board=${b%/}; board=${board##*/}
         author=${HDR[Author]-}; author=${author#bbs-}; [[ $author == *@fsx ]] || author=${author%%@*}
         subject=${HDR[Subject]-}
         printf '%-12s %-16s %s\n' "$(list_fit 12 "$board")" "$(list_fit 16 "$author")" "$(list_fit "$w" "$subject")"
@@ -3715,13 +3727,16 @@ caller_queue() {
 # left out, but still count towards the caller number and the records.
 callers_view() {
     local t n width shown=0
+    local -A sys=()
+    # Read once: a grep per log line forked up to 500 times on a Pi Zero.
+    [[ -r $BBS_ROOT/sysops ]] && while IFS= read -r t; do [[ -n $t ]] && sys[$t]=1; done < "$BBS_ROOT/sysops"
     redraw
     local_header "Last callers"
     width=$(list_width)
     if [[ -r $BBS_ROOT/state/callers.log ]]; then
         while read -r t n; do
-            grep -qsx -- "$n" "$BBS_ROOT/sysops" && continue
-            n=$(printf '%s' "$n" | safe)
+            [[ -z $n || -n ${sys[$n]-} ]] && continue
+            safe_to n "$n"
             printf '%s  %s\n' "$(local_time "$t")" "$(list_fit $(( width - 18 )) "$n")"
             shown=$(( shown + 1 ))
             (( shown >= CALLERS_SHOW )) && break
@@ -3775,7 +3790,7 @@ online_view() {
         elif (( idle < 1 )); then idle=-
         elif (( idle < 60 )); then idle="${idle}m"
         else idle="$(( idle / 60 ))h$(( idle % 60 ))m"; fi
-        n=$(printf '%s' "$n" | safe)
+        safe_to n "$n"
         (( cnt > 1 )) && idle="$idle  x$cnt"
         printf '%s  %5s  %s\n' "$(list_fit 12 "$n")" "${since#* }" "$idle"
         shown=$(( shown + 1 ))
@@ -3931,7 +3946,7 @@ wall_entry() { # wall_entry <file> <width>
     local file=$1 width=$2 line key val date="" author=""
     while IFS= read -r line && [[ -n $line ]]; do
         key=${line%%:*}
-        val=$(printf '%s' "${line#*: }" | safe)
+        safe_to val "${line#*: }"
         case $key in
             Author) author=$val ;;
             Date) date=$val ;;
@@ -4304,7 +4319,7 @@ intro_anim() {
     local -a lines
     [[ $hold =~ ^[0-9]+$ ]] || hold=4
     cols=$(list_width)
-    rows=$(stty size 2>/dev/null | awk '{print $1}')
+    term_size; rows=${TERM_SIZE% *}
     [[ $rows =~ ^[0-9]+$ ]] || rows=24
     h=$(intro_height "$f") w=$(intro_width "$f")
     (( w <= cols && h <= rows )) || return 1
@@ -4381,7 +4396,7 @@ intro_boot() {
     local -a lines
     [[ $hold =~ ^[0-9]+$ ]] || hold=1
     cols=$(list_width)
-    rows=$(stty size 2>/dev/null | awk '{print $1}')
+    term_size; rows=${TERM_SIZE% *}
     [[ $rows =~ ^[0-9]+$ ]] || rows=24
     h=$(intro_height "$f")
     (( h >= 1 && $(intro_width "$f") <= cols && h <= rows )) || return 1
@@ -4451,7 +4466,7 @@ intro_run() {
     local conf=$BBS_ROOT/etc/intro/intro.conf secs file narrow caption ncaption extra cols rows f w c s need shown=0 season="" mid smid fshift sshift nstatic=0 st
     [[ -t 0 && -t 1 && -r $conf ]] || return 0
     cols=$(list_width)
-    rows=$(stty size 2>/dev/null | awk '{print $1}')
+    term_size; rows=${TERM_SIZE% *}
     [[ $rows =~ ^[0-9]+$ ]] || rows=24
     season=$(intro_season "$conf") || season=""
     while read -r -u 3 secs file narrow caption ncaption extra; do
@@ -4525,7 +4540,7 @@ welcome_art() {
     [[ -f $f && ! -L $f && -r $f ]] && (( $(stat -c %s "$f") <= ADS_MAX_BYTES )) || return 0
     (( $(intro_width "$f") <= $(list_width) )) || return 0
     h=$(intro_height "$f")
-    read -r rows _ < <(stty size 2>/dev/null) || true
+    term_size; rows=${TERM_SIZE% *}
     [[ $rows =~ ^[0-9]+$ ]] && (( rows >= h + 12 )) || return 0
     printf '%s' "$C_HEAD"
     art_cat "$f"
