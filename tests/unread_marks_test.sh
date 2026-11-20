@@ -58,6 +58,16 @@ cache_test() {
     UNREAD_STALE=1; unread_refresh
     [[ -n ${UNREAD[whatsup]:-} ]] && echo cache-refresh
 }
+# unread_boards (one awk for all boards) against the per-board board_threads it replaced.
+parity() {
+    local b f old="" new
+    local -a posts=()
+    for b in "$@"; do board_threads "$b" "$SEEN_PREV" | grep -q $'\t1$' && old+="$b "; done
+    for b in "$@"; do for f in "$BBS_ROOT/boards/$b"/*.msg; do [[ -f $f && ! -L $f ]] && posts+=("$b"$'\t'"$f"); done; done
+    new=$( ((${#posts[@]})) && printf '%s\n' "${posts[@]}" | unread_boards | tr '\n' ' ')
+    echo "old=[$old] new=[$new]"
+    [[ $old == "$new" ]]
+}
 EOF
 
 lib() { ( export BBS_ROOT="$root" HOME="$root/home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-alice TERM=dumb \
@@ -92,6 +102,41 @@ check "read: main menu loses * when nothing is new" not has "$(printf '1' | lib 
 out=$(lib cache_test)
 check "cache: a redraw without a new visit keeps the old scan" has "$out" "cache-hold"
 check "cache: a new visit rescans and marks the new board" has "$out" "cache-refresh"
+
+# 5. Parity: random boards with replies, deleted stubs, broken and looping parents, fsx and
+# own authors, read marks (some junk). The single awk must star the same boards.
+gen() { # gen <root> <seed>
+    local r=$1 b i n par del au ep a
+    RANDOM=$2
+    mkdir -p "$r"/{boards,meta,home}
+    : > "$r/home/.bashbbs-read"
+    for b in b0 b1 b2 b3 0; do
+        mkdir -p "$r/boards/$b"
+        n=$((RANDOM % 12))
+        for ((i = 0; i < n; i++)); do
+            case $((RANDOM % 6)) in 0|1) par="" ;; 2) par=x$((RANDOM % (n + 2))) ;; 3) par=x$i ;; *) par=x$((RANDOM % (i + 1))) ;; esac
+            del=$((RANDOM % 4 == 0))
+            a=(bbs-alice bbs-bob Zip@fsx alice@host bbs-carol); au=${a[RANDOM % 5]}
+            ep=$((T0 + RANDOM % 300))
+            {
+                printf 'Msgid: x%s\r\nAuthor: %s\nSubject: s\n' "$i" "$au"
+                [[ -n $par ]] && printf 'Parent: %s\n' "$par"
+                ((del)) && printf 'Deleted: yes\n'
+                printf '\nbody\n'
+            } > "$r/boards/$b/$ep-x$i.msg"
+            ((RANDOM % 5 == 0)) && printf '%s x%s %s\n' "$b" "$((RANDOM % n))" "$((T0 + RANDOM % 300))" >> "$r/home/.bashbbs-read"
+        done
+    done
+    printf 'junk line\nb1 x1 notanumber\n' >> "$r/home/.bashbbs-read"
+}
+bad=0
+for seed in $(seq 1 40); do
+    gen "$root/p$seed" "$seed"
+    out=$(root=$root/p$seed lib parity b0 b1 b2 b3 0) || bad=$((bad + 1))
+    echo "seed $seed: $out" >> "$log"
+done
+check "parity: unread_boards stars the same boards as board_threads (40 random fixtures)" eq "$bad" 0
+check "parity: empty input gives nothing" eq "$(lib unread_boards < /dev/null)" ""
 
 echo "unread_marks_test: $pass passed, $fail failed (log: $log)"
 chmod 700 "$root/boards/secret" 2>/dev/null

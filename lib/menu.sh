@@ -1120,19 +1120,82 @@ board_order() { # board_order public|private|fido <array>
 UNREAD_STALE=1 UNREAD_PUB=0 UNREAD_PRIV=0 UNREAD_FIDO=0
 declare -A UNREAD=()
 unread_refresh() {
-    local b kind
-    local -a list=()
+    local b f kind
+    local -a list=() posts=()
+    local -A kind_of=()
     [[ $UNREAD_STALE == 1 ]] || return 0
     UNREAD=() UNREAD_PUB=0 UNREAD_PRIV=0 UNREAD_FIDO=0
     for kind in public private fido; do
         board_order "$kind" list
         for b in "${list[@]}"; do
-            board_threads "$b" "$SEEN_PREV" | grep -q $'\t1$' || continue
-            UNREAD[$b]=1
-            case $kind in public) UNREAD_PUB=1 ;; private) UNREAD_PRIV=1 ;; fido) UNREAD_FIDO=1 ;; esac
+            kind_of[$b]=$kind
+            for f in "$BBS_ROOT/boards/$b"/*.msg; do
+                [[ -f $f && ! -L $f ]] && posts+=("$b"$'\t'"$f")
+            done
         done
     done
+    while IFS= read -r b; do
+        UNREAD[$b]=1
+        case ${kind_of[$b]-} in public) UNREAD_PUB=1 ;; private) UNREAD_PRIV=1 ;; fido) UNREAD_FIDO=1 ;; esac
+    done < <(((${#posts[@]})) && printf '%s\n' "${posts[@]}" | unread_boards)
     UNREAD_STALE=0
+}
+
+# The boards that have a thread with a new post, one name per line. Input "<board>\t<file>",
+# grouped by board, in visible_posts file order. One awk for every board at once: it was a
+# board_threads pipeline per board, about five forks each on a Pi Zero. The rules are the
+# same as visible_posts + board_threads (tests/unread_marks_test.sh compares the two).
+unread_boards() {
+    awk -F'\t' -v since="$SEEN_PREV" -v me="${me:-}" -v marks="$READ_FILE" '
+        function hdr(line) { sub(/\r$/, "", line); return substr(line, index(line, ":") + 2) }
+        function scan(   i, j, k, m, step, th) {
+            # visible_posts: active posts plus their ancestors.
+            split("", keep)
+            for (i = 1; i <= n; i++) if (!del[i]) {
+                keep[i] = 1; j = i
+                for (step = 0; step < 1000 && par[j] != "" && (par[j] in at); step++) {
+                    j = at[par[j]]
+                    if (keep[j]) break
+                    keep[j] = 1
+                }
+            }
+            m = 0; split("", at2)
+            for (i = 1; i <= n; i++) if (keep[i]) {
+                m++; id2[m] = id[i]; par2[m] = par[i]; del2[m] = del[i]; au2[m] = au[i]; ep2[m] = ep[i]
+                if (id2[m] != "") at2[id2[m]] = m
+            }
+            # board_threads: new = a post by someone else, newer than the login and the thread mark.
+            for (i = 1; i <= m; i++) {
+                if (del2[i] || (me != "" && au2[i] == me)) continue
+                j = i
+                for (step = 0; step < 1000 && par2[j] != "" && (par2[j] in at2) && at2[par2[j]] != j; step++) j = at2[par2[j]]
+                th = since; k = cur SUBSEP id2[j]
+                if (k in mark) { if (th == "" || mark[k] + 0 > th + 0) th = mark[k] }
+                if (th != "" && ep2[i] + 0 > th + 0) { print cur; return }
+            }
+        }
+        BEGIN {
+            # ~/.bashbbs-read: "<board> <root-msgid> <epoch>"; bad lines are ignored.
+            while (marks != "" && (getline ml < marks) > 0) {
+                if (split(ml, mf, " ") != 3) continue
+                if (mf[1] !~ /^[a-z0-9][a-z0-9_-]*$/ || mf[2] !~ /^[A-Za-z0-9._@:-]+$/ || mf[3] !~ /^[0-9]+$/) continue
+                k = mf[1] SUBSEP mf[2]
+                if (mf[3] + 0 > mark[k] + 0) mark[k] = mf[3]
+            }
+            if (marks != "") close(marks)
+        }
+        ($1 "") != cur { if (n) scan(); cur = $1; n = 0; split("", at) }
+        { f = $2; n++; id[n] = ""; par[n] = ""; del[n] = 0; au[n] = ""
+          while ((getline line < f) > 0 && line != "" && line != "\r") {
+              if (line ~ /^Msgid:/) id[n] = hdr(line)
+              else if (line ~ /^Author:/) { au[n] = hdr(line); sub(/^bbs-/, "", au[n]); if (au[n] !~ /@fsx$/) sub(/@.*/, "", au[n]) }
+              else if (line ~ /^Parent:/) par[n] = hdr(line)
+              else if (line ~ /^Deleted:/) del[n] = 1
+          }
+          close(f)
+          k = split(f, seg, "/"); ep[n] = seg[k]; sub(/-.*/, "", ep[n])
+          if (id[n] != "") at[id[n]] = n }
+        END { if (n) scan() }'
 }
 
 # Boards: Public boards and Private boards. Key B jumps straight to Public boards.
