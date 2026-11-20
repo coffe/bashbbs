@@ -1149,12 +1149,12 @@ B M P W: jump   G: log out" || return
 }
 
 # One list of boards: Public boards, Private boards (only those you belong to), or the
-# fsxNet echoes, which Public boards opens with F.
+# fsxNet echo areas, which Public boards opens with E.
 board_menu() { # board_menu [public|private|fido]
     local kind=${1:-public} boards b title fido=()
     case $kind in
         private) title="Private boards" ;;
-        fido) title="fsxNet echomail" ;;
+        fido) title="fsxNet echo areas" ;;
         *) title="Public boards" ;;
     esac
     UNREAD_STALE=1
@@ -1174,7 +1174,7 @@ board_menu() { # board_menu [public|private|fido]
             fi
             i=$((i + 1))
         done
-        (( ${#fido[@]} )) && { echo; menu_item F "fsxNet" "" "$( (( UNREAD_FIDO )) && echo '*')"; }
+        (( ${#fido[@]} )) && { echo; menu_item E "fsxNet echo areas" "" "$( (( UNREAD_FIDO )) && echo '*')"; }
         echo
         if [[ $kind == private ]]; then
             (( ${#boards[@]} )) || echo "You are not in any private boards yet."
@@ -1182,15 +1182,15 @@ board_menu() { # board_menu [public|private|fido]
         else
             keyline "Q) Back"
         fi
-        menu_key "> " "$([[ $kind == private ]] && echo Kk)$( (( ${#fido[@]} )) && echo Ff)Qq$(digit_keys "${#boards[@]}")" \
+        menu_key "> " "$([[ $kind == private ]] && echo Kk)$( (( ${#fido[@]} )) && echo Ee)Qq$(digit_keys "${#boards[@]}")" \
 "Number: open a board
-$([[ $kind == private ]] && echo 'K: new private board   ')$( (( ${#fido[@]} )) && echo 'F: fsxNet echomail   ')Q: back
+$([[ $kind == private ]] && echo 'K: new private board   ')$( (( ${#fido[@]} )) && echo 'E: fsxNet echo areas   ')Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return ;;
             [Kk]) new_private_board; continue ;;
-            [Ff]) board_menu fido; UNREAD_STALE=1; [[ -n $nav_req ]] && return; continue ;;
+            [Ee]) board_menu fido; UNREAD_STALE=1; [[ -n $nav_req ]] && return; continue ;;
             [1-9]) read_num "${#boards[@]}" || continue ;;
             *) continue ;;
         esac
@@ -1540,7 +1540,7 @@ board_view() {
             i=$((i + 1))
         done
         keys=Qq hint="Q: back"
-        if is_readonly "$board" || { is_fido "$board" && ! is_sysop; }; then
+        if is_readonly "$board"; then
             keyline "Q) Back"
         elif manages "$board"; then
             keyline "N) New post   S) Members   Q) Back"
@@ -1550,7 +1550,7 @@ board_view() {
             keys+=Nn hint="N: new post   Q: back"
         fi
         # A read-only board has no N. Its owner can still reach S.
-        { is_readonly "$board" || { is_fido "$board" && ! is_sysop; }; } && manages "$board" && keys+=Ss
+        is_readonly "$board" && manages "$board" && keys+=Ss
         menu_key "> " "$keys$(digit_keys "${#roots[@]}")" \
 "Number: read a thread (* = new)
 $hint
@@ -1558,7 +1558,7 @@ B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return ;;
-            [Nn]) is_readonly "$board" || { is_fido "$board" && ! is_sysop; } || compose "$board" ""; continue ;;
+            [Nn]) is_readonly "$board" || compose "$board" ""; continue ;;
             [Ss]) manages "$board" && members_menu "$board"; continue ;;
             [1-9]) read_num "${#roots[@]}" || continue ;;
             *) continue ;;
@@ -1684,7 +1684,7 @@ post_actions() { # post_actions <board> <file>
     author=${HDR[Author]-}
     if [[ -z ${HDR[Deleted]-} ]] && ! is_readonly "$board"; then
         # $root is the thread being read, a local of _thread_view.
-        if { ! thread_closed "$board" "$root" || is_sysop; } && { ! is_fido "$board" || is_sysop; }; then
+        if { ! thread_closed "$board" "$root" || is_sysop; }; then
             cmds+="R) Reply"; keys+=Rr hint+="R: reply"
         fi
         [[ $author == "$me" ]] && ! is_fido "$board" && { cmds+="${cmds:+  }E) Edit"; keys+=Ee; hint+="  E: edit"; }
@@ -1885,7 +1885,7 @@ manages() {
 
 # A read-only board has a .readonly marker in meta/. Only the news account posts there.
 is_readonly() { [[ -f $BBS_ROOT/meta/$1.readonly ]]; }
-# A fido board (fsxNet echomail) has a .fido marker: sysops post, nobody edits.
+# A fido board (fsxNet echomail) has a .fido marker: everyone posts (a day limit), nobody edits.
 is_fido() { [[ -f $BBS_ROOT/meta/$1.fido ]]; }
 
 # Requests go through the queue. The publisher runs as root and does the work.

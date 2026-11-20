@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fido boards (meta/<board>.fido): sysop-only posting, no edits, delete keeps the file
+# Fido boards (meta/<board>.fido): everyone posts with a day limit (sysops unlimited), no edits, delete keeps the file
 # name, fido=off hides the board, imported posts display. Own BBS_ROOT under the scratchpad.
 # Usage: tests/fido_board_test.sh [logfile]
 set -u
@@ -31,11 +31,16 @@ mkreq() { printf 'Board: %s\nSubject: S\n\nbody\n' "$1" > "$root/t/$2"; }
 
 mkreq fsx_gen a.post; mkreq fsx_gen b.post; mkreq general c.post
 lib handle_post "$root/t/a.post" bbs-alice; rc=$?
-check "non-sysop rejected (rc)" eq "$rc" 1
-check "no file after rejection" eq "$(ls "$root"/boards/fsx_gen | wc -l)" 0
+check "user post on fido board accepted" eq "$rc" 0
+for i in 2 3 4 5 6 7 8 9 10; do mkreq fsx_gen a$i.post; lib handle_post "$root/t/a$i.post" bbs-alice; done
+check "ten posts in a day" eq "$(ls "$root"/boards/fsx_gen | wc -l)" 10
+mkreq fsx_gen a11.post; lib handle_post "$root/t/a11.post" bbs-alice; rc=$?
+check "eleventh post the same day rejected" eq "$rc" 1
+check "no file after rejection" eq "$(ls "$root"/boards/fsx_gen | wc -l)" 10
+for i in 1 2 3 4 5 6 7 8 9 10; do echo "$(date -u +%F) carol"; done >> "$root/state/fido/echo-day.log"
 lib handle_post "$root/t/b.post" bbs-carol; rc=$?
-check "sysop post accepted" eq "$rc" 0
-F=$(ls "$root"/boards/fsx_gen/*.msg | head -1)
+check "sysop not limited" eq "$rc" 0
+F=$(grep -l '^Author: carol$' "$root"/boards/fsx_gen/*.msg | head -1)
 id=$(hval "$F" Msgid)
 lib handle_post "$root/t/c.post" bbs-alice
 check "normal board still takes users" eq "$(ls "$root"/boards/general | wc -l)" 1

@@ -40,6 +40,7 @@ SYSOPS=$BBS_ROOT/sysops
 MAX_BYTES=16384
 MAX_OWNED=2
 MAX_NETMAIL_DAY=10   # netmails per account per UTC day, sysops unlimited
+MAX_ECHO_DAY=10      # fsxNet echomail posts per account per UTC day, sysops unlimited
 MAX_BODY=11000
 STALE_SECS=86400
 LOCK_WAIT=${BBS_LOCK_WAIT:-20}
@@ -61,6 +62,7 @@ WALL_MAX_CHARS=140
 WALL_LOCK=$STATE/wall.lock
 NETMAIL_OUT=$STATE/fido/netmail/out    # read by bbs-fido scan, root only
 NETMAIL_LOG=$STATE/fido/netmail/day.log  # "YYYY-MM-DD account" per accepted netmail, for the day limit
+ECHO_LOG=$STATE/fido/echo-day.log        # the same per accepted echomail post
 
 CALLERS_LOG=$STATE/callers.log      # "YYYY-MM-DDTHH:MMZ name", world readable
 CALLERS_TOTAL=$STATE/callers.total  # running number of logins
@@ -434,8 +436,15 @@ handle_post() { # handle_post <file> <owner account>
     fi
     # A read-only board (the news board) takes posts only from the news account.
     if [[ -f $META/$board.readonly && $owner != bbs-news ]]; then return 1; fi
-    # A fido board (fsxNet echomail) takes local posts only from sysops.
-    if [[ -f $META/$board.fido ]] && ! is_sysop "${owner#bbs-}"; then return 1; fi
+    # A fido board (fsxNet echomail) goes out under the node's name: a day limit per user.
+    local fido="" day
+    if [[ -f $META/$board.fido ]]; then
+        fido=1 day=$(date -u +%F)
+        if ! is_sysop "${owner#bbs-}" && (( $(grep -cxF -- "$day ${owner#bbs-}" "$ECHO_LOG" 2>/dev/null) >= MAX_ECHO_DAY )); then
+            echo "echomail limit reached for ${owner#bbs-}" >&2
+            return 1
+        fi
+    fi
 
     # A closed thread (meta/<board>.pins) takes replies only from sysops.
     if [[ -n $parent ]] && thread_is_closed "$board" "$parent" && ! is_sysop "${owner#bbs-}"; then
@@ -464,6 +473,7 @@ handle_post() { # handle_post <file> <owner account>
         chmod 0644 "$tmp" || return 1
     fi
     mv -f "$tmp" "$out" || return 1
+    [[ -n $fido ]] && { mkdir -p -m 0700 "$STATE/fido"; printf '%s %s\n' "$day" "${owner#bbs-}" >> "$ECHO_LOG"; }
     # Private boards and the news accounts stay out of Fame & Glory.
     if ! is_private "$board" && [[ $board != news && $owner != bbs-news && $owner != bbs-newsstatus ]]; then
         activity_add post "$owner"

@@ -22,5 +22,11 @@ Reading and writing:
 - A shows the colour original of an ANSI ad from fsxNet. It is drawn for
   80 columns; the post text is the readable version on a narrow screen.
 
+fsxNet echo areas: press E in Public boards. They are shared with other
+BBSes on fsxNet, so what you write there travels to every one of them
+under this node's name. Anyone can post and reply, up to 10 posts a day.
+Posts there cannot be edited once sent. To write privately to someone
+there, use M on their post (see Mail).
+
 Some boards are read-only (for example automatic news). You can read them
 but only the system posts there. Talk about the news on a normal board.
