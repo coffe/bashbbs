@@ -1154,7 +1154,7 @@ board_menu() { # board_menu [public|private|fido]
     local kind=${1:-public} boards b title fido=()
     case $kind in
         private) title="Private boards" ;;
-        fido) title="fsxNet echo areas" ;;
+        fido) title="Echo areas" ;;
         *) title="Public boards" ;;
     esac
     UNREAD_STALE=1
@@ -1174,7 +1174,7 @@ board_menu() { # board_menu [public|private|fido]
             fi
             i=$((i + 1))
         done
-        (( ${#fido[@]} )) && { echo; menu_item E "fsxNet echo areas" "" "$( (( UNREAD_FIDO )) && echo '*')"; }
+        (( ${#fido[@]} )) && { echo; menu_item E "Echo areas" "" "$( (( UNREAD_FIDO )) && echo '*')"; }
         echo
         if [[ $kind == private ]]; then
             (( ${#boards[@]} )) || echo "You are not in any private boards yet."
@@ -1184,7 +1184,7 @@ board_menu() { # board_menu [public|private|fido]
         fi
         menu_key "> " "$([[ $kind == private ]] && echo Kk)$( (( ${#fido[@]} )) && echo Ee)Qq$(digit_keys "${#boards[@]}")" \
 "Number: open a board
-$([[ $kind == private ]] && echo 'K: new private board   ')$( (( ${#fido[@]} )) && echo 'E: fsxNet echo areas   ')Q: back
+$([[ $kind == private ]] && echo 'K: new private board   ')$( (( ${#fido[@]} )) && echo 'E: echo areas   ')Q: back
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
