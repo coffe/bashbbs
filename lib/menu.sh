@@ -2088,12 +2088,14 @@ mail_menu() {
         menu_item 3 "Sent Messages"
         menu_item 4 "Trash"
         menu_item 5 "Address book"
+        menu_item 6 "Archive"
         echo
-        keyline "L) Look 4 new mail   Q) Back"
+        keyline "L) Look 4 new mail   E) Export mail   Q) Back"
         [[ -n $note ]] && { echo; echo "$note"; }
         note=""
-        menu_key "> " "12345QqLl" "1-5: Inbox, Write, Sent, Trash, Book
+        menu_key "> " "123456QqLlEe" "1-6: Inbox, Write, Sent, Trash, Book, Archive
 L: look 4 new mail
+E: export mail as a zip
 Q: back   B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
@@ -2102,6 +2104,8 @@ Q: back   B M P W: jump   G: log out" || return
             3) mail_view Sent ;;
             4) mail_view Trash ;;
             5) book_menu ;;
+            6) mail_view Archive ;;
+            [Ee]) mail_export ;;
             [Ll]) n=$(mail_unread)
                 if (( n > 0 )); then note="$(count_text "$n" "new message" "new messages")"
                 else note="No new mail."; fi ;;
@@ -2117,6 +2121,7 @@ mail_dir() {
         Inbox) printf '%s' "$HOME/Maildir" ;;
         Sent) printf '%s' "$HOME/Maildir/.Sent" ;;
         Trash) printf '%s' "$HOME/Maildir/.Trash" ;;
+        Archive) printf '%s' "$HOME/Maildir/.Archive" ;;
     esac
 }
 
@@ -2520,11 +2525,16 @@ mail_open() { # mail_open <folder> <file>
 mail_actions() { # mail_actions <folder> <file>
     local folder=$1 f=$2 cmds="" keys=Qq hint="Q: back"
     case $folder in
-        Inbox) cmds="R) Reply   D) Delete   "; keys+=RrDd; hint="R: reply  D: delete  Q: back" ;;
-        Sent) cmds="D) Delete   "; keys+=Dd; hint="D: delete  Q: back" ;;
+        Inbox) cmds="R) Reply   A) Archive   D) Delete   "; keys+=RrAaDd; hint="R: reply  A: archive  D: delete  Q: back" ;;
+        Sent) cmds="A) Archive   D) Delete   "; keys+=AaDd; hint="A: archive  D: delete  Q: back" ;;
+        Archive) cmds="D) Delete   "; keys+=Dd; hint="D: delete  Q: back" ;;
     esac
     local from; from=$(post_hdr "$f" From)
-    if [[ $folder == Inbox ]] && is_netmail "$from"; then
+    # Archive: reply only to mail from someone else (the user's own address is a Sent copy).
+    if [[ $folder == Archive && ${from%%@*} != "$me" ]]; then
+        cmds="R) Reply   $cmds"; keys+=Rr; hint="R: reply  $hint"
+    fi
+    if [[ $folder == Inbox || $folder == Archive ]] && is_netmail "$from"; then
         cmds="${cmds/D) /B) Book   D) }"; keys+=Bb; hint="B: add to book  $hint"
     fi
     echo "${cmds}Q) Back"
@@ -2534,9 +2544,20 @@ mail_actions() { # mail_actions <folder> <file>
         '?') return 2 ;;
         [Bb]) book_save "${from%@*}" "${from##*@}"; return 2 ;;
         [Rr]) mail_reply "$f" ;;
+        [Aa]) mail_archive "$f" ;;
         [Dd]) mail_delete "$f" ;;
     esac
     return 0
+}
+
+# Move the own copy to the Archive: one key, no question; it moves back by hand only.
+mail_archive() { # mail_archive <file>
+    local arch name
+    arch=$(mail_dir Archive)
+    name=$(mail_cur_name "${1##*/}")
+    mkdir -p "$arch"/{tmp,new,cur}
+    mv -n "$1" "$arch/cur/$name" && echo "Archived."
+    pause
 }
 
 # Move the own copy to Trash. Other copies are not touched. Nothing is erased in 1.3.
@@ -4081,6 +4102,42 @@ sysop_callers_export() {
     rc=$?
     # Leaving the screen (Q, or the call dropping) keeps the link alive until it
     # expires, like any other download link; a detached sleeper tidies up after that.
+    if (( rc == 0 )) && [[ $XFER_OUTCOME != left ]]; then
+        rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
+    else
+        setsid sh -c 'sleep "$1"; rm -f "$2" "$3"' sh "$(( XFER_TTL_DOWN + 60 ))" \
+            "$BBS_ROOT/queue/xfer/$token" "$snap" </dev/null >/dev/null 2>&1 &
+    fi
+    (( rc == 0 )) || return 1
+    case $XFER_OUTCOME in
+        done) echo "Downloaded." ;;
+        expired) echo "The link has run out." ;;
+        *) return 0 ;;
+    esac
+    pause
+}
+
+# Export of the user's own mail (Inbox, Sent, Archive; not Trash) as a zip of threaded
+# text files, fetched through a browser link like the callers export. The ticket says
+# export=mail; the snapshot is built here, as the user, and web/x.cgi serves it only to
+# the ticket's owner.
+mail_export() {
+    local token snap rc
+    redraw
+    local_header "Export mail" "[Q] Back"
+    token=$(xfer_ticket down export=mail) || { xfer_no_link; return 0; }
+    snap=$BBS_ROOT/queue/xfer/$token.snap
+    if ! ( umask 022; set -C; python3 -I "${BBS_MAILEXPORT:-$LIB/mailexport.py}" "$snap" --user "$me" ) 2>/dev/null; then
+        rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
+        echo "The export failed."
+        pause
+        return 0
+    fi
+    echo "Inbox, Sent and Archive as threads, text in UTF-8 and CP437 (zip)."
+    echo
+    xfer_show_link "$token" "$(( XFER_TTL_DOWN / 60 ))"
+    xfer_wait "$XFER_TTL_DOWN" test -e "$BBS_ROOT/queue/xfer/$token.sent"
+    rc=$?
     if (( rc == 0 )) && [[ $XFER_OUTCOME != left ]]; then
         rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
     else

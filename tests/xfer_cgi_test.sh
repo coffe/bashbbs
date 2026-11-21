@@ -143,6 +143,20 @@ cgi GET "$T2" ""
 check "removed file: 404" eq "$(status)" 404
 find "$root/queue/xfer/$T2" -delete
 
+# --- Mail export: any owner gets the zip; the callers export stays sysop-only
+ticket "$T1" dir=down export=mail
+printf 'PK-zip' > "$root/queue/xfer/$T1.snap"
+cgi GET "$T1" ""
+check "export=mail, non-sysop: 200" eq "$(status)" 200
+check "export=mail: application/zip" has 'Content-Type: application/zip' "$out"
+check "export=mail: named mail-*.zip" has 'filename="mail-[0-9]*\.zip"' "$out"
+check "export=mail: the snapshot" eq "$(body_of)" "PK-zip"
+ticket "$T1" dir=down export=callers
+printf 'log' > "$root/queue/xfer/$T1.snap"
+cgi GET "$T1" ""
+check "export=callers, non-sysop: 404" eq "$(status)" 404
+find "$root/queue/xfer" -mindepth 1 -delete
+
 # --- Busy
 python3 - "$root/state/xfer-slots" "$root/.held" <<'PY' &
 import fcntl, os, sys, time

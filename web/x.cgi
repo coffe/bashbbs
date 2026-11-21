@@ -137,7 +137,7 @@ def gone(status, message):
 
 
 class Ticket:
-    def __init__(self, token, owner, direction, ids, uid=-1, export=False):
+    def __init__(self, token, owner, direction, ids, uid=-1, export=None):
         self.uid = uid
         self.export = export
         self.token = token
@@ -172,18 +172,18 @@ def load_ticket(token, limits):
 
     direction = ""
     ids = []
-    export = False
+    export = None   # "callers" (sysop only), "mail" (any owner) or None
     for line in data.split("\n"):
         key, _, value = line.partition("=")
         if key == "dir" and not direction:
             direction = value
-        elif key == "export" and value == "callers":
-            export = True
+        elif key == "export" and value in ("callers", "mail"):
+            export = value
         elif key == "id" and ID_RE.fullmatch(value) and value not in ids:
             ids.append(value)
     if direction not in ("up", "down") or len(ids) > MAX_FILES:
         return None
-    if export and (direction != "down" or ids or not is_sysop(owner)):
+    if export and (direction != "down" or ids or (export == "callers" and not is_sysop(owner))):
         return None
     if direction == "down" and not ids and not export:
         return None
@@ -215,14 +215,17 @@ def send_export(ticket):
     if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != ticket.uid
             or st.st_size > MAX_SNAP):
         return gone("404 Not Found", "That export is no longer here.")
-    name = "callers-" + time.strftime("%Y%m%d", time.gmtime(st.st_mtime)) + ".log"
+    day = time.strftime("%Y%m%d", time.gmtime(st.st_mtime))
+    mail = ticket.export == "mail"
+    name = "mail-" + day + ".zip" if mail else "callers-" + day + ".log"
+    ctype = "application/zip" if mail else "text/plain; charset=utf-8"
     head = [f"Content-Length: {st.st_size}", f'Content-Disposition: attachment; filename="{name}"',
             "Accept-Ranges: none"]
     if os.environ.get("REQUEST_METHOD") == "HEAD":
-        return respond("200 OK", "text/plain; charset=utf-8", b"", head)
+        return respond("200 OK", ctype, b"", head)
     if take_slot() is None:
         return busy()
-    write_head("200 OK", "text/plain; charset=utf-8", head)
+    write_head("200 OK", ctype, head)
     out = sys.stdout.buffer
     sent = 0
     try:

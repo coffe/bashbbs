@@ -22,7 +22,7 @@ run() { bash "$here/sbin/bbs-maildir" "$home" "$owner"; }
 run >/dev/null 2>&1
 check "first run succeeds" run
 
-for folder in Maildir Maildir/.Sent Maildir/.Trash; do
+for folder in Maildir Maildir/.Sent Maildir/.Trash Maildir/.Archive; do
     for sub in "" /tmp /new /cur; do
         check "$folder$sub exists" test -d "$home/$folder$sub"
     done
