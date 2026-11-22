@@ -57,7 +57,7 @@ keys q; keys q; keys q; finish
 # A in the Inbox: open thread 1 (m3, the newest), archive it.
 start
 check "menu: Archive item" seen "6) Archive"
-check "menu: E key" seen "E) Export mail"
+check "menu: E key" seen "E) Export"
 keys 1
 seen "Zebra topic" >/dev/null
 keys 1          # first Inbox thread is m3

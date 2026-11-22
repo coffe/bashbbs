@@ -2093,13 +2093,12 @@ mail_menu() {
         menu_item 5 "Address book"
         menu_item 6 "Archive"
         echo
-        keyline "L) Look 4 new mail   E) Export mail   Q) Back"
+        keyline "L) Look 4 new mail  E) Export  Q) Back"
         [[ -n $note ]] && { echo; echo "$note"; }
         note=""
-        menu_key "> " "123456QqLlEe" "1-6: Inbox, Write, Sent, Trash, Book, Archive
-L: look 4 new mail
-E: export mail as a zip
-Q: back   B M P W: jump   G: log out" || return
+        menu_key "> " "123456QqLlEe" "1-6: open   L: look 4 new mail
+E: export mail as a zip   Q: back
+B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             1) mail_view Inbox ;;
