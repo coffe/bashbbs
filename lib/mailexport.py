@@ -96,7 +96,7 @@ def load(home):
                     ts = 0.0
                 subj = hdr(m, "Subject")
                 msgs.append(dict(
-                    folder=folder, mid=mid, ts=ts, frm=hdr(m, "From"), to=hdr(m, "To"),
+                    folder=folder, name=n.split(":")[0], mid=mid, ts=ts, frm=hdr(m, "From"), to=hdr(m, "To"),
                     date=hdr(m, "Date"), subj=subj, body=clean(body).strip("\n"),
                     fid=hdr(m, "X-Fido-Msgid"),
                     refs=ids(hdr(m, "In-Reply-To") + " " + hdr(m, "References")),
@@ -175,8 +175,13 @@ def render(threads_, user, day):
     return txt + foot
 
 
-def export(home, out, user, day):
-    txt = render(threads(load(home)), user, day)
+def export(home, out, user, day, thread=None):
+    ts = threads(load(home))
+    if thread:  # Maildir names change only after the ':' (flags)
+        ts = [t for t in ts if any(m["name"] == thread.split(":")[0] for m in t)]
+        if not ts:
+            raise ValueError("no message %s" % thread)
+    txt = render(ts, user, day)
     cp = txt.replace("\n", "\r\n").encode("cp437", "bbs_cp437")
     with open(out, "xb") as fh, zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:  # x: never overwrite
         z.writestr("mail-%s.txt" % day, txt.encode("utf-8"))
@@ -215,25 +220,37 @@ def selftest():
         assert "Trashed" not in u and "\x1b" not in u and "3 threads, 7 messages" in u and "Smörgåsbord" in u
         assert "\r\n" in c and "\r\n" not in u and "[Sent]" in u
         assert all(len(l) <= W for l in u.split("\n") if not l.startswith("      I N"))
+        one = os.path.join(home, "one.zip")
+        export(home, one, "alice", "20261121", thread="2:2,S")
+        with zipfile.ZipFile(one) as z:
+            u = z.read("mail-20261121.txt").decode("utf-8")
+        assert "1 threads, 3 messages" in u and "Plans" in u, u[-600:]
+        try:
+            export(home, os.path.join(home, "none.zip"), "alice", "20261121", thread="nope")
+            raise AssertionError("unknown message exported")
+        except ValueError:
+            pass
     print("mailexport selftest ok")
 
 
 def main(argv):
     if argv[1:] == ["--test"]:
         return selftest()
-    args, user, day = [], os.environ.get("USER", ""), time.strftime("%Y%m%d", time.gmtime())
+    args, thread, user, day = [], None, os.environ.get("USER", ""), time.strftime("%Y%m%d", time.gmtime())
     it = iter(argv[1:])
     for a in it:
         if a == "--user":
             user = next(it, "")
+        elif a == "--thread":
+            thread = next(it, "")
         elif a == "--date":
             day = next(it, "")
         else:
             args.append(a)
     if len(args) != 1 or not re.fullmatch(r"\d{8}", day):
-        sys.exit("usage: mailexport.py <out.zip> [--user NAME] [--date YYYYMMDD]")
+        sys.exit("usage: mailexport.py <out.zip> [--user NAME] [--date YYYYMMDD] [--thread MAILDIR-NAME]")
     try:
-        export(os.path.expanduser("~"), args[0], clean(user), day)
+        export(os.path.expanduser("~"), args[0], clean(user), day, thread)
     except Exception as e:
         sys.exit("mailexport: %s" % e)
 

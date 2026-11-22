@@ -2537,6 +2537,7 @@ mail_actions() { # mail_actions <folder> <file>
     if [[ $folder == Inbox || $folder == Archive ]] && is_netmail "$from"; then
         cmds="${cmds/D) /B) Book   D) }"; keys+=Bb; hint="B: add to book  $hint"
     fi
+    cmds+="X) Export thread   "; keys+=Xx; hint="${hint% Q: back} X: export thread  Q: back"
     echo "${cmds}Q) Back"
     # Inside an open message the jump keys are off.
     menu_key "> " "$keys" "$hint" local || return 1
@@ -2546,6 +2547,7 @@ mail_actions() { # mail_actions <folder> <file>
         [Rr]) mail_reply "$f" ;;
         [Aa]) mail_archive "$f" ;;
         [Dd]) mail_delete "$f" ;;
+        [Xx]) mail_export "$f"; return 2 ;;
     esac
     return 0
 }
@@ -4120,20 +4122,21 @@ sysop_callers_export() {
 # Export of the user's own mail (Inbox, Sent, Archive; not Trash) as a zip of threaded
 # text files, fetched through a browser link like the callers export. The ticket says
 # export=mail; the snapshot is built here, as the user, and web/x.cgi serves it only to
-# the ticket's owner.
-mail_export() {
-    local token snap rc
+# the ticket's owner. With a message file only that message's thread is exported.
+mail_export() { # mail_export [file]
+    local token snap rc one=() what="Inbox, Sent and Archive as threads"
+    [[ -n ${1:-} ]] && one=(--thread "${1##*/}") && what="This thread"
     redraw
     local_header "Export mail" "[Q] Back"
     token=$(xfer_ticket down export=mail) || { xfer_no_link; return 0; }
     snap=$BBS_ROOT/queue/xfer/$token.snap
-    if ! ( umask 022; set -C; python3 -I "${BBS_MAILEXPORT:-$LIB/mailexport.py}" "$snap" --user "$me" ) 2>/dev/null; then
+    if ! ( umask 022; set -C; python3 -I "${BBS_MAILEXPORT:-$LIB/mailexport.py}" "$snap" --user "$me" "${one[@]}" ) 2>/dev/null; then
         rm -f "$BBS_ROOT/queue/xfer/$token" "$snap"
         echo "The export failed."
         pause
         return 0
     fi
-    echo "Inbox, Sent and Archive as threads, text in UTF-8 and CP437 (zip)."
+    echo "$what, text in UTF-8 and CP437 (zip)."
     echo
     xfer_show_link "$token" "$(( XFER_TTL_DOWN / 60 ))"
     xfer_wait "$XFER_TTL_DOWN" test -e "$BBS_ROOT/queue/xfer/$token.sent"

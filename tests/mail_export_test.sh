@@ -38,6 +38,22 @@ finish() { exec 7>&-; local i; for (( i = 0; i < 50; i++ )); do kill -0 "$menu_p
 gone() { ! compgen -G "$1" >/dev/null; }
 here_() { compgen -G "$1" >/dev/null; }
 
+# X on an open message: only that message's thread (m1 + the Sent reply m2, not m3).
+start
+keys 1
+seen "Zebra topic" >/dev/null
+keys 1          # first Inbox entry is m1; its thread is m1 + the Sent reply m2
+check "thread: X offered" seen "X) Export thread"
+keys x
+check "thread: link shown" seen "x.cgi/"
+tok1=$(ls "$root/queue/xfer" | grep -v '\.snap$' | head -n 1)
+check "thread: snap holds one thread" bash -c 'python3 - "$1" <<PY
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1]); t = z.read(sorted(z.namelist())[1]).decode()
+assert "1 threads, 2 messages" in t and "body of m2" in t and "Zebra" not in t, t[-400:]
+PY' _ "$root/queue/xfer/$tok1.snap"
+keys q; keys q; keys q; finish
+
 # A in the Inbox: open message 2 (m3, the newest sorts by name), archive it.
 start
 check "menu: Archive item" seen "6) Archive"
@@ -64,7 +80,7 @@ check "archive delete: gone from Archive" gone "$H/.Archive/cur/m3*"
 # E: a snapshot beside the ticket.
 keys e
 check "export: link shown" seen "x.cgi/"
-tok=$(ls "$root/queue/xfer" | grep -v '\.snap$' | head -n 1)
+tok=$(ls "$root/queue/xfer" | grep -v '\.snap$' | grep -vx "$tok1" | head -n 1)
 check "export: ticket says export=mail" grep -qx 'export=mail' "$root/queue/xfer/$tok"
 snap=$root/queue/xfer/$tok.snap
 check "export: snap is a zip with both members" bash -c 'python3 - "$1" <<PY
