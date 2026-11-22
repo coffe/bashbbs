@@ -390,7 +390,7 @@ def s_single(w):
         s.k("5", MAILM)
         inert(s, b"\nx", b"1", title_pat("Inbox", r"Number: open"), "2 mail menu: Enter and unknown key")
         inert(s, b"\nx", b"1", title_pat("Inbox", r"R\) Reply"), "2 inbox: Enter and unknown key")
-        inert(s, b"\nx", b"q", title_pat("Inbox", r"Number: open"), "2 message: Enter and unknown key")
+        inert(s, b"\nz", b"q", title_pat("Inbox", r"Number: open"), "2 message: Enter and unknown key")
         s.k("q", MAILM); s.k("q", MAIN)
         s.k("2", WALL)
         inert(s, b"\n\nx", b"q", MAIN, "2 wall: Enter and unknown key")

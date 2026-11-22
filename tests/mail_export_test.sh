@@ -42,7 +42,7 @@ here_() { compgen -G "$1" >/dev/null; }
 start
 keys 1
 seen "Zebra topic" >/dev/null
-keys 1          # first Inbox entry is m1; its thread is m1 + the Sent reply m2
+keys 2          # the Inbox lists threads newest first: 1 is m3, 2 is the m1+m2 thread
 check "thread: X offered" seen "X) Export thread"
 keys x
 check "thread: link shown" seen "x.cgi/"
@@ -54,13 +54,13 @@ assert "1 threads, 2 messages" in t and "body of m2" in t and "Zebra" not in t, 
 PY' _ "$root/queue/xfer/$tok1.snap"
 keys q; keys q; keys q; finish
 
-# A in the Inbox: open message 2 (m3, the newest sorts by name), archive it.
+# A in the Inbox: open thread 1 (m3, the newest), archive it.
 start
 check "menu: Archive item" seen "6) Archive"
 check "menu: E key" seen "E) Export mail"
 keys 1
 seen "Zebra topic" >/dev/null
-keys 2          # second Inbox entry is m3
+keys 1          # first Inbox thread is m3
 seen "A) Archive" >/dev/null || true
 keys a
 check "archive: one-line message" seen "Archived."

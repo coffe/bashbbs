@@ -46,7 +46,7 @@ mv_away() { mv "$home"/Maildir/new/* "$out/" 2>/dev/null; }
 drive "$out/a.txt" 0 'mail_view Inbox' 'R) Refresh=>r' 'Number: open=>q'
 a=$(tr -d '\r' < "$out/a.txt")
 check "empty inbox says No messages and offers R) Refresh / Q) Back" bash -c "grep -q 'No messages' <<<'$a' && grep -q '^R) Refresh   Q) Back' <<<'$a'"
-check "R) Refresh shows the message that arrived meanwhile" bash -c "grep -q '^  1) \* Fresh mail' <<<'$a'"
+check "R) Refresh shows the message that arrived meanwhile" bash -c "grep -q '^  1) \* .*Fresh mail' <<<'$a'"
 check "list has R) Refresh in its key line" bash -c "grep -q 'Number: open   R) Refresh   Q) Back' <<<'$a'"
 check "session ends" has "$out/a.txt" DONE
 mv_away

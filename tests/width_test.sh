@@ -32,7 +32,7 @@ env BBS_ROOT="$root" HOME="$home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-wtest bash 
 screen() {
     env BBS_ROOT="$root" HOME="$home" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-wtest BASHBBS_COLOR="$2" TERM=xterm \
         BBS_COLS="$1" BASHBBS_SEEN_PREV=1500000005 W="$1" \
-        bash -c 'source "$1"; term_width() { echo "$W"; }; list_width() { echo "$W"; }; shift; eval "$1"' x "$here/lib/menu.sh" "$3" </dev/null 2>/dev/null
+        bash -c 'source "$1"; term_width() { echo "$W"; }; list_width() { echo "$W"; }; TERM_SIZE="24 $W"; shift; eval "$1"' x "$here/lib/menu.sh" "$3" </dev/null 2>/dev/null
 }
 maxw() { python3 -I -c '
 import re, sys, unicodedata

@@ -195,7 +195,7 @@ for w in 40 60 80; do
     mk_mail "$subj"
     ( export BBS_ROOT="$root" USER=bbs-carol BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol \
           HOME="$root/home/bbs-carol" TERM=dumb
-      source "$here/lib/menu.sh"; list_width() { echo "$w"; }; term_width() { echo "$w"; }; printf '\n' | mail_view Inbox ) > "$root/list-$w.txt" 2>>"$log"
+      source "$here/lib/menu.sh"; TERM_SIZE="24 $w"; printf '\n' | mail_view Inbox ) > "$root/list-$w.txt" 2>>"$log"
     check "list $w: no row wider than $w columns" fits "$root/list-$w.txt" "$w"
     check "list $w: stored subject unchanged on disk" grep -qxF "Subject: $subj" "$root/home/bbs-carol/Maildir/new/"*
     ( export BBS_ROOT="$root" BASHBBS_TEST=1 BASHBBS_TEST_ID=bbs-carol TERM=dumb HOME="$root/home/bbs-carol"

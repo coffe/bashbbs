@@ -1305,22 +1305,25 @@ B M P W: jump   G: log out" || return
 
 # Text width for post and mail views: the terminal width when it is known,
 # otherwise 76. Kept between 40 and 80 so both phones and wide terminals work.
-term_width() {
-    local cols
-    term_size; cols=${TERM_SIZE#* }
-    [[ $cols =~ ^[0-9]+$ ]] || cols=76
-    (( cols < 40 )) && cols=40
-    (( cols > 80 )) && cols=80
-    echo "$cols"
+term_width() { local tw; term_width_to tw; echo "$tw"; }
+# The same into <var>: no $(...) subshell, and the size cached by term_size stays cached.
+term_width_to() { # term_width_to <var>
+    local tw_c
+    term_size; tw_c=${TERM_SIZE#* }
+    [[ $tw_c =~ ^[0-9]+$ ]] || tw_c=76
+    (( tw_c < 40 )) && tw_c=40
+    (( tw_c > 80 )) && tw_c=80
+    printf -v "$1" '%s' "$tw_c"
 }
 
 # Real terminal width for single-line rows (not clamped like term_width): a row must
 # fit the screen it is shown on. 76 when the width is unknown.
-list_width() {
-    local cols
-    term_size; cols=${TERM_SIZE#* }
-    [[ $cols =~ ^[0-9]+$ ]] || cols=76
-    echo "$cols"
+list_width() { local lw; list_width_to lw; echo "$lw"; }
+list_width_to() { # list_width_to <var>
+    local lw_c
+    term_size; lw_c=${TERM_SIZE#* }
+    [[ $lw_c =~ ^[0-9]+$ ]] || lw_c=76
+    printf -v "$1" '%s' "$lw_c"
 }
 
 # Fit text into <width> columns, counted the way the terminal counts (wrap.py widths,
@@ -2247,7 +2250,9 @@ mail_send_netmail() { # mail_send_netmail <Name@z:n/f> <subject> [fido msgid]
     sent=$(mktemp) || { rm -f "$tmp"; return 1; }
     {
         printf 'Message-ID: <%s@%s>\n' "$(cat /proc/sys/kernel/random/uuid)" "$host"
-        printf 'Date: %s\nFrom: %s@%s\nTo: %s\nSubject: %s\n\n' "$(date -R)" "$me" "$host" "$to" "$subject"
+        printf 'Date: %s\nFrom: %s@%s\nTo: %s\nSubject: %s\n' "$(date -R)" "$me" "$host" "$to" "$subject"
+        [[ -n $reply ]] && printf 'X-Fido-Reply: %s\n' "$reply"
+        printf '\n'
         sed '1,/^$/d' "$tmp"
     } > "$sent"
     if mv -f "$tmp" "$BBS_ROOT/queue/incoming/$(date +%s)-$(cat /proc/sys/kernel/random/uuid).net"; then
@@ -2445,20 +2450,305 @@ Q: back" local || return 1
     done
 }
 
-# A folder list. Unread messages in new are marked with *.
-mail_view() { # mail_view <Inbox|Sent|Trash>
-    local folder=$1 dir f mark i width row subj
-    local -a files
+# --- Mail lists ---------------------------------------------------------------------
+# One awk reads the headers of every file at once (a fork per mail is too dear on a Pi Zero).
+# Records, fields split by \x1f:
+#   T US last_inbox_epoch US unread(0/1) US who US subject US count       (thread mode)
+#   F US path US I|S US epoch US parent_pos(0=none) US who US subject
+# thread mode: a T line, then its count F lines in time order; newest active thread first;
+# only threads with an Inbox message. flat mode: F lines only, in argument order, who is the
+# other party. The rules mirror threads() in lib/mailexport.py. mawk-safe.
+mail_scan() { # mail_scan <thread|flat> <file...>
+    local mode=$1
+    shift
+    (( $# )) || return 0
+    awk -v mode="$mode" -v sent="$HOME/Maildir/.Sent/" -v me="${me:-}" '
+        # Headers only: a file is left at its first empty line. Only the first copy of a
+        # header counts; folded lines are joined with a space.
+        FNR == 1 { nf++; P[nf] = FILENAME; at[FILENAME] = nf; last = "" }
+        {
+            sub(/\r$/, "")
+            if ($0 == "") nextfile
+            if ($0 ~ /^[ \t]/) { if (last != "") H[nf, last] = H[nf, last] " " $0; next }
+            i = index($0, ":"); last = ""
+            if (i < 2) next
+            k = tolower(substr($0, 1, i - 1))
+            if (k !~ /^(message-id|in-reply-to|references|from|to|subject|date|x-fido-msgid|x-fido-reply)$/ || (nf SUBSEP k) in H) next
+            H[nf, k] = substr($0, i + 1); last = k
+        }
+        # A header value the way mailexport.hdr() makes it: whitespace runs become one space,
+        # control characters go, no space at the ends.
+        function hv(i, k,   s) {
+            if (!((i SUBSEP k) in H)) return ""
+            s = H[i, k]
+            gsub(/[ \t\n\013\014\r\034-\037]+/, " ", s)
+            gsub(/[\001-\037\177]|\302[\200-\237]|\342\200[\250\251]/, "", s)
+            sub(/^ +/, "", s); sub(/ +$/, "", s)
+            return s
+        }
+        function nsubj(s) {
+            s = tolower(s)
+            while (sub(/^ *(re|fwd?|aw|sv) *: */, "", s)) ;
+            gsub(/ +/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s)
+            return s
+        }
+        # mailexport.party(): a fido address whole, otherwise the local part, lower case.
+        function party(a,   s) {
+            a = tolower(a)
+            if (a ~ /[0-9]+:[0-9]+\/[0-9]+/) return a
+            if (match(a, /<[^<>]*>/)) a = substr(a, RSTART + 1, RLENGTH - 2)
+            else sub(/ .*/, "", a)
+            sub(/@.*/, "", a)
+            return a
+        }
+        # The name a list shows: Name@zone:net/node for netmail, else the local part without bbs-.
+        function who(a) {
+            if (a ~ /@[0-9]+:[0-9]+\/[0-9]+/) return a
+            if (match(a, /<[^<>]*>/)) a = substr(a, RSTART + 1, RLENGTH - 2)
+            sub(/^bbs-/, "", a); sub(/@.*/, "", a)
+            return a
+        }
+        function days(y, m, d,   era, yoe, doy) {
+            if (m <= 2) y--
+            era = int(y / 400); yoe = y - era * 400
+            doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
+            return era * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy - 719468
+        }
+        # RFC 2822 date to epoch; 0 when it cannot be read.
+        function dparse(s,   a, n, i, d, mo, y, t, z, e) {
+            n = split(s, a, /[ ,]+/); i = (a[1] ~ /^[A-Za-z]+$/) ? 2 : 1
+            d = a[i] + 0; y = a[i + 2] + 0
+            mo = index("janfebmaraprmayjunjulaugsepoctnovdec", tolower(substr(a[i + 1], 1, 3)))
+            if (d < 1 || d > 31 || !mo || (mo - 1) % 3 || y < 1970 || y > 9999) return 0
+            split(a[i + 3], t, ":"); z = a[i + 4]; e = 0
+            if (z ~ /^[+-][0-9][0-9][0-9][0-9]$/) {
+                e = substr(z, 2, 2) * 3600 + substr(z, 4, 2) * 60
+                if (substr(z, 1, 1) == "+") e = -e
+            }
+            return days(y, (mo + 2) / 3, d) * 86400 + t[1] * 3600 + t[2] * 60 + t[3] + e
+        }
+        function find(x) { while (U[x] != x) { U[x] = U[U[x]]; x = U[x] } return x }
+        function out(j, par, w) {
+            printf "F%s%s%s%s%s%.0f%s%d%s%s%s%s\n", US, path[j], US, fold[j], US, ep[j], US, par, US, w, US, subj[j]
+        }
+        END {
+            US = "\037"
+            # The argument order (Inbox cur, Inbox new, Sent cur, Sent new): an empty file
+            # never reached FNR == 1 and counts as a message without headers.
+            n = 0
+            for (a = 1; a < ARGC; a++) {
+                f = ARGV[a]; i = (f in at) ? at[f] : 0
+                mid = hv(i, "message-id")
+                if (mode == "thread" && mid != "" && (mid in seen)) continue
+                seen[mid] = 1
+                n++; path[n] = f; U[n] = n
+                fold[n] = (sent != "" && index(f, sent) == 1) ? "S" : "I"
+                b = f; sub(/.*\//, "", b)
+                if (b ~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]?\./) ep[n] = substr(b, 1, index(b, ".") - 1) + 0
+                else ep[n] = dparse(hv(i, "date"))
+                subj[n] = hv(i, "subject"); fr[n] = hv(i, "from"); to[n] = hv(i, "to")
+                M[n] = mid; FID[n] = hv(i, "x-fido-msgid"); FR[n] = hv(i, "x-fido-reply")
+                s = hv(i, "in-reply-to"); IR[n] = s; RF[n] = hv(i, "references")
+            }
+            if (mode != "thread") {
+                for (j = 1; j <= n; j++) {
+                    w = (fold[j] == "S" || (me != "" && who(fr[j]) == me)) ? to[j] : fr[j]
+                    out(j, 0, who(w))
+                }
+                exit
+            }
+            # mailexport.threads(): Message-ID and fido MSGID are keys, In-Reply-To,
+            # References and X-Fido-Reply link to them; then same subject and same two parties.
+            for (j = 1; j <= n; j++) {
+                if (M[j] != "" && !(M[j] in K)) K[M[j]] = j
+                if (FID[j] != "" && !(FID[j] in K)) K[FID[j]] = j
+            }
+            for (j = 1; j <= n; j++) {
+                s = IR[j] " " RF[j]; nr = 0
+                while (match(s, /<[^<> ]+>/)) {
+                    r = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+                    ref[++nr] = r
+                    if (r in K) U[find(j)] = find(K[r])
+                }
+                if (FR[j] != "" && (FR[j] in K)) U[find(j)] = find(K[FR[j]])
+                # The parent for "reply to #k": In-Reply-To, else the last References id, else the fido REPLY.
+                s = IR[j]; PK[j] = (match(s, /<[^<> ]+>/)) ? substr(s, RSTART, RLENGTH) : (nr ? ref[nr] : FR[j])
+            }
+            for (j = 1; j <= n; j++) {
+                ns = nsubj(subj[j])
+                if (ns == "") continue
+                p1 = party(fr[j]); p2 = party(to[j])
+                fk = ns SUBSEP ((p1 < p2) ? p1 SUBSEP p2 : p2 SUBSEP p1)
+                if (!(fk in FB)) FB[fk] = j
+                U[find(j)] = find(FB[fk])
+            }
+            # Groups in time order inside; only groups with an Inbox message are listed.
+            ng = 0
+            for (j = 1; j <= n; j++) {
+                r = find(j)
+                if (!(r in G)) { G[r] = ++ng; cnt[ng] = 0; lastI[ng] = -1; lastJ[ng] = 0 }
+                g = G[r]; c = ++cnt[g]
+                # insertion by epoch, stable
+                for (x = c; x > 1 && ep[mem[g, x - 1]] > ep[j]; x--) mem[g, x] = mem[g, x - 1]
+                mem[g, x] = j
+                if (fold[j] == "I") {
+                    if (ep[j] >= lastI[g]) { lastI[g] = ep[j]; lastJ[g] = j }
+                    if (path[j] ~ /\/new\/[^\/]*$/) unread[g] = 1
+                }
+            }
+            no = 0
+            for (g = 1; g <= ng; g++) {
+                if (!lastJ[g]) continue
+                for (x = ++no; x > 1 && (lastI[ord[x - 1]] < lastI[g] || (lastI[ord[x - 1]] == lastI[g] && lastJ[ord[x - 1]] < lastJ[g])); x--) ord[x] = ord[x - 1]
+                ord[x] = g
+            }
+            for (o = 1; o <= no; o++) {
+                g = ord[o]; s = subj[mem[g, 1]]
+                printf "T%s%.0f%s%d%s%s%s%s%s%d\n", US, lastI[g], US, unread[g] ? 1 : 0, US, who(fr[lastJ[g]]), US, (s == "" ? "(no subject)" : s), US, cnt[g]
+                for (x = 1; x <= cnt[g]; x++) pos[mem[g, x]] = x
+                for (x = 1; x <= cnt[g]; x++) {
+                    j = mem[g, x]; par = 0
+                    if (PK[j] != "" && (PK[j] in K) && K[PK[j]] != j && find(K[PK[j]]) == find(j)) par = pos[K[PK[j]]]
+                    out(j, par, who(fr[j]))
+                }
+            }
+        }
+' "$@"
+}
+
+# mail_files <arrayname> <maildir> <sub...>: append the regular files (no symlinks) of
+# <maildir>/<sub>/* in C glob order; names with a newline or \x1f are left out.
+mail_files() {
+    local -n mf_arr=$1
+    local LC_ALL=C mf_d=$2 mf_s mf_f
+    shift 2
+    for mf_s in "$@"; do
+        for mf_f in "$mf_d/$mf_s"/*; do
+            [[ -f $mf_f && ! -L $mf_f && $mf_f != *[$'\n\x1f']* ]] && mf_arr+=("$mf_f")
+        done
+    done
+    return 0
+}
+
+# The Inbox as threads, with the own Sent mail inside them, into globals:
+# MT_N; MT_EP MT_NEW MT_WHO MT_SUBJ MT_CNT MT_FIRST (by thread 1..MT_N; MT_FIRST is the
+# index of the thread's first mail) and MF_PATH MF_DIR MF_EP MF_PAR MF_WHO MF_SUBJ (by mail 1..).
+mail_threads() {
+    local -
+    local IFS=$'\x1f' line t=0 i=0 files=()
+    local -a lines arr
+    MT_N=0; MT_EP=(); MT_NEW=(); MT_WHO=(); MT_SUBJ=(); MT_CNT=(); MT_FIRST=()
+    MF_PATH=(); MF_DIR=(); MF_EP=(); MF_PAR=(); MF_WHO=(); MF_SUBJ=()
+    mail_files files "$HOME/Maildir" cur new
+    mail_files files "$HOME/Maildir/.Sent" cur new
+    (( ${#files[@]} )) || return 0
+    set -f
+    mapfile -t lines < <(mail_scan thread "${files[@]}")
+    for line in "${lines[@]}"; do
+        # shellcheck disable=SC2206  # split on IFS=\x1f with set -f
+        arr=($line)
+        if [[ ${arr[0]} == T ]]; then
+            t=$((t + 1))
+            MT_EP[t]=${arr[1]} MT_NEW[t]=${arr[2]} MT_WHO[t]=${arr[3]-} MT_SUBJ[t]=${arr[4]-} MT_CNT[t]=${arr[5]}
+            MT_FIRST[t]=$((i + 1))
+        else
+            i=$((i + 1))
+            MF_PATH[i]=${arr[1]} MF_DIR[i]=${arr[2]} MF_EP[i]=${arr[3]} MF_PAR[i]=${arr[4]} MF_WHO[i]=${arr[5]-} MF_SUBJ[i]=${arr[6]-}
+        fi
+    done
+    MT_N=$t
+    return 0
+}
+
+printf -v MAIL_PAD '%300s' ''
+# One list row into <var>: number, mark, date, who, subject, suffix. No forks.
+mail_row_v() { # mail_row_v <var> <number> <mark> <epoch> <who> <subject> <suffix> <cols>
+    local mr_ep=$4 mr_sfx=$7 mr_cols=$8 mr_d mr_w mr_s mr_dl=11 mr_sw mr_p mr_lead mr_num mr_mk=$3
+    safe_to mr_w "$5"; safe_to mr_s "$6"
+    (( mr_cols < 60 )) && mr_dl=5
+    if [[ $mr_ep =~ ^[0-9]+$ ]] && (( mr_ep > 0 )); then
+        printf -v mr_d '%(%m-%d %H:%M)T' "$mr_ep"; mr_d=${mr_d:0:mr_dl}
+    else
+        mr_d="--"
+    fi
+    printf -v mr_d '%-*s' "$mr_dl" "$mr_d"
+    list_fit_to mr_w 10 "$mr_w"
+    mr_sw=$(( mr_cols - 7 - mr_dl - 2 - 12 - ${#mr_sfx} ))
+    list_fit_to mr_s "$mr_sw" "$mr_s"
+    # printf pads by bytes, so å would push the columns left: pad by characters instead.
+    # Only simple text has one column per character; wide text is not padded, so the
+    # row can end short but never wider than the screen.
+    local LC_ALL=C.UTF-8
+    text_is_simple "$mr_w" && mr_w+="${MAIL_PAD:0:10 - ${#mr_w}}"
+    [[ -n $mr_sfx ]] && (( mr_sw > ${#mr_s} )) && text_is_simple "$mr_s" && mr_s+="${MAIL_PAD:0:mr_sw - ${#mr_s}}"
+    printf -v mr_p '%3d' "$2"
+    mr_lead=${mr_p%%[! ]*}; mr_num=${mr_p#"$mr_lead"}
+    if (( COLOR )); then
+        mr_num="$mr_lead$C_KEY$mr_num)$C_RST"
+        [[ $mr_mk == '*' ]] && mr_mk="$C_ACC*$C_RST"
+    else
+        mr_num="$mr_p)"
+    fi
+    printf -v "$1" '%s %s %s  %s  %s%s' "$mr_num" "$mr_mk" "$mr_d" "$mr_w" "$mr_s" "$mr_sfx"
+}
+
+# Keys 1..9 for a list of <n> entries into <var> (digit_keys without the subshell).
+mail_digits_v() { local md_all=123456789; printf -v "$1" "%s" "${md_all:0:$2 > 9 ? 9 : $2}"; }
+
+# The Inbox: one row per thread, the newest active first.
+mail_thread_list() {
+    local t cols row mark dk rc
+    mail_threads
+    while true; do
+        redraw
+        local_header Inbox "[Q] Back"
+        if (( MT_N == 0 )); then
+            echo "No messages."
+            echo
+            keyline "R) Refresh   Q) Back"
+            menu_key "> " "QqRr" "R: look for new mail
+Q: back" local || return
+            [[ $MKEY == [Qq] ]] && return
+            mail_threads
+            continue
+        fi
+        list_width_to cols
+        for (( t = 1; t <= MT_N; t++ )); do
+            mark=" "; (( MT_NEW[t] )) && mark="*"
+            mail_row_v row "$t" "$mark" "${MT_EP[t]}" "${MT_WHO[t]}" "${MT_SUBJ[t]}" " (${MT_CNT[t]})" "$cols"
+            printf '%s\n' "$row"
+        done
+        echo
+        keyline "Number: open   R) Refresh   Q) Back"
+        mail_digits_v dk "$MT_N"
+        menu_key "> " "QqRr$dk" \
+"Number: open a thread
+R: look for new mail
+Q: back" local || return
+        case $MKEY in
+            [Qq]) return ;;
+            [Rr]) mail_threads; continue ;;
+            [1-9]) read_num "$MT_N" || continue ;;
+            *) continue ;;
+        esac
+        mail_thread_view "$NUM"; rc=$?
+        (( rc == 1 )) && return 1
+        (( rc == 6 )) && mail_threads
+    done
+}
+
+# Sent, Trash and Archive: a flat list, unread (in new) marked with *.
+mail_flat_list() { # mail_flat_list <folder>
+    local folder=$1 dir cols row mark dk i line oifs
+    local -a files lines arr paths
     while true; do
         redraw
         dir=$(mail_dir "$folder")
-        files=()
-        for f in "$dir"/new/* "$dir"/cur/*; do
-            [[ -f $f && ! -L $f ]] || continue
-            files+=("$f")
-        done
+        files=() lines=() paths=()
+        mail_files files "$dir" new cur
+        (( ${#files[@]} )) && mapfile -t lines < <(mail_scan flat "${files[@]}")
         local_header "$folder" "[Q] Back"
-        if (( ${#files[@]} == 0 )); then
+        if (( ${#lines[@]} == 0 )); then
             echo "No messages."
             echo
             keyline "R) Refresh   Q) Back"
@@ -2467,51 +2757,113 @@ Q: back" local || return
             [[ $MKEY == [Qq] ]] && return
             continue
         fi
-        i=1
-        width=$(( $(list_width) - 7 ))  # "%3d) %s " is 7 columns
-        for f in "${files[@]}"; do
-            mark=" "
-            [[ $f == "$dir"/new/* ]] && mark="*"
-            hdr_read "$f"; safe_to subj "${HDR[Subject]-}"
-            local lf1; list_fit_to lf1 "$width" "$subj"
-            printf -v row '%3d) %s %s' "$i" "$mark" "$lf1"
-            if (( COLOR )) && [[ $row =~ ^(\ *)([0-9]+\))\ (.)(.*)$ ]]; then
-                [[ ${BASH_REMATCH[3]} == '*' ]] && mark=$(paint ACC '*') || mark=${BASH_REMATCH[3]}
-                row="${BASH_REMATCH[1]}$(paint KEY "${BASH_REMATCH[2]}") ${mark}${BASH_REMATCH[4]}"
-            fi
+        list_width_to cols
+        i=0
+        set -f; oifs=$IFS; IFS=$'\x1f'
+        for line in "${lines[@]}"; do
+            # shellcheck disable=SC2206  # split on IFS=\x1f with set -f
+            arr=($line)
+            i=$((i + 1)); paths[i]=${arr[1]}
+            mark=" "; [[ ${arr[1]} == */new/* ]] && mark="*"
+            mail_row_v row "$i" "$mark" "${arr[3]}" "${arr[5]-}" "${arr[6]-}" "" "$cols"
             printf '%s\n' "$row"
-            i=$((i + 1))
         done
+        IFS=$oifs; set +f
         echo
         keyline "Number: open   R) Refresh   Q) Back"
+        mail_digits_v dk "$i"
         # Inside a mailbox the jump keys are off: Q goes back one level.
-        menu_key "> " "QqRr$(digit_keys "${#files[@]}")" \
+        menu_key "> " "QqRr$dk" \
 "Number: open a message
 R: look for new mail
 Q: back" local || return
         case $MKEY in
             [Qq]) return ;;
             [Rr]) continue ;;
-            [1-9]) read_num "${#files[@]}" || continue ;;
+            [1-9]) read_num "$i" || continue ;;
             *) continue ;;
         esac
-        mail_open "$folder" "${files[NUM - 1]}"
+        mail_open "$folder" "${paths[NUM]}"
+    done
+}
+
+mail_view() { # mail_view <Inbox|Sent|Trash|Archive>
+    if [[ $1 == Inbox ]]; then mail_thread_list; else mail_flat_list "$1"; fi
+}
+
+# Reading moves a message from new to cur, the Maildir way. The new path is in MR_FILE.
+mail_mark_read() { # mail_mark_read <file>
+    local dir name
+    MR_FILE=$1
+    [[ ${1%/*} == */new ]] || return 0
+    dir=${1%/new/*} name=${1##*/}
+    [[ $name == *:* ]] || name+=":2,S"
+    [[ -d $dir/cur ]] || mkdir -p "$dir/cur"
+    mv -n "$1" "$dir/cur/$name" && MR_FILE=$dir/cur/$name
+    return 0
+}
+
+# One thread, as _thread_view does for a board: #k/n, Space/N next, P previous, # go to.
+# Starts at the first unread Inbox mail. Returns 0 back, 1 at end of input, 6 when the
+# list has to be rebuilt (reply, archive or delete).
+mail_thread_view() { # mail_thread_view <t>
+    local t=$1 first n k=0 i j rc f who ep width date head title was_new newtag
+    first=${MT_FIRST[t]} n=${MT_CNT[t]}
+    for (( j = 0; j < n; j++ )); do
+        i=$((first + j))
+        if [[ ${MF_DIR[i]} == I && ${MF_PATH[i]} == */new/* ]]; then k=$j; break; fi
+    done
+    term_width_to width
+    while true; do
+        i=$((first + k)); f=${MF_PATH[i]}; was_new=0
+        if [[ ${f%/*} == */new ]]; then
+            was_new=1
+            mail_mark_read "$f"; f=$MR_FILE; MF_PATH[i]=$f
+            MT_NEW[t]=0
+            for (( j = 0; j < n; j++ )); do
+                [[ ${MF_DIR[first + j]} == I && ${MF_PATH[first + j]} == */new/* ]] && { MT_NEW[t]=1; break; }
+            done
+        fi
+        if [[ ${MF_DIR[i]} == S ]]; then who="you (sent)"; title=Sent; else safe_to who "${MF_WHO[i]}"; title=Inbox; fi
+        ep=${MF_EP[i]}
+        if [[ $ep =~ ^[0-9]+$ ]] && (( ep > 0 )); then
+            printf -v date '%(%Y-%m-%d %H:%M)T' "$ep"
+        else
+            hdr_read "$f"; date=$(local_time "${HDR[Date]-}")
+        fi
+        head="#$((k + 1))/$n  $who  $date"
+        (( MF_PAR[i] > 0 )) && head+="  · reply to #${MF_PAR[i]}"
+        (( ${#head} > width )) && head=$(printf '%s' "$head" | fold -s -w "$width")
+        redraw
+        local_header "$title" "[Q] Back"
+        printf '%s' "$head"
+        if (( was_new && COLOR && ${#head} + 5 <= width )); then paint_v newtag ACC new; printf '  %s' "$newtag"; fi
+        echo
+        echo
+        show_post "$f" "$width"
+        echo
+        mail_actions "$title" "$f" "$n"; rc=$?
+        case $rc in
+            1) return 1 ;;
+            2) ;;
+            3) (( k + 1 < n )) && k=$((k + 1)) || return 0 ;;
+            4) (( k > 0 )) && k=$((k - 1)) ;;
+            5) k=$((TV_GOTO - 1)) ;;
+            6) return 6 ;;
+            *) return 0 ;;
+        esac
     done
 }
 
 # Show one message. Reading moves it from new to cur, the Maildir way.
 mail_open() { # mail_open <folder> <file>
-    local folder=$1 f=$2 dir name rc
-    dir=$(mail_dir "$folder")
-    if [[ $f == "$dir"/new/* ]]; then
-        name=$(mail_cur_name "${f##*/}")
-        mkdir -p "$dir/cur"
-        mv -n "$f" "$dir/cur/$name" && f=$dir/cur/$name
-    fi
+    local folder=$1 f=$2 rc width
+    mail_mark_read "$f"; f=$MR_FILE
     while true; do
         redraw
         local_header "$folder" "[Q] Back"
-        show_post "$f" "$(term_width)"
+        term_width_to width
+        show_post "$f" "$width"
         echo
         mail_actions "$folder" "$f"; rc=$?
         (( rc == 2 )) || break
@@ -2520,10 +2872,12 @@ mail_open() { # mail_open <folder> <file>
 }
 
 # Commands under a message. Inbox: reply and delete. Sent: delete the own copy. Trash: none.
-# R is Reply and D is Delete, the same keys as on the boards.
-# Returns 0 for back to the list, 1 at end of input, 2 to redraw.
-mail_actions() { # mail_actions <folder> <file>
-    local folder=$1 f=$2 cmds="" keys=Qq hint="Q: back"
+# R is Reply and D is Delete, the same keys as on the boards. With <n> (a thread of n
+# mails) Space/N, P and # move inside the thread.
+# Returns 0 for back to the list, 1 at end of input, 2 to redraw, 3 next, 4 previous,
+# 5 go to mail TV_GOTO, 6 after reply, archive or delete (the list must be rebuilt).
+mail_actions() { # mail_actions <folder> <file> [n]
+    local folder=$1 f=$2 n=${3:-0} cmds="" keys=Qq hint="Q: back"
     case $folder in
         Inbox) cmds="R) Reply   A) Archive   D) Delete   "; keys+=RrAaDd; hint="R: reply  A: archive  D: delete  Q: back" ;;
         Sent) cmds="A) Archive   D) Delete   "; keys+=AaDd; hint="A: archive  D: delete  Q: back" ;;
@@ -2537,16 +2891,42 @@ mail_actions() { # mail_actions <folder> <file>
     if [[ $folder == Inbox || $folder == Archive ]] && is_netmail "$from"; then
         cmds="${cmds/D) /B) Book   D) }"; keys+=Bb; hint="B: add to book  $hint"
     fi
-    cmds+="X) Export thread   "; keys+=Xx; hint="${hint% Q: back} X: export thread  Q: back"
-    echo "${cmds}Q) Back"
+    cmds+="X) Export thread   "; keys+=Xx; hint="${hint%  Q: back}
+X: export thread  Q: back"
+    if (( n > 1 )); then
+        keys+="Nn Pp#"
+        hint="Space: next  P: previous  #: go to mail
+$hint"
+        local l1="[Space] Next  P) Prev  #) Go to"
+        (( COLOR )) && l1=$(keyline "$l1" | sed -E "s/\[Space\]/${C_KEY}[Space]${C_RST}/")
+        printf '%s\n' "$l1"
+    fi
+    # The commands wrap between items to fit the screen (no fork).
+    local ma_w ma_line="" ma_it ma_rest="${cmds}Q) Back"
+    term_width_to ma_w
+    while [[ -n $ma_rest ]]; do
+        ma_it=${ma_rest%%   *}; [[ $ma_rest == *"   "* ]] && ma_rest=${ma_rest#*   } || ma_rest=
+        if [[ -n $ma_line ]] && (( ${#ma_line} + 3 + ${#ma_it} > ma_w )); then
+            printf '%s\n' "$ma_line"; ma_line=$ma_it
+        else
+            ma_line+=${ma_line:+   }$ma_it
+        fi
+    done
+    printf '%s\n' "$ma_line"
     # Inside an open message the jump keys are off.
     menu_key "> " "$keys" "$hint" local || return 1
     case $MKEY in
         '?') return 2 ;;
+        ' '|[Nn]) return 3 ;;
+        [Pp]) return 4 ;;
+        '#') printf '#'
+             read_key_raw || return 1
+             [[ $MKEY == [1-9] ]] && read_num "$n" || return 2
+             TV_GOTO=$NUM; return 5 ;;
         [Bb]) book_save "${from%@*}" "${from##*@}"; return 2 ;;
-        [Rr]) mail_reply "$f" ;;
-        [Aa]) mail_archive "$f" ;;
-        [Dd]) mail_delete "$f" ;;
+        [Rr]) mail_reply "$f"; return 6 ;;
+        [Aa]) mail_archive "$f"; return 6 ;;
+        [Dd]) mail_delete "$f"; return 6 ;;
         [Xx]) mail_export "$f"; return 2 ;;
     esac
     return 0

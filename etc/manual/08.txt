@@ -3,7 +3,7 @@ Mail is private messages between users on this BBS. Only fsxNet netmail
 goes outside (see below).
 
 - The main menu shows how many unread messages you have, e.g. (2 unread).
-- Inbox: read, reply to and delete messages.
+- Inbox: one line per conversation, newest first, with your own replies inside it. Open it with its number, then Space for the next message, P for the previous, # to jump.
 - Write: type the user's name (for example kitty), a subject, then the
   text. End with a single . and confirm with y to send.
 - Sent: a copy of everything you sent is kept.
