@@ -86,6 +86,20 @@ check "echo_left: sysop has no limit" bash -c '! ( export BBS_ROOT="$1" HOME="$1
 out=$(t board_view fsx_gen </dev/null 2>&1)
 check "board view shows the counter" grep -q "1 of 10 echo posts left today" <<<"$out"
 
+# a long echo pages: 59 threads do not all land on one 24-row screen; Space shows the next page
+mkdir -p "$root/boards/fsx_ads"; : > "$root/meta/fsx_ads.fido"
+for (( i = 10; i < 69; i++ )); do
+    printf 'Msgid: 111111%02d-2222-3333-4444-555555555555\nAuthor: Ad@fsx\nDate: 2026-11-18T10:00:00Z\nSubject: Ad number %d\n\nbody\n' \
+        "$i" "$i" > "$root/boards/fsx_ads/17000000$i-111111$i-2222-3333-4444-555555555555.msg"
+done
+out=$(printf ' q' | TERM_SIZE="24 80" t board_view fsx_ads 2>&1)
+first=${out%%Space) More*}
+check "long echo: first page starts at 1" grep -q '^ *1) ' <<<"$first"
+check "long echo: first page fits 24 rows" bash -c '! grep -q "^ *1[0-9]) " <<<"$1"' _ "$first"
+check "long echo: Space) More offered" grep -q 'Space) More' <<<"$out"
+check "long echo: Space shows the next page" bash -c 'n=$(grep -o "^ *[0-9]*) " <<<"$1" | tr -d " )" | sort -n | tail -1); (( n > 7 && n < 59 ))' _ "$out"
+rm -rf "$root/boards/fsx_ads" "$root/meta/fsx_ads.fido"
+
 # netmail in the inbox: the fido address stays in From, a local sender is cut at @
 printf 'Message-ID: <a@fido>\nDate: Wed, 18 Nov 2026 08:05:09 -0000\nFrom: Jane@21:99/1\nTo: alice\nSubject: Hej\nX-Fido-Msgid: 21:99/1 abc\n\nnetmail body\n' > "$root/t/nm"
 sed 's/^From: .*/From: kitty@bbs.example/' "$root/t/nm" > "$root/t/pm"

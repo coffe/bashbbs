@@ -1608,7 +1608,7 @@ for l in lines[1:]:
 # The thread list of a board. A number opens the thread. Rows with posts newer than the
 # last login are green, the others light grey (no colour: plain text, rows end in "*").
 board_view() {
-    local board=$1 f rc keys hint wrapw
+    local board=$1 f rc keys hint wrapw start=0 next budget used height
     local -a rows=() roots=() counts=() news=()
     # A news board with a section marker shows sections, not a thread list.
     if [[ $board == news && -f $BBS_ROOT/meta/news.sections ]]; then
@@ -1624,11 +1624,19 @@ board_view() {
         mapfile -t rows < <(board_threads "$board" "$SEEN_PREV")
         pins_first "$board"
         roots=() counts=() news=()
-        local i=1 subject row suffix rest line cnt isnew pv
+        local i=0 subject row suffix rest line cnt isnew pv
         local -a lines=()
         for row in "${rows[@]}"; do
             IFS=$'\t' read -r f cnt _ isnew <<< "$row"
             roots+=("$f") counts+=("$cnt") news+=("$isnew")
+        done
+        # One screenful of threads: header, key lines, echo quota line and prompt take 9 rows.
+        term_size; height=${TERM_SIZE% *}; [[ $height =~ ^[0-9]+$ ]] || height=24
+        budget=$(( height - 9 )); (( budget < 6 )) && budget=6
+        (( start >= ${#roots[@]} )) && start=0
+        used=0
+        for (( i = start + 1; i <= ${#roots[@]}; i++ )); do
+            f=${roots[i - 1]} cnt=${counts[i - 1]} isnew=${news[i - 1]}
             hdr_read "$f"
             subject=${HDR[Subject]-}
             [[ -n ${HDR[Deleted]-} ]] && subject="(deleted)"
@@ -1641,6 +1649,9 @@ board_view() {
             else
                 mapfile -t lines < <(thread_row_py "$i" "$wrapw" "$suffix" "$subject")
             fi
+            # The first thread of a page always shows; the next one only if it fits.
+            (( used > 0 && used + ${#lines[@]} + 1 > budget )) && break
+            used=$(( used + ${#lines[@]} + 1 ))
             for line in "${lines[@]}"; do
                 if (( COLOR )) && [[ $line =~ ^(\ *)([0-9]+\))(.*)$ ]]; then
                     rest=${BASH_REMATCH[3]}
@@ -1651,9 +1662,15 @@ board_view() {
                 printf '%s\n' "$line"
             done
             echo
-            i=$((i + 1))
         done
+        next=$(( i - 1 ))
         keys=Qq hint="Q: back"
+        local first="Number: read a thread (* = new)"
+        # Its own line: the key lines below are already full at 40 columns.
+        if (( start > 0 || next < ${#roots[@]} )); then
+            keyline "Space) More"
+            keys+=" " first="Number: read (* = new)   Space: more"
+        fi
         if is_readonly "$board"; then
             keyline "Q) Back"
         elif manages "$board"; then
@@ -1668,12 +1685,13 @@ board_view() {
         # A read-only board has no N. Its owner can still reach S.
         is_readonly "$board" && manages "$board" && keys+=Ss
         menu_key "> " "$keys$(digit_keys "${#roots[@]}")" \
-"Number: read a thread (* = new)
+"$first
 $hint
 B M P W: jump   G: log out" || return
         nav_key "$MKEY" && return
         case $MKEY in
             [Qq]) return ;;
+            ' ') start=$next; continue ;;
             [Nn]) is_readonly "$board" || compose "$board" ""; continue ;;
             [Ss]) manages "$board" && members_menu "$board"; continue ;;
             [1-9]) read_num "${#roots[@]}" || continue ;;
