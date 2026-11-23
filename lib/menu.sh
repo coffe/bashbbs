@@ -1418,7 +1418,37 @@ show_post() {
     [[ -n $edited ]] && echo "edited $(local_time "$edited")"
     printf '%*s\n' "$width" '' | tr ' ' '-'
     echo
-    sed '1,/^$/d' "$file" | safe | wrap_text --keep-lines "$width"
+    sed '1,/^$/d' "$file" | safe | wrap_text --keep-lines "$width" | pipe_colours
+}
+
+# Pipe colour codes (Renegade, Mystic: |00-|15 text, |16-|23 background) become SGR,
+# or vanish with COLOR=0. Runs after the wrap, so a line only gets shorter, never wider.
+# The colour carries over to the next line; every coloured line ends with a reset.
+# |24 and up are left as text. |07 and |16 are the terminal's own colours (39/49).
+pipe_colours() {
+    awk -v c="$COLOR" '
+    BEGIN { split("0 4 2 6 1 5 3 7", M, " "); E = sprintf("%c", 27); fg = ""; bg = "" }
+    {
+        out = ""
+        if (c && fg != "") out = out E "[" fg "m"
+        if (c && bg != "") out = out E "[" bg "m"
+        s = $0
+        while (match(s, /\|[0-2][0-9]/)) {
+            n = substr(s, RSTART + 1, 2) + 0
+            if (n > 23) { out = out substr(s, 1, RSTART + 2); s = substr(s, RSTART + 3); continue }
+            out = out substr(s, 1, RSTART - 1); s = substr(s, RSTART + 3)
+            if (!c) continue
+            if (n == 7) fg = "22;39"
+            else if (n < 8) fg = "22;3" M[n + 1]
+            else if (n < 16) fg = "1;3" M[n - 7]
+            else if (n == 16) bg = "49"
+            else bg = "4" M[n - 15]
+            out = out E "[" (n < 16 ? fg : bg) "m"
+        }
+        out = out s
+        if (c && (fg != "" || bg != "")) out = out E "[0m"
+        print out
+    }'
 }
 
 # Posts of a board that are shown to users, in file order, one path per line. A

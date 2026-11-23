@@ -21,6 +21,8 @@ Reading and writing:
 - # jumps to a post by its number inside a thread.
 - A shows the colour original of an ANSI ad from fsxNet. It is drawn for
   80 columns; the post text is the readable version on a narrow screen.
+- Colour codes from other BBS programs, like |14 for yellow (pipe codes),
+  are shown in colour. With colour off they are left out.
 
 Echo areas: press E in Public boards. They come from fsxNet and are
 shared with other BBSes there, so what you write travels to every one

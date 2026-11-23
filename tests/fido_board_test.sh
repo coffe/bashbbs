@@ -162,6 +162,15 @@ sed -i '/^X-Fido-Ansi/d' "$M"
 keys_out=$(BASHBBS_COLOR=0 t ma "$M" 2>&1)
 check "mail without original: no A) ANSI" bash -c '! grep -q "A) ANSI" <<<"$1"' _ "$keys_out"
 
+# Pipe codes: |NN becomes colour (carried to the next line, reset at line end), or goes with COLOR=0
+printf 'Msgid: m-pipe\nAuthor: X@fsx\nDate: 2026-11-18T10:00:00Z\nSubject: Pipe\n\n|11 Bucko |14- |06Wrong\nsame |07plain |24x\n' > "$root/t/pipe.msg"
+sp() { show_post "$1" 80; }
+v=$(BASHBBS_COLOR=1 t sp "$root/t/pipe.msg" 2>&1)
+check "pipe: |11 |14 |06 as SGR" bash -c '[[ $1 == *$'"'"'\e[1;36m Bucko \e[1;33m- \e[22;33mWrong\e[0m'"'"'* ]]' _ "$v"
+check "pipe: colour carried, |07 default, |24 kept" bash -c '[[ $1 == *$'"'"'\e[22;33msame \e[22;39mplain |24x\e[0m'"'"'* ]]' _ "$v"
+v=$(BASHBBS_COLOR=0 t sp "$root/t/pipe.msg" 2>&1)
+check "pipe: COLOR=0 drops the codes" bash -c '[[ $1 == *" Bucko - Wrong"* && $1 == *"same plain |24x"* && $1 != *$'"'"'\e'"'"'* ]]' _ "$v"
+
 # fido switch (real features file)
 ord() { source "$here/lib/features.sh"; features_load; board_order "$1" res; echo "${res[*]}"; }
 order() { t ord "$1"; }
