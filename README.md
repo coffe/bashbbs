@@ -9,7 +9,8 @@ message, not that it arrived.
 
 The board itself runs on the Pi. The daily news selection is made by a separate
 producer on another host, which pushes it to the Pi over SSH. The producer lives
-in a separate private repository. This repository has only the Pi side.
+in a separate private repository. This repository has only the Pi side. The
+interface the producer must follow is in `docs/news-producer.md`.
 
 ## Layout
 
