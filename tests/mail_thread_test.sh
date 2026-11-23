@@ -81,7 +81,7 @@ check "thread: read moved to cur" here_ "$H/cur/1700000300.c*"
 check "thread: gone from new"   gone "$H/new/1700000300.c"
 mark; keys p
 check "thread: P, #2/3 you (sent)" seen "#2/3 +you \(sent\) +$(ymd 1700000200) +· reply to #1"
-check "thread: Sent has A/D"    seen 'A\) Archive.*D\) Delete'
+check "thread: Sent has S/D"    seen 'S\) Save.*D\) Delete'
 check "thread: Sent has no R"   unseen 'R\) '
 mark; keys p
 check "thread: P, #1/3 header"  seen "#1/3 +kitty +$(ymd 1700000100)"
@@ -101,13 +101,13 @@ mark; keys 2
 check "single: no nav line"     unseen 'Go to'
 keys q
 
-# A and D from a thread return to the rebuilt list.
+# S and D from a thread return to the rebuilt list.
 mark; keys 3; seen '#1/2 +bob' >/dev/null
-keys a
-check "A: archived"             seen 'Archived\.'
-check "A: file in .Archive"     here_ "$H/.Archive/cur/1700002000.s1*"
+keys s
+check "S: archived"             seen 'Archived\.'
+check "S: file in .Archive"     here_ "$H/.Archive/cur/1700002000.s1*"
 mark; keys x          # any key
-check "A: list rebuilt, Lunch now alone" seen '3\) +.*bob +SV: Lunch +\(1\)'
+check "S: list rebuilt, Lunch now alone" seen '3\) +.*bob +SV: Lunch +\(1\)'
 mark; keys 3; seen '#1/1|bob' >/dev/null
 keys d; keys y
 check "D: moved to Trash"       seen 'Moved to Trash\.'

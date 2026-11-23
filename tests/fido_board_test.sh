@@ -147,6 +147,21 @@ sed -i 's/^Ansi: .*/Ansi: ..\/etc/' "$P"
 keys_out=$(BASHBBS_COLOR=0 t pa "$P" 2>&1)
 check "bad Ansi id: no key" bash -c '! grep -q "A) ANSI" <<<"$1"' _ "$keys_out"
 
+# ANSI netmail: A) ANSI draws the base64 original in X-Fido-Ansi; S) Save archives, as A did
+ma() { menu_key() { return 1; }; me=bbs-alice; mail_actions Inbox "$1"; }
+vm() { pause() { :; }; view_ansi_mail "$1"; }
+M=$root/t/ansi-mail
+printf 'From: Ann@21:99/1\nTo: alice\nSubject: Art\nX-Fido-Ansi: %s\n\nRED\n' \
+    "$(printf '\033[1;31m\xdb\033[0m RED\r\n' | base64 -w0)" > "$M"
+keys_out=$(BASHBBS_COLOR=0 t ma "$M" 2>&1)
+check "mail: A) ANSI offered" grep -q 'A) ANSI' <<<"$keys_out"
+check "mail: S) Save, no A) Archive" bash -c 'grep -q "S) Save" <<<"$1" && ! grep -q "A) Archive" <<<"$1"' _ "$keys_out"
+v=$(BASHBBS_COLOR=1 t vm "$M" 2>&1)
+check "view_ansi_mail: CP437 block and colour" bash -c '[[ $1 == *$'"'"'\e[0;1;31m█\e[0m RED'"'"'* ]]' _ "$v"
+sed -i '/^X-Fido-Ansi/d' "$M"
+keys_out=$(BASHBBS_COLOR=0 t ma "$M" 2>&1)
+check "mail without original: no A) ANSI" bash -c '! grep -q "A) ANSI" <<<"$1"' _ "$keys_out"
+
 # fido switch (real features file)
 ord() { source "$here/lib/features.sh"; features_load; board_order "$1" res; echo "${res[*]}"; }
 order() { t ord "$1"; }

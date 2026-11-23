@@ -1,5 +1,5 @@
 #!/bin/bash
-# Mail archive and mail export: A archives, D in the Archive goes to Trash, E makes a zip
+# Mail archive and mail export: S archives, D in the Archive goes to Trash, E makes a zip
 # snapshot with a threaded text export. Temporary BBS_ROOT and HOME; keys go through a fifo.
 # Usage: tests/mail_export_test.sh [logfile]
 set -u
@@ -54,15 +54,15 @@ assert "1 threads, 2 messages" in t and "body of m2" in t and "Zebra" not in t, 
 PY' _ "$root/queue/xfer/$tok1.snap"
 keys q; keys q; keys q; finish
 
-# A in the Inbox: open thread 1 (m3, the newest), archive it.
+# S in the Inbox: open thread 1 (m3, the newest), archive it.
 start
 check "menu: Archive item" seen "6) Archive"
 check "menu: E key" seen "E) Export"
 keys 1
 seen "Zebra topic" >/dev/null
 keys 1          # first Inbox thread is m3
-seen "A) Archive" >/dev/null || true
-keys a
+seen "S) Save" >/dev/null || true
+keys s
 check "archive: one-line message" seen "Archived."
 keys x; keys q
 check "archive: moved to .Archive/cur" here_ "$H/.Archive/cur/m3*"

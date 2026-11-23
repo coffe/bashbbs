@@ -3,10 +3,13 @@ Mail is private messages between users on this BBS. Only fsxNet netmail
 goes outside (see below).
 
 - The main menu shows how many unread messages you have, e.g. (2 unread).
-- Inbox: one line per conversation, newest first, with your own replies inside it. Open it with its number, then Space for the next message, P for the previous, # to jump.
+- Inbox: one line per conversation, newest first, with your own replies
+  inside it. Open it with its number, then Space for the next message, P
+  for the previous, # to jump.
 - Write: type the user's name (for example kitty), a subject, then the
   text. End with a single . and confirm with y to send.
 - Sent: a copy of everything you sent is kept.
+- In an open message, S saves it to the Archive.
 - /cancel stops at any prompt.
 
 Netmail: write to someone on fsxNet as Name@zone:net/node, for example
@@ -14,6 +17,8 @@ Jane@21:9/999. It travels via the hub and can take hours. On an fsxNet post,
 M mails the author privately and B saves the author in your address book.
 In Mail, 5 opens the book: a number opens a contact, and in Write the key
 B at the To prompt picks a contact. B on a netmail saves its sender too.
+A netmail drawn in ANSI art shows as plain text; A shows the colour
+original, drawn for 80 columns.
 
 Replies keep the thread together. In My Account, Settings, you can choose
 whether mail is also shown as a reminder when you log in.

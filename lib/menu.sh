@@ -1789,6 +1789,8 @@ hdr_read() {
             key=${line%%:*}
             [[ $key =~ ^[A-Za-z0-9_-]+$ ]] || continue
             [[ -v HDR[$key] ]] && continue
+            # The base64 ANSI original of a netmail can be 32 KB: only its presence counts here.
+            [[ $key == X-Fido-Ansi ]] && { HDR[$key]=1; continue; }
             val=${line#*:}
             val=${val#"${val%%[! ]*}"}
             HDR[$key]=${val//$HDR_CNTRL/}
@@ -1885,6 +1887,16 @@ view_ansi() { # view_ansi <id>
         (( COLOR )) && printf '\033[0m'
         echo
     else echo "The ANSI file is gone (the ad has expired)."; fi
+    pause
+}
+
+# The original of an ANSI netmail: base64 CP437 in its X-Fido-Ansi header, drawn like view_ansi.
+view_ansi_mail() { # view_ansi_mail <mail file>
+    redraw
+    sed -n '/^$/q; s/^X-Fido-Ansi: *//p' "$1" | head -n 1 | base64 -d 2>/dev/null |
+        python3 -I "$NEWS_LIB/ansirender.py" --ansi /dev/stdin | ansi_out
+    (( COLOR )) && printf '\033[0m'
+    echo
     pause
 }
 
@@ -2896,17 +2908,23 @@ mail_open() { # mail_open <folder> <file>
 mail_actions() { # mail_actions <folder> <file> [n]
     local folder=$1 f=$2 n=${3:-0} cmds="" keys=Qq hint="Q: back"
     case $folder in
-        Inbox) cmds="R) Reply   A) Archive   D) Delete   "; keys+=RrAaDd; hint="R: reply  A: archive  D: delete  Q: back" ;;
-        Sent) cmds="A) Archive   D) Delete   "; keys+=AaDd; hint="A: archive  D: delete  Q: back" ;;
+        Inbox) cmds="R) Reply   S) Save   D) Delete   "; keys+=RrSsDd; hint="R: reply  S: archive  D: delete  Q: back" ;;
+        Sent) cmds="S) Save   D) Delete   "; keys+=SsDd; hint="S: archive  D: delete  Q: back" ;;
         Archive) cmds="D) Delete   "; keys+=Dd; hint="D: delete  Q: back" ;;
     esac
-    local from; from=$(post_hdr "$f" From)
+    hdr_read "$f"
+    local from=${HDR[From]-} ansi=${HDR[X-Fido-Ansi]-}
     # Archive: reply only to mail from someone else (the user's own address is a Sent copy).
     if [[ $folder == Archive && ${from%%@*} != "$me" ]]; then
         cmds="R) Reply   $cmds"; keys+=Rr; hint="R: reply  $hint"
     fi
     if [[ $folder == Inbox || $folder == Archive ]] && is_netmail "$from"; then
         cmds="${cmds/D) /B) Book   D) }"; keys+=Bb; hint="B: add to book  $hint"
+    fi
+    # A netmail with ANSI art carries the original (bbs-fido toss_netmail); A as on the boards.
+    if [[ -n $ansi ]]; then
+        cmds+="A) ANSI   "; keys+=Aa; hint="${hint%  Q: back}
+A: view the ANSI art  Q: back"
     fi
     cmds+="X) Export thread   "; keys+=Xx; hint="${hint%  Q: back}
 X: export thread  Q: back"
@@ -2942,7 +2960,8 @@ $hint"
              TV_GOTO=$NUM; return 5 ;;
         [Bb]) book_save "${from%@*}" "${from##*@}"; return 2 ;;
         [Rr]) mail_reply "$f"; return 6 ;;
-        [Aa]) mail_archive "$f"; return 6 ;;
+        [Ss]) mail_archive "$f"; return 6 ;;
+        [Aa]) view_ansi_mail "$f"; return 2 ;;
         [Dd]) mail_delete "$f"; return 6 ;;
         [Xx]) mail_export "$f"; return 2 ;;
     esac

@@ -309,6 +309,12 @@ check "netmail: other node skipped" bash -c "test \"\$(find '$top'/homes/*/Maild
 net nm4 "Kitty|Ev"$'\r'"X-Evil: 1|S|21:1/100|21:9/999|^AINTL 21:9/999 21:99/1\n^AMSGID: 21:99/1 e1\nx"
 ef=$(grep -l 'e1$' "$top"/homes/kitty/Maildir/new/*)
 check "netmail: CR in From removed" bash -c "grep -qx 'From: EvX-Evil: 1@21:99/1' '$ef' && ! grep -q '^X-Evil' '$ef'"
+# ANSI netmail: the body is the drawn text, the original (cp437, no tear line) in X-Fido-Ansi
+net nm5 "Kitty|Ann|Art|21:1/100|21:9/999|^AINTL 21:9/999 21:99/1\n^AMSGID: 21:99/1 a5\n^ACHRS: UTF-8 4\n"$'\e[1;31mRED ═\e[0m'"\n--- Mystic"
+af=$(grep -l 'a5$' "$top"/homes/kitty/Maildir/new/*)
+check "netmail ansi: body without ESC" bash -c "sed '1,/^\$/d' '$af' | grep -qx 'RED ═' && ! grep -q \$'\e' '$af'"
+check "netmail ansi: original in X-Fido-Ansi" bash -c "printf '\e[1;31mRED \xcd\e[0m\r\n' | cmp -s - <(sed -n 's/^X-Fido-Ansi: //p' '$af' | base64 -d)"
+check "netmail: plain mail has no X-Fido-Ansi" bash -c "! grep -q '^X-Fido-Ansi' '$kf'"
 net eo "All|Ed|No origin|21:1/100|21:9/999|AREA:FSX_GEN\n^AMSGID: 21:4/7 77\nbody without origin"
 check "echomail without Origin: Node from MSGID" grep -qx 'Node: 21:4/7' "$(grep -l '^Subject: No origin' "$top"/A/boards/fsx_gen/*.msg)"
 
